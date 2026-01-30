@@ -505,7 +505,9 @@ function ProjectDiffScreen:get_current_mark_index()
   end
 
   local marks = diff.marks
-  local lnum = self.diff_view.scene:get('current'):get_lnum()
+  -- Subtract tabline padding to match how marks are indexed (see DiffView:get_current_mark_under_cursor)
+  local padding = self.diff_view:get_tabline_padding()
+  local lnum = self.diff_view.scene:get('current'):get_lnum() - padding
 
   for i, mark in ipairs(marks) do
     if lnum >= mark.top and lnum <= mark.bot then

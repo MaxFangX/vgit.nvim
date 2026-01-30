@@ -59,13 +59,24 @@ function FoldableListComponent:get_list_item(lnum)
 end
 
 function FoldableListComponent:each_list_item(callback)
-  for lnum, item in pairs(self.state.shadow_list) do
-    callback(item, lnum)
+  local lnums = {}
+  for lnum in pairs(self.state.shadow_list) do
+    lnums[#lnums + 1] = lnum
+  end
+  table.sort(lnums)
+  for _, lnum in ipairs(lnums) do
+    callback(self.state.shadow_list[lnum], lnum)
   end
 end
 
 function FoldableListComponent:find_list_item(callback)
-  for lnum, item in pairs(self.state.shadow_list) do
+  local lnums = {}
+  for lnum in pairs(self.state.shadow_list) do
+    lnums[#lnums + 1] = lnum
+  end
+  table.sort(lnums)
+  for _, lnum in ipairs(lnums) do
+    local item = self.state.shadow_list[lnum]
     if callback(item, lnum) then return item, lnum end
   end
 end
@@ -80,6 +91,9 @@ function FoldableListComponent:generate_lines()
   local virtual_texts = {}
   local depth_0_item_counts = {}
   local foldable_list_shadow = {}
+
+  -- Clear shadow_list before regenerating to prevent stale entries
+  self.state.shadow_list = {}
 
   local function track_closed_folder_item_count(list, depth)
     if not list then return end
@@ -273,6 +287,7 @@ function FoldableListComponent:paint()
 end
 
 function FoldableListComponent:sync()
+  loop.free_textlock()
   self.buffer:clear_extmarks()
 
   local lines = self:generate_lines()
