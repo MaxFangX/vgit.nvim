@@ -31,7 +31,10 @@ function loop.debounce(fn, ms)
 
     timer:stop()
     timer:start(ms, 0, function()
-      fn(unpack(argv, 1, argc))
+      -- Escape luv callback context to main Vim event loop
+      vim.schedule(function()
+        fn(unpack(argv, 1, argc))
+      end)
     end)
   end
 

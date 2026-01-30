@@ -8,6 +8,8 @@ local ProjectLogsScreen = require('vgit.features.screens.ProjectLogsScreen')
 local ProjectStashScreen = require('vgit.features.screens.ProjectStashScreen')
 local ProjectCommitScreen = require('vgit.features.screens.ProjectCommitScreen')
 local ProjectCommitsScreen = require('vgit.features.screens.ProjectCommitsScreen')
+local ProjectReviewByFileScreen = require('vgit.features.screens.ProjectReviewByFileScreen')
+local ProjectReviewByCommitScreen = require('vgit.features.screens.ProjectReviewByCommitScreen')
 
 local screen_manager = {
   screens = {},
@@ -64,6 +66,16 @@ end
 function screen_manager.screens.line_blame_screen()
   local line_blame_screen = LineBlameScreen({ layout_type = scene_setting:get('diff_preference') })
   return line_blame_screen:create(), line_blame_screen
+end
+
+function screen_manager.screens.project_review_by_file_screen(...)
+  local project_review_by_file_screen = ProjectReviewByFileScreen({ layout_type = scene_setting:get('diff_preference') })
+  return project_review_by_file_screen:create({ ... }), project_review_by_file_screen
+end
+
+function screen_manager.screens.project_review_by_commit_screen(...)
+  local project_review_by_commit_screen = ProjectReviewByCommitScreen({ layout_type = scene_setting:get('diff_preference') })
+  return project_review_by_commit_screen:create({ ... }), project_review_by_commit_screen
 end
 
 function screen_manager.is_screen_registered(screen_name)
