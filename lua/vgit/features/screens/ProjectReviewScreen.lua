@@ -844,6 +844,11 @@ function ProjectReviewScreen:on_quit()
     review_state:save_position(entry.type, entry.filename, file_lnum)
   end
 
+  -- Save state to disk before closing
+  if review_state then
+    review_state:save()
+  end
+
   -- Handle deleted files: just close the screen
   if not filepath or not fs.exists(filepath) then
     loop.free_textlock()

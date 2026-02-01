@@ -74,12 +74,19 @@ function Model:fetch(base_branch_arg)
   if mb_err then return nil, mb_err end
   self.state.merge_base = merge_base
 
+  -- Get git_dir for persistence
+  local git_dir, git_dir_err = git_repo.dirname()
+  if git_dir_err then git_dir = nil end
+
   -- Initialize or restore review state
   self.review_state = ReviewState({
     base_branch = base_branch,
     branch_name = branch_name,
     review_type = self:get_review_type(),
+    git_dir = git_dir,
   })
+  -- Load persisted state from disk (must be called from coroutine context)
+  self.review_state:load_from_disk()
   -- Clear stale content_ids (HEAD may have changed since last session)
   -- Marks persist, content_ids will be recomputed from fresh diffs
   self.review_state:clear_content_ids()

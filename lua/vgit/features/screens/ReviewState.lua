@@ -1,6 +1,8 @@
 local fs = require('vgit.core.fs')
+local loop = require('vgit.core.loop')
 local utils = require('vgit.core.utils')
 local Object = require('vgit.core.Object')
+local persistence = require('vgit.features.screens.ReviewStatePersistence')
 
 --[[
   ReviewState manages the seen/unseen state for PR review workflows.
@@ -58,6 +60,9 @@ function ReviewState:constructor(opts)
     base_branch = opts.base_branch,
     branch_name = opts.branch_name,
     review_type = opts.review_type or 'by_file',
+    git_dir = opts.git_dir,         -- Path to .git directory for persistence
+    _loaded = false,                -- Whether state has been loaded from disk
+    _skip_persistence = false,      -- Set if user declines to delete corrupted state
   }
 end
 
@@ -73,6 +78,35 @@ local function get_state(self)
     state_store[key] = { marks = {}, position = { section = 'unseen' }, hunk_counts = {}, content_ids = {} }
   end
   return state_store[key]
+end
+
+-- Load state from disk (call explicitly from coroutine context)
+function ReviewState:load_from_disk()
+  if not self.git_dir or self._loaded then return end
+  self._loaded = true
+
+  -- Escape luv callback context to main Vim loop (required for vim.fn calls)
+  loop.free_textlock()
+  local data, err = persistence.load(self.git_dir, self.base_branch, self.branch_name, self.review_type)
+
+  if err then
+    local path = persistence.get_state_path(self.git_dir, self.base_branch, self.branch_name, self.review_type)
+    local should_delete = persistence.handle_load_error(path, err)
+    if should_delete then
+      persistence.delete(self.git_dir, self.base_branch, self.branch_name, self.review_type)
+    else
+      self._skip_persistence = true -- Don't overwrite
+    end
+  elseif data then
+    -- Restore state from disk
+    local key = self:get_state_key()
+    state_store[key] = {
+      marks = data.marks or {},
+      position = data.position or { section = 'unseen' },
+      hunk_counts = data.hunkCounts or {},
+      content_ids = data.contentIds or {},
+    }
+  end
 end
 
 -- Get or create the marks table for current session
@@ -214,6 +248,22 @@ end
 -- Get stored content_ids for an entry
 function ReviewState:get_content_ids(key)
   return get_state(self).content_ids[key]
+end
+
+-- Save state to disk
+function ReviewState:save()
+  if not self.git_dir or self._skip_persistence then return end
+
+  -- Escape luv callback context to main Vim loop (required for vim.fn calls)
+  loop.free_textlock()
+  local state = get_state(self)
+  local data = {
+    marks = state.marks,
+    position = state.position,
+    hunkCounts = state.hunk_counts,
+    contentIds = state.content_ids,
+  }
+  persistence.save(self.git_dir, self.base_branch, self.branch_name, self.review_type, data)
 end
 
 return ReviewState
