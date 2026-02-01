@@ -593,6 +593,7 @@ function ProjectDiffScreen:prev_hunk()
   end
 end
 
+-- Returns true if current buffer is in the diff, false otherwise
 function ProjectDiffScreen:focus_relative_buffer_entry(buffer)
   local filename = buffer:get_relative_name()
   local last_entry_type = vim.b[buffer.bufnr].vgit_last_entry_type
@@ -604,20 +605,20 @@ function ProjectDiffScreen:focus_relative_buffer_entry(buffer)
       local list_item = self:move_to(function(status, entry_type)
         return status.filename == filename and entry_type == last_entry_type
       end)
-      if list_item then return end
+      if list_item then return true end
     end
 
     -- Otherwise prefer unstaged
     local list_item = self:move_to(function(status, entry_type)
       return status.filename == filename and entry_type == 'unstaged'
     end)
-    if list_item then return end
+    if list_item then return true end
 
     -- Fall back to any entry for this file
     list_item = self:move_to(function(status)
       return status.filename == filename
     end)
-    if list_item then return end
+    if list_item then return true end
   end
 
   -- Fallback: prefer unstaged entries, then any entry
@@ -629,6 +630,7 @@ function ProjectDiffScreen:focus_relative_buffer_entry(buffer)
       return true
     end)
   end
+  return false
 end
 
 function ProjectDiffScreen:toggle_focus()
@@ -865,6 +867,11 @@ end
 
 function ProjectDiffScreen:create()
   local buffer = Buffer(0)
+  -- Capture cursor position and window BEFORE mounting any views
+  local source_cursor_lnum = vim.fn.line('.')
+  local source_cursor_col = vim.fn.col('.')
+  local source_winline = vim.fn.winline()
+  local source_win_id = vim.api.nvim_get_current_win()
 
   local data, err = self.model:fetch()
   loop.free_textlock()
@@ -905,9 +912,19 @@ function ProjectDiffScreen:create()
   self.status_list_view:render()
 
   self:setup_keymaps()
-  self:focus_relative_buffer_entry(buffer)
+  local found_current_buffer = self:focus_relative_buffer_entry(buffer)
   self:handle_list_move()
   self:toggle_focus()
+
+  -- Position cursor at source file line (must be after toggle_focus which resets to first hunk)
+  if found_current_buffer then
+    vim.schedule(function()
+      self.diff_view:set_source_lnum(source_cursor_lnum, source_cursor_col, source_winline)
+    end)
+  end
+
+  -- Store source window for returning on quit
+  self.source_win_id = source_win_id
 
   return true
 end
@@ -926,9 +943,17 @@ function ProjectDiffScreen:on_quit()
 
   local entry = self.model:get_entry()
   local file_lnum = self.diff_view:get_file_lnum()
+  local diff_winline = vim.fn.winline()
   loop.free_textlock()
 
+  local source_win_id = self.source_win_id
   self:destroy()
+
+  -- Return to the original window if it still exists
+  if source_win_id and vim.api.nvim_win_is_valid(source_win_id) then
+    vim.api.nvim_set_current_win(source_win_id)
+  end
+
   fs.open(filepath)
 
   -- Store entry type so re-opening returns to same entry
@@ -937,7 +962,12 @@ function ProjectDiffScreen:on_quit()
   end
 
   if file_lnum then
-    Window(0):set_lnum(file_lnum):position_cursor('center')
+    Window(0):set_lnum(file_lnum)
+    -- Restore scroll position so cursor is at same relative position in window
+    local target_top = file_lnum - diff_winline + 1
+    if target_top >= 1 then
+      vim.fn.winrestview({ topline = target_top })
+    end
   end
 
   event.emit('VGitSync')
