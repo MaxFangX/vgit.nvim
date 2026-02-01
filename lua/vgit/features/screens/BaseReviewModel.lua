@@ -6,12 +6,17 @@ local Object = require('vgit.core.Object')
   BaseReviewModel contains shared logic for review models.
 
   Subclasses must implement:
-    - get_entry_key(entry) - returns the key for ReviewState
+    - get_entry_key(entry) - returns the key for diff caching
     - get_review_type() - returns 'by_file' or 'by_commit'
     - fetch(base_branch_arg) - fetches commits/files
     - rebuild_entries() - builds the entry structure
     - get_full_diff(key) - gets the unfiltered diff for a key
     - get_diff_args(entry) - returns args for get_full_diff from entry
+
+  Key concepts:
+    - entry_key: Used for diff caching (by-file: filename, by-commit: commit:filename)
+    - mark_key: Used for mark storage (always filename only, so marks persist across commits)
+    - content_id: SHA-256 hash of hunk content (marks persist when hunks shift position)
 ]]
 
 local BaseReviewModel = Object:extend()
@@ -25,7 +30,7 @@ function BaseReviewModel:constructor(opts)
       reponame = nil,
       base_branch = nil,
       merge_base = nil,
-      head_hash = nil,
+      branch_name = nil,
       list_entries = {},
       hunk_counts = {},
       layout_type = opts.layout_type or 'unified',
@@ -116,12 +121,25 @@ function BaseReviewModel:set_hunk_count(key, count)
   self.review_state:set_hunk_count(key, count)
 end
 
+-- Get mark key for an entry (used for mark storage, always filename only)
+-- This allows marks to persist across commits in by-commit mode
+function BaseReviewModel:get_mark_key(entry)
+  return entry.filename
+end
+
+-- Get content_ids for an entry (from cached diff)
+function BaseReviewModel:get_content_ids(entry)
+  local cache_key = self:get_entry_key(entry)
+  local diff = self.state.diffs[cache_key]
+  return diff and diff._content_ids or {}
+end
+
 -- Get filtered diff based on entry type (seen/unseen)
 function BaseReviewModel:get_diff()
   local entry = self:get_entry()
   if not entry then return nil, { 'entry not found' } end
 
-  local key = self:get_entry_key(entry)
+  local mark_key = self:get_mark_key(entry)
   local entry_type = entry.type -- 'seen' or 'unseen'
 
   -- Get the full diff first
@@ -129,13 +147,15 @@ function BaseReviewModel:get_diff()
   if err then return nil, err end
   if not full_diff then return nil end
 
-  -- Filter hunks based on entry type
+  -- Filter hunks based on entry type using content_ids
   local full_hunks = full_diff.hunks or {}
+  local content_ids = full_diff._content_ids or {}
   local total_hunks = #full_hunks > 0 and #full_hunks or 1
   local filtered_indices = {}
 
   for i = 1, total_hunks do
-    local is_seen = self.review_state:is_hunk_seen(key, i)
+    local content_id = content_ids[i] or tostring(i)
+    local is_seen = self.review_state:is_hunk_seen(mark_key, content_id)
     if (entry_type == 'seen' and is_seen) or (entry_type == 'unseen' and not is_seen) then
       filtered_indices[#filtered_indices + 1] = i
     end
@@ -186,42 +206,50 @@ function BaseReviewModel:get_diff()
   return filtered_diff
 end
 
--- Mark operations using unified key-based API
-function BaseReviewModel:mark_hunk(key, hunk_index)
+-- Mark operations using content_id-based API
+function BaseReviewModel:mark_hunk(mark_key, content_id)
   if not self.review_state then return end
-  self.review_state:mark_hunk(key, hunk_index)
+  self.review_state:mark_hunk(mark_key, content_id)
   self:rebuild_entries()
 end
 
-function BaseReviewModel:unmark_hunk(key, hunk_index)
+function BaseReviewModel:unmark_hunk(mark_key, content_id)
   if not self.review_state then return end
-  self.review_state:unmark_hunk(key, hunk_index)
+  self.review_state:unmark_hunk(mark_key, content_id)
   self:rebuild_entries()
 end
 
-function BaseReviewModel:mark_file(key)
+function BaseReviewModel:mark_file(mark_key)
   if not self.review_state then return end
-  -- Ensure hunk count is computed (current entry should already be set by caller)
   local entry = self:get_entry()
-  local total_hunks = entry and self:ensure_hunk_count(entry) or self:get_hunk_count(key)
-  if not total_hunks then return end
-  self.review_state:mark_all_hunks(key, total_hunks)
+  if not entry then return end
+
+  -- Ensure diff is computed to get content_ids
+  self:get_full_diff(self:get_diff_args(entry))
+  local content_ids = self:get_content_ids(entry)
+  if #content_ids == 0 then return end
+
+  self.review_state:mark_all_hunks(mark_key, content_ids)
   self:rebuild_entries()
 end
 
-function BaseReviewModel:unmark_file(key)
+function BaseReviewModel:unmark_file(mark_key)
   if not self.review_state then return end
-  -- Ensure hunk count is computed (current entry should already be set by caller)
   local entry = self:get_entry()
-  local total_hunks = entry and self:ensure_hunk_count(entry) or self:get_hunk_count(key)
-  if not total_hunks then return end
-  self.review_state:unmark_all_hunks(key, total_hunks)
+  if not entry then return end
+
+  -- Ensure diff is computed to get content_ids
+  self:get_full_diff(self:get_diff_args(entry))
+  local content_ids = self:get_content_ids(entry)
+  if #content_ids == 0 then return end
+
+  self.review_state:unmark_all_hunks(mark_key, content_ids)
   self:rebuild_entries()
 end
 
-function BaseReviewModel:is_hunk_seen(key, hunk_index)
+function BaseReviewModel:is_hunk_seen(mark_key, content_id)
   if not self.review_state then return false end
-  return self.review_state:is_hunk_seen(key, hunk_index)
+  return self.review_state:is_hunk_seen(mark_key, content_id)
 end
 
 function BaseReviewModel:reset_marks()

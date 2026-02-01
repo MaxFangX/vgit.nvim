@@ -34,7 +34,7 @@ function Model:reset()
     reponame = nil,
     base_branch = self.state.base_branch,
     merge_base = nil,
-    head_hash = nil,
+    branch_name = nil,
     list_entries = {},
     commits = {},
     commit_files = {},
@@ -82,10 +82,10 @@ function Model:fetch(base_branch_arg)
   end
   self.state.base_branch = base_branch
 
-  -- Get HEAD hash for state keying
-  local head_hash, head_err = git_branch.head(reponame)
-  if head_err then return nil, head_err end
-  self.state.head_hash = head_hash
+  -- Get current branch name for state keying (persists across commits)
+  local branch_name, branch_err = git_branch.current(reponame)
+  if branch_err then return nil, branch_err end
+  self.state.branch_name = branch_name
 
   -- Get merge-base
   local merge_base, mb_err = git_branch.merge_base(reponame, base_branch, 'HEAD')
@@ -95,9 +95,12 @@ function Model:fetch(base_branch_arg)
   -- Initialize or restore review state
   self.review_state = ReviewState({
     base_branch = base_branch,
-    head_hash = head_hash,
+    branch_name = branch_name,
     review_type = self:get_review_type(),
   })
+  -- Clear stale content_ids (HEAD may have changed since last session)
+  -- Marks persist, content_ids will be recomputed from fresh diffs
+  self.review_state:clear_content_ids()
 
   -- Get commits in the PR range
   local commits, commits_err = git_branch.commits_in_range(reponame, merge_base, 'HEAD')
@@ -110,13 +113,49 @@ function Model:fetch(base_branch_arg)
   self.state.commits = commits
 
   -- Cache commit files in a single git command (batched for performance)
-  -- Hunk counts are computed lazily in get_diff()
   local all_files, files_err = git_branch.all_commit_files(reponame, merge_base, 'HEAD')
   if files_err then return nil, files_err end
   self.state.commit_files = all_files or {}
 
+  -- Preload diffs to get content_ids for accurate seen/unseen categorization
+  for _, commit in ipairs(commits) do
+    local files = self.state.commit_files[commit.hash] or {}
+    for _, file in ipairs(files) do
+      self:preload_diff(commit.hash, file.filename)
+    end
+  end
+
   self:rebuild_entries()
   return self.state.entries
+end
+
+-- Preload diff to populate content_ids cache (for accurate categorization)
+function Model:preload_diff(commit_hash, filename)
+  local cache_key = make_key(commit_hash, filename)
+  if self.state.diffs[cache_key] then return end
+
+  local reponame = self.state.reponame
+  local parent_hash = commit_hash .. '^'
+
+  local hunks = git_hunks.list(reponame, {
+    parent = parent_hash,
+    current = commit_hash,
+    filename = filename,
+  })
+
+  local hunk_list = hunks or {}
+  local count = #hunk_list > 0 and #hunk_list or 1
+  self:set_hunk_count(cache_key, count)
+
+  -- Compute and persist content_ids
+  local content_ids = {}
+  for _, hunk in ipairs(hunk_list) do
+    content_ids[#content_ids + 1] = hunk:get_content_id()
+  end
+  if #content_ids == 0 then
+    content_ids[1] = 'empty'
+  end
+  self.review_state:set_content_ids(cache_key, content_ids)
 end
 
 -- Rebuild entries after marking/unmarking (uses cached commit_files)
@@ -137,13 +176,17 @@ function Model:rebuild_entries()
     local seen_files = {}
 
     for _, file in ipairs(files) do
-      local key = make_key(commit.hash, file.filename)
+      -- Mark key is filename only (marks are shared across commits)
+      local mark_key = file.filename
 
-      -- Pass cached hunk count if available (check local cache then ReviewState)
-      local cached_count = self.state.hunk_counts[key] or self.review_state:get_hunk_count(key)
+      -- Get content_ids from local cache or persisted ReviewState
+      local cache_key = make_key(commit.hash, file.filename)
+      local cached_diff = self.state.diffs[cache_key]
+      local content_ids = cached_diff and cached_diff._content_ids
+        or self.review_state:get_content_ids(cache_key)
 
-      local has_unseen = self.review_state:has_unseen_hunks(key, cached_count)
-      local has_seen = self.review_state:has_seen_hunks(key)
+      local has_unseen = self.review_state:has_unseen_hunks(mark_key, content_ids)
+      local has_seen = self.review_state:has_seen_hunks(mark_key, content_ids)
 
       local status = ReviewState.create_status(file.filename, file.status, file.old_filename)
 
@@ -232,12 +275,26 @@ function Model:get_full_diff(commit_hash, filename)
   local count = #hunk_list > 0 and #hunk_list or 1
   self:set_hunk_count(cache_key, count)
 
+  -- Compute content_ids for each hunk (for content-based mark persistence)
+  local content_ids = {}
+  for _, hunk in ipairs(hunk_list) do
+    content_ids[#content_ids + 1] = hunk:get_content_id()
+  end
+  -- For empty/binary files, use a single 'empty' content_id
+  if #content_ids == 0 then
+    content_ids[1] = 'empty'
+  end
+  -- Persist content_ids in ReviewState (survives screen re-entry)
+  -- Key by cache_key (commit:filename) since each commit has different hunks
+  self.review_state:set_content_ids(cache_key, content_ids)
+
   local is_deleted = entry.status.first == 'D'
   local diff = Diff():generate(hunk_list, lines or {}, layout_type, { is_deleted = is_deleted })
   -- Store original data for filtered diff regeneration (avoid async calls later)
   diff._original_hunks = hunk_list
   diff._original_lines = lines or {}
   diff._is_deleted = is_deleted
+  diff._content_ids = content_ids
   self.state.diffs[cache_key] = diff
 
   return diff

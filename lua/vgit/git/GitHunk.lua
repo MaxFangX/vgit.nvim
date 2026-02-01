@@ -103,4 +103,26 @@ function GitHunk:push(line)
   return self
 end
 
+-- Simple FNV-1a hash (pure Lua, works in async contexts)
+local function fnv1a(str)
+  local hash = 2166136261
+  for i = 1, #str do
+    hash = bit.bxor(hash, str:byte(i))
+    hash = bit.band(hash * 16777619, 0xFFFFFFFF)
+  end
+  return string.format('%08x', hash)
+end
+
+-- Compute a content-based identifier for this hunk.
+-- Uses FNV-1a hash of the full diff content (including context).
+-- This allows marks to persist when hunks shift position.
+--
+-- We intentionally include context lines because WHERE a change occurs matters.
+-- Adding `drop(guard)` before vs after a critical section is very different,
+-- even though the +line is identical.
+function GitHunk:get_content_id()
+  if #self.diff == 0 then return 'empty' end
+  return fnv1a(table.concat(self.diff, '\n'))
+end
+
 return GitHunk

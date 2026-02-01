@@ -5,12 +5,12 @@ local Object = require('vgit.core.Object')
 --[[
   ReviewState manages the seen/unseen state for PR review workflows.
 
-  State is keyed by: (base_branch, HEAD_commit_hash, review_type)
+  State is keyed by: (base_branch, branch_name, review_type)
   where review_type is 'by_file' or 'by_commit'.
 
   All mark operations use a unified key-based API. The key is provided by
-  callers - for by_file mode it's the filename, for by_commit mode it's
-  "commit_hash:filename".
+  callers - typically the filename. Marks use content-based identifiers
+  (SHA-256 hashes of hunk content) so they persist when hunks shift position.
 ]]
 
 local ReviewState = Object:extend()
@@ -56,21 +56,21 @@ function ReviewState:constructor(opts)
 
   return {
     base_branch = opts.base_branch,
-    head_hash = opts.head_hash,
+    branch_name = opts.branch_name,
     review_type = opts.review_type or 'by_file',
   }
 end
 
 -- Generate the state key for the current review session
 function ReviewState:get_state_key()
-  return string.format('%s|%s|%s', self.base_branch or '', self.head_hash or '', self.review_type)
+  return string.format('%s|%s|%s', self.base_branch or '', self.branch_name or '', self.review_type)
 end
 
 -- Get or create the state for current session
 local function get_state(self)
   local key = self:get_state_key()
   if not state_store[key] then
-    state_store[key] = { marks = {}, position = { section = 'unseen' }, hunk_counts = {} }
+    state_store[key] = { marks = {}, position = { section = 'unseen' }, hunk_counts = {}, content_ids = {} }
   end
   return state_store[key]
 end
@@ -80,89 +80,85 @@ function ReviewState:get_marks()
   return get_state(self).marks
 end
 
--- Generate a mark key from entry key and hunk index
-local function mark_key(entry_key, hunk_index)
-  return string.format('%s:%d', entry_key, hunk_index)
+-- Generate a mark key from entry key and content id (or hunk index for legacy)
+local function mark_key(entry_key, hunk_id)
+  return string.format('%s:%s', entry_key, hunk_id)
 end
 
 -- Check if a hunk is marked as seen
-function ReviewState:is_hunk_seen(key, hunk_index)
+function ReviewState:is_hunk_seen(key, content_id)
   local marks = self:get_marks()
-  return marks[mark_key(key, hunk_index)] == true
+  return marks[mark_key(key, content_id)] == true
 end
 
 -- Mark a hunk as seen
-function ReviewState:mark_hunk(key, hunk_index)
+function ReviewState:mark_hunk(key, content_id)
   local marks = self:get_marks()
-  marks[mark_key(key, hunk_index)] = true
+  marks[mark_key(key, content_id)] = true
 end
 
 -- Unmark a hunk
-function ReviewState:unmark_hunk(key, hunk_index)
+function ReviewState:unmark_hunk(key, content_id)
   local marks = self:get_marks()
-  marks[mark_key(key, hunk_index)] = nil
+  marks[mark_key(key, content_id)] = nil
 end
 
--- Mark all hunks as seen
-function ReviewState:mark_all_hunks(key, total_hunks)
-  for i = 1, total_hunks do
-    self:mark_hunk(key, i)
+-- Mark all hunks as seen (takes array of content_ids)
+function ReviewState:mark_all_hunks(key, content_ids)
+  for _, content_id in ipairs(content_ids) do
+    self:mark_hunk(key, content_id)
   end
 end
 
--- Unmark all hunks
-function ReviewState:unmark_all_hunks(key, total_hunks)
-  for i = 1, total_hunks do
-    self:unmark_hunk(key, i)
+-- Unmark all hunks (takes array of content_ids)
+function ReviewState:unmark_all_hunks(key, content_ids)
+  for _, content_id in ipairs(content_ids) do
+    self:unmark_hunk(key, content_id)
   end
 end
 
 -- Check if an entry has any seen hunks
--- Optimized: scans marks instead of iterating 1..total_hunks
-function ReviewState:has_seen_hunks(key)
-  local marks = self:get_marks()
-  local prefix = key .. ':'
-  for k in pairs(marks) do
-    if k:sub(1, #prefix) == prefix then
-      return true
+-- content_ids: optional array of content_ids for accurate check
+-- Without content_ids, returns false (conservative: can't verify what's seen)
+function ReviewState:has_seen_hunks(key, content_ids)
+  -- If we have content_ids, check each one for accuracy
+  if content_ids and #content_ids > 0 then
+    for _, content_id in ipairs(content_ids) do
+      if self:is_hunk_seen(key, content_id) then
+        return true
+      end
     end
+    return false
   end
+
+  -- Without content_ids, assume nothing is seen (conservative)
   return false
 end
 
 -- Check if an entry has any unseen hunks
--- If total_hunks not provided, returns true (assumes at least 1 hunk exists)
-function ReviewState:has_unseen_hunks(key, total_hunks)
-  local marks = self:get_marks()
-  local prefix = key .. ':'
-
-  -- Count marked hunks for this entry
-  local marked_count = 0
-  for k in pairs(marks) do
-    if k:sub(1, #prefix) == prefix then
-      marked_count = marked_count + 1
+-- content_ids: optional array of content_ids for accurate check
+-- Without content_ids, returns true (conservative: assumes unseen hunks exist)
+function ReviewState:has_unseen_hunks(key, content_ids)
+  -- If we have content_ids, check each one for accuracy
+  if content_ids and #content_ids > 0 then
+    for _, content_id in ipairs(content_ids) do
+      if not self:is_hunk_seen(key, content_id) then
+        return true
+      end
     end
+    return false
   end
 
-  -- If no marks, definitely has unseen hunks
-  if marked_count == 0 then
-    return true
-  end
-
-  -- If we know total_hunks, check if all are marked
-  if total_hunks then
-    return marked_count < total_hunks
-  end
-
-  -- Without total_hunks, assume there might be unseen hunks
+  -- Without content_ids, assume there might be unseen hunks
+  -- (Conservative approach until diff is loaded)
   return true
 end
 
--- Get count of seen hunks
-function ReviewState:get_seen_hunk_count(key, total_hunks)
+-- Get count of seen hunks (takes array of content_ids)
+function ReviewState:get_seen_hunk_count(key, content_ids)
   local count = 0
-  for i = 1, total_hunks do
-    if self:is_hunk_seen(key, i) then
+  for _, content_id in ipairs(content_ids) do
+    if self:is_hunk_seen(key, content_id) then
       count = count + 1
     end
   end
@@ -173,6 +169,13 @@ end
 function ReviewState:reset()
   local state = get_state(self)
   state.marks = {}
+end
+
+-- Clear cached content_ids (call when HEAD may have changed)
+-- Marks persist, but content_ids will be recomputed from fresh diffs
+function ReviewState:clear_content_ids()
+  local state = get_state(self)
+  state.content_ids = {}
 end
 
 -- Store last position for re-entry (persisted in state_store)
@@ -200,6 +203,17 @@ end
 -- Get stored hunk count for an entry
 function ReviewState:get_hunk_count(key)
   return get_state(self).hunk_counts[key]
+end
+
+-- Store content_ids for an entry (persists across screen re-entry)
+function ReviewState:set_content_ids(key, content_ids)
+  local state = get_state(self)
+  state.content_ids[key] = content_ids
+end
+
+-- Get stored content_ids for an entry
+function ReviewState:get_content_ids(key)
+  return get_state(self).content_ids[key]
 end
 
 return ReviewState

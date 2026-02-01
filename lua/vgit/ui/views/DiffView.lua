@@ -712,6 +712,13 @@ function DiffView:mount()
   self.state = DiffView:get_initial_state()
 end
 
+-- Returns padding offset for tabline compensation
+-- Diff needs 2 lines: 1 for tabline + 1 for HeaderElement
+function DiffView:get_tabline_padding()
+  if vim.o.showtabline > 0 then return 2 end
+  return 0
+end
+
 function DiffView:render()
   local ok, msg = pcall(function()
     loop.free_textlock()
