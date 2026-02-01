@@ -106,10 +106,11 @@ function ProjectReviewScreen:get_mark_at_cursor()
   return #marks, #marks
 end
 
--- Get entry context with key for ReviewState operations
+-- Get entry context with keys for ReviewState operations
 function ProjectReviewScreen:get_entry_context(entry)
   return {
-    key = self.model:get_entry_key(entry),
+    key = self.model:get_entry_key(entry),       -- For entry identification and diff caching
+    mark_key = self.model:get_mark_key(entry),   -- For mark storage (filename only)
     filename = entry.filename,
     commit_hash = entry.commit_hash, -- nil for by-file review
   }
@@ -268,27 +269,34 @@ end
 -- Find next hunk matching target_seen_state starting from a specific file/hunk
 -- target_seen_state: true = find seen hunks (for auto-advance after unmarking)
 --                    false = find unseen hunks (for auto-advance after marking)
-function ProjectReviewScreen:move_to_hunk_matching(target_seen_state, key, filename, commit_hash, from_hunk, total_hunks)
+function ProjectReviewScreen:move_to_hunk_matching(target_seen_state, mark_key, filename, commit_hash, from_hunk, total_hunks)
   local hunk_alignment = self.setting:get('hunk_alignment')
   local target_entry_type = target_seen_state and 'seen' or 'unseen'
 
+  -- Get content_ids for current file
+  local entry = self.model:get_entry()
+  local content_ids = entry and self.model:get_content_ids(entry) or {}
+
   -- Check remaining hunks in the same file
   for i = from_hunk + 1, total_hunks do
-    local is_seen = self.model:is_hunk_seen(key, i)
-    if is_seen == target_seen_state then
-      -- Staying in the same file - find and set the target entry
-      local entry_id = self:find_entry_id(filename, commit_hash, target_entry_type)
-      if entry_id then
-        self:move_list_cursor_to_file(filename, commit_hash, target_entry_type)
-        self.model:set_entry_id(entry_id)
-        loop.free_textlock()
-        self.diff_view:render()
-        loop.free_textlock()
-        local filtered_idx = self:get_filtered_hunk_index(i)
-        loop.free_textlock()
-        self.diff_view:move_to_hunk(filtered_idx, hunk_alignment)
+    local content_id = content_ids[i]
+    if content_id then
+      local is_seen = self.model:is_hunk_seen(mark_key, content_id)
+      if is_seen == target_seen_state then
+        -- Staying in the same file - find and set the target entry
+        local entry_id = self:find_entry_id(filename, commit_hash, target_entry_type)
+        if entry_id then
+          self:move_list_cursor_to_file(filename, commit_hash, target_entry_type)
+          self.model:set_entry_id(entry_id)
+          loop.free_textlock()
+          self.diff_view:render()
+          loop.free_textlock()
+          local filtered_idx = self:get_filtered_hunk_index(i)
+          loop.free_textlock()
+          self.diff_view:move_to_hunk(filtered_idx, hunk_alignment)
+        end
+        return
       end
-      return
     end
   end
 
@@ -302,12 +310,14 @@ function ProjectReviewScreen:move_to_hunk_matching(target_seen_state, key, filen
       local full_entry = self.model:get_entry(item.entry.id)
       if not full_entry then goto continue end
 
+      -- Ensure diff is computed to get content_ids
+      self.model:ensure_hunk_count(full_entry)
       local next_ctx = self:get_entry_context(full_entry)
-      local next_total = self.model:ensure_hunk_count(full_entry)
-      if not next_total then goto continue end
+      local next_content_ids = self.model:get_content_ids(full_entry)
+      if #next_content_ids == 0 then goto continue end
 
-      for i = 1, next_total do
-        local is_seen = self.model:is_hunk_seen(next_ctx.key, i)
+      for i, next_content_id in ipairs(next_content_ids) do
+        local is_seen = self.model:is_hunk_seen(next_ctx.mark_key, next_content_id)
         if is_seen == target_seen_state then
           loop.free_textlock()
           component:unlock():set_lnum(lnum):lock()
@@ -333,17 +343,22 @@ function ProjectReviewScreen:mark_hunk()
   local hunk_index, total_hunks = self:get_current_mark_index()
   if not hunk_index then return end
 
+  -- Get content_id for this hunk
+  local content_ids = self.model:get_content_ids(entry)
+  local content_id = content_ids[hunk_index]
+  if not content_id then return end
+
   -- Save context before marking (entry may be removed after render if file becomes fully seen)
-  local current_key = ctx.key
+  local current_mark_key = ctx.mark_key
   local current_filename = ctx.filename
   local current_commit = ctx.commit_hash
   local current_hunk = hunk_index
 
-  self.model:mark_hunk(ctx.key, hunk_index)
+  self.model:mark_hunk(ctx.mark_key, content_id)
   self.list_view:render()
 
   -- Navigate to next unmarked hunk using saved context
-  self:move_to_hunk_matching(false, current_key, current_filename, current_commit, current_hunk, total_hunks)
+  self:move_to_hunk_matching(false, current_mark_key, current_filename, current_commit, current_hunk, total_hunks)
 end
 
 function ProjectReviewScreen:unmark_hunk()
@@ -354,17 +369,22 @@ function ProjectReviewScreen:unmark_hunk()
   local hunk_index, total_hunks = self:get_current_mark_index()
   if not hunk_index then return end
 
+  -- Get content_id for this hunk
+  local content_ids = self.model:get_content_ids(entry)
+  local content_id = content_ids[hunk_index]
+  if not content_id then return end
+
   -- Save context before unmarking (entry may be removed after render if file becomes fully unseen)
-  local current_key = ctx.key
+  local current_mark_key = ctx.mark_key
   local current_filename = ctx.filename
   local current_commit = ctx.commit_hash
   local current_hunk = hunk_index
 
-  self.model:unmark_hunk(ctx.key, hunk_index)
+  self.model:unmark_hunk(ctx.mark_key, content_id)
   self.list_view:render()
 
   -- Navigate to next marked hunk using saved context
-  self:move_to_hunk_matching(true, current_key, current_filename, current_commit, current_hunk, total_hunks)
+  self:move_to_hunk_matching(true, current_mark_key, current_filename, current_commit, current_hunk, total_hunks)
 end
 
 -- Unified mark/unmark file operation
@@ -387,11 +407,11 @@ function ProjectReviewScreen:set_file_seen_state(mark_as_seen)
   local saved_hunk_index, _ = self:get_current_mark_index()
   local hunk_alignment = self.setting:get('hunk_alignment')
 
-  -- Perform the mark/unmark
+  -- Perform the mark/unmark using mark_key (filename only)
   if mark_as_seen then
-    self.model:mark_file(ctx.key)
+    self.model:mark_file(ctx.mark_key)
   else
-    self.model:unmark_file(ctx.key)
+    self.model:unmark_file(ctx.mark_key)
   end
   self.list_view:render()
 
