@@ -737,36 +737,42 @@ function ProjectReviewScreen:setup_keymaps()
   self:setup_diff_keymaps()
 end
 
+-- Returns true if current buffer is in the review, false otherwise
 function ProjectReviewScreen:focus_relative_buffer_entry(buffer)
   local review_state = self.model:get_review_state()
   local last_section, last_filename = review_state:get_position()
 
-  -- First, try to restore to last position (saved filename from previous session)
+  -- Try to find current buffer's file in the review
+  local filename = buffer:get_relative_name()
+  if filename ~= '' then
+    -- Prefer the section we were last viewing
+    local list_item = self:move_to(function(status, entry_type)
+      return status.filename == filename and entry_type == last_section
+    end)
+    if list_item then
+      return true
+    end
+
+    -- Fall back to any section
+    list_item = self:move_to(function(status)
+      return status.filename == filename
+    end)
+    if list_item then
+      return true
+    end
+  end
+
+  -- Current buffer not in review - try to restore to last viewed file
   if last_filename then
     local list_item = self:move_to(function(status, entry_type)
       return status.filename == last_filename and entry_type == last_section
     end)
-    if list_item then return end
+    if list_item then return false end
 
-    -- Fall back to any entry for the saved file
     list_item = self:move_to(function(status)
       return status.filename == last_filename
     end)
-    if list_item then return end
-  end
-
-  -- Try to find current buffer's file
-  local filename = buffer:get_relative_name()
-  if filename ~= '' then
-    local list_item = self:move_to(function(status, entry_type)
-      return status.filename == filename and entry_type == last_section
-    end)
-    if list_item then return end
-
-    list_item = self:move_to(function(status)
-      return status.filename == filename
-    end)
-    if list_item then return end
+    if list_item then return false end
   end
 
   -- Fallback: prefer unseen entries
@@ -778,12 +784,18 @@ function ProjectReviewScreen:focus_relative_buffer_entry(buffer)
       return true
     end)
   end
+  return false
 end
 
 function ProjectReviewScreen:create(args)
   args = args or {}
   local base_branch = args[1]
   local buffer = Buffer(0)
+  -- Capture cursor position and window BEFORE mounting any views
+  local source_cursor_lnum = vim.fn.line('.')
+  local source_cursor_col = vim.fn.col('.')
+  local source_winline = vim.fn.winline()
+  local source_win_id = vim.api.nvim_get_current_win()
 
   loop.free_textlock()
   local data, err = self.model:fetch(base_branch)
@@ -821,9 +833,19 @@ function ProjectReviewScreen:create(args)
   self.list_view:render()
 
   self:setup_keymaps()
-  self:focus_relative_buffer_entry(buffer)
+  local found_current_buffer = self:focus_relative_buffer_entry(buffer)
   self:handle_list_move()
   self:toggle_focus()
+
+  -- Position cursor at source file line (must be after toggle_focus which resets to first hunk)
+  if found_current_buffer then
+    vim.schedule(function()
+      self.diff_view:set_source_lnum(source_cursor_lnum, source_cursor_col, source_winline)
+    end)
+  end
+
+  -- Store source window for returning on quit
+  self.source_win_id = source_win_id
 
   return true
 end
@@ -837,11 +859,12 @@ function ProjectReviewScreen:on_quit()
   local entry = self.model:get_entry()
   local filepath = self.model:get_filepath()
   local file_lnum = self.diff_view:get_file_lnum()
+  local diff_winline = vim.fn.winline()
 
-  -- Save position for re-entry (using filename, which is stable across rebuilds)
+  -- Save section and filename for fallback when re-entering from a non-review file
   local review_state = self.model:get_review_state()
   if review_state and entry then
-    review_state:save_position(entry.type, entry.filename, file_lnum)
+    review_state:save_position(entry.type, entry.filename)
   end
 
   -- Save state to disk before closing
@@ -857,11 +880,23 @@ function ProjectReviewScreen:on_quit()
   end
 
   loop.free_textlock()
+  local source_win_id = self.source_win_id
   self:destroy()
+
+  -- Return to the original window if it still exists
+  if source_win_id and vim.api.nvim_win_is_valid(source_win_id) then
+    vim.api.nvim_set_current_win(source_win_id)
+  end
+
   fs.open(filepath)
 
   if file_lnum then
-    Window(0):set_lnum(file_lnum):position_cursor('center')
+    Window(0):set_lnum(file_lnum)
+    -- Restore scroll position so cursor is at same relative position in window
+    local target_top = file_lnum - diff_winline + 1
+    if target_top >= 1 then
+      vim.fn.winrestview({ topline = target_top })
+    end
   end
 
   event.emit('VGitSync')

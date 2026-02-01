@@ -591,6 +591,59 @@ function DiffView:set_relative_lnum(lnum, position)
   self:set_lnum(lnum + padding, position)
 end
 
+-- Find the diff view line that corresponds to a source file line number
+function DiffView:find_diff_line_for_source(source_lnum)
+  local lines_changes = self.state.current_lines_changes
+  if not lines_changes or #lines_changes == 0 then return nil end
+
+  -- Search for a line with matching line_number
+  for diff_lnum, entry in ipairs(lines_changes) do
+    if entry and entry.line_number then
+      local file_lnum = tonumber(entry.line_number:match('%d+'))
+      if file_lnum and file_lnum == source_lnum then
+        return diff_lnum
+      end
+    end
+  end
+
+  -- Source line not found directly - find nearest line before it
+  local best_diff_lnum = nil
+  local best_source_lnum = 0
+  for diff_lnum, entry in ipairs(lines_changes) do
+    if entry and entry.line_number then
+      local file_lnum = tonumber(entry.line_number:match('%d+'))
+      if file_lnum and file_lnum <= source_lnum and file_lnum > best_source_lnum then
+        best_source_lnum = file_lnum
+        best_diff_lnum = diff_lnum
+      end
+    end
+  end
+
+  return best_diff_lnum
+end
+
+-- Set cursor to the diff line corresponding to a source file line
+-- source_winline: cursor's position relative to window top (from vim.fn.winline())
+function DiffView:set_source_lnum(source_lnum, source_col, source_winline)
+  local diff_lnum = self:find_diff_line_for_source(source_lnum)
+  if diff_lnum then
+    local component = self.scene:get('current')
+    component:set_cursor({ diff_lnum, source_col and (source_col - 1) or 0 })
+    -- Restore scroll position so cursor is at same relative position in window
+    if source_winline then
+      local win_id = component.window and component.window.win_id
+      if win_id and vim.api.nvim_win_is_valid(win_id) then
+        vim.api.nvim_win_call(win_id, function()
+          local target_top = diff_lnum - source_winline + 1
+          if target_top >= 1 then
+            vim.fn.winrestview({ topline = target_top })
+          end
+        end)
+      end
+    end
+  end
+end
+
 function DiffView:move_to_mark(marks, mark_index, position)
   local padding = self:get_tabline_padding()
   local lnum = nil

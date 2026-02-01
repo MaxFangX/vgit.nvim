@@ -98,11 +98,12 @@ function ReviewState:load_from_disk()
       self._skip_persistence = true -- Don't overwrite
     end
   elseif data then
-    -- Restore state from disk
+    -- Restore persisted state from disk (position is session-only, never persisted)
     local key = self:get_state_key()
+    local existing = state_store[key]
     state_store[key] = {
       marks = data.marks or {},
-      position = data.position or { section = 'unseen' },
+      position = existing and existing.position or { section = 'unseen' },
       hunk_counts = data.hunkCounts or {},
       content_ids = data.contentIds or {},
     }
@@ -212,20 +213,19 @@ function ReviewState:clear_content_ids()
   state.content_ids = {}
 end
 
--- Store last position for re-entry (persisted in state_store)
-function ReviewState:save_position(section, filename, cursor_lnum)
+-- Store last viewed file for re-entry fallback (when current buffer is not in review)
+function ReviewState:save_position(section, filename)
   local state = get_state(self)
   state.position = {
     section = section,
     filename = filename,
-    cursor_lnum = cursor_lnum,
   }
 end
 
--- Get last position for re-entry
+-- Get last viewed file for re-entry fallback
 function ReviewState:get_position()
   local pos = get_state(self).position
-  return pos.section or 'unseen', pos.filename, pos.cursor_lnum
+  return pos.section or 'unseen', pos.filename
 end
 
 -- Store hunk count for an entry
@@ -250,7 +250,7 @@ function ReviewState:get_content_ids(key)
   return get_state(self).content_ids[key]
 end
 
--- Save state to disk
+-- Save state to disk (position is session-only, not persisted)
 function ReviewState:save()
   if not self.git_dir or self._skip_persistence then return end
 
@@ -259,7 +259,6 @@ function ReviewState:save()
   local state = get_state(self)
   local data = {
     marks = state.marks,
-    position = state.position,
     hunkCounts = state.hunk_counts,
     contentIds = state.content_ids,
   }
