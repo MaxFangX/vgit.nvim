@@ -127,11 +127,16 @@ function BaseReviewModel:get_mark_key(entry)
   return entry.filename
 end
 
--- Get content_ids for an entry (from cached diff)
+-- Get content_ids for an entry (from cached diff or ReviewState)
 function BaseReviewModel:get_content_ids(entry)
   local cache_key = self:get_entry_key(entry)
   local diff = self.state.diffs[cache_key]
-  return diff and diff._content_ids or {}
+  if diff and diff._content_ids then
+    return diff._content_ids
+  end
+  -- Fall back to ReviewState (populated during preload)
+  local mark_key = self:get_mark_key(entry)
+  return self.review_state:get_content_ids(mark_key) or {}
 end
 
 -- Get filtered diff based on entry type (seen/unseen)

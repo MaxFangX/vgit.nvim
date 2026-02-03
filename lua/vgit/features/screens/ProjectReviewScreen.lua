@@ -34,6 +34,7 @@ function ProjectReviewScreen:constructor(opts)
     diff_keymaps = {},
     app_bar_view = nil,
     diff_view = nil,
+    _marking = false,  -- Lock to prevent concurrent mark operations
   }
 end
 
@@ -333,20 +334,60 @@ function ProjectReviewScreen:move_to_hunk_matching(target_seen_state, mark_key, 
       ::continue::
     end
   end
+
+  -- No matching hunks found - fall back to first entry of target type, or stay on current file
+  local fallback_entry = self.list_view:find_entry(function(e)
+    return e.type == target_entry_type
+  end)
+
+  if fallback_entry then
+    self.list_view:move_to_entry(function(e) return e.id == fallback_entry.id end)
+    self.model:set_entry_id(fallback_entry.id)
+  else
+    -- No entries of target type exist - find the current file in opposite section
+    local opposite_type = target_seen_state and 'unseen' or 'seen'
+    local current_entry = self.list_view:find_entry(function(e)
+      if e.type ~= opposite_type then return false end
+      if not e.status or e.status.filename ~= filename then return false end
+      if commit_hash and e.commit_hash ~= commit_hash then return false end
+      return true
+    end)
+    if current_entry then
+      self.list_view:move_to_entry(function(e) return e.id == current_entry.id end)
+      self.model:set_entry_id(current_entry.id)
+    end
+  end
+
+  loop.free_textlock()
+  self.diff_view:render()
+  self.diff_view:move_to_hunk(1, hunk_alignment)
 end
 
 function ProjectReviewScreen:mark_hunk()
+  -- Prevent concurrent mark operations
+  if self._marking then return end
+  self._marking = true
+
   local entry = self.model:get_entry()
-  if not entry then return end
+  if not entry then
+    self._marking = false
+    return
+  end
 
   local ctx = self:get_entry_context(entry)
   local hunk_index, total_hunks = self:get_current_mark_index()
-  if not hunk_index then return end
+  if not hunk_index then
+    self._marking = false
+    return
+  end
 
   -- Get content_id for this hunk
   local content_ids = self.model:get_content_ids(entry)
   local content_id = content_ids[hunk_index]
-  if not content_id then return end
+  if not content_id then
+    self._marking = false
+    return
+  end
 
   -- Save context before marking (entry may be removed after render if file becomes fully seen)
   local current_mark_key = ctx.mark_key
@@ -359,20 +400,34 @@ function ProjectReviewScreen:mark_hunk()
 
   -- Navigate to next unmarked hunk using saved context
   self:move_to_hunk_matching(false, current_mark_key, current_filename, current_commit, current_hunk, total_hunks)
+  self._marking = false
 end
 
 function ProjectReviewScreen:unmark_hunk()
+  -- Prevent concurrent mark operations
+  if self._marking then return end
+  self._marking = true
+
   local entry = self.model:get_entry()
-  if not entry then return end
+  if not entry then
+    self._marking = false
+    return
+  end
 
   local ctx = self:get_entry_context(entry)
   local hunk_index, total_hunks = self:get_current_mark_index()
-  if not hunk_index then return end
+  if not hunk_index then
+    self._marking = false
+    return
+  end
 
   -- Get content_id for this hunk
   local content_ids = self.model:get_content_ids(entry)
   local content_id = content_ids[hunk_index]
-  if not content_id then return end
+  if not content_id then
+    self._marking = false
+    return
+  end
 
   -- Save context before unmarking (entry may be removed after render if file becomes fully unseen)
   local current_mark_key = ctx.mark_key
@@ -385,13 +440,21 @@ function ProjectReviewScreen:unmark_hunk()
 
   -- Navigate to next marked hunk using saved context
   self:move_to_hunk_matching(true, current_mark_key, current_filename, current_commit, current_hunk, total_hunks)
+  self._marking = false
 end
 
 -- Unified mark/unmark file operation
 -- mark_as_seen: true = mark all hunks as seen, false = unmark all hunks
 function ProjectReviewScreen:set_file_seen_state(mark_as_seen)
+  -- Prevent concurrent mark operations
+  if self._marking then return end
+  self._marking = true
+
   local entry = self.model:get_entry()
-  if not entry then return end
+  if not entry then
+    self._marking = false
+    return
+  end
 
   local ctx = self:get_entry_context(entry)
   local current_filename = ctx.filename
@@ -429,6 +492,7 @@ function ProjectReviewScreen:set_file_seen_state(mark_as_seen)
       -- After operation, all hunks are in same state, so original index = filtered index
       self.diff_view:move_to_hunk(saved_hunk_index, hunk_alignment)
     end
+    self._marking = false
     return
   end
 
@@ -479,6 +543,7 @@ function ProjectReviewScreen:set_file_seen_state(mark_as_seen)
     self.diff_view:render()
     self.diff_view:move_to_hunk(nil, hunk_alignment)
   end
+  self._marking = false
 end
 
 function ProjectReviewScreen:mark_file()
@@ -490,13 +555,18 @@ function ProjectReviewScreen:unmark_file()
 end
 
 function ProjectReviewScreen:reset_marks()
+  -- Prevent concurrent mark operations
+  if self._marking then return end
+
   loop.free_textlock()
   local decision = console.input('Reset all marks? (y/N) '):lower()
   if decision ~= 'yes' and decision ~= 'y' then return end
 
+  self._marking = true
   loop.free_textlock()
   self.model:reset_marks()
   self.list_view:render()
+  self._marking = false
 end
 
 function ProjectReviewScreen:toggle_focus()
@@ -513,6 +583,9 @@ function ProjectReviewScreen:toggle_focus()
 end
 
 function ProjectReviewScreen:handle_list_move()
+  -- Skip if we're in the middle of a mark operation
+  if self._marking then return end
+
   local list_item = self.list_view:move()
   if not list_item then return end
 
