@@ -270,7 +270,8 @@ end
 -- Find next hunk matching target_seen_state starting from a specific file/hunk
 -- target_seen_state: true = find seen hunks (for auto-advance after unmarking)
 --                    false = find unseen hunks (for auto-advance after marking)
-function ProjectReviewScreen:move_to_hunk_matching(target_seen_state, mark_key, filename, commit_hash, from_hunk, total_hunks)
+-- next_file: optional {filename, commit_hash} found BEFORE rebuild (to search from correct position)
+function ProjectReviewScreen:move_to_hunk_matching(target_seen_state, mark_key, filename, commit_hash, from_hunk, total_hunks, next_file)
   local hunk_alignment = self.setting:get('hunk_alignment')
   local target_entry_type = target_seen_state and 'seen' or 'unseen'
 
@@ -301,41 +302,25 @@ function ProjectReviewScreen:move_to_hunk_matching(target_seen_state, mark_key, 
     end
   end
 
-  -- All remaining hunks in this file don't match, find next file with matching hunks
-  local component = self.list_view.scene:get('list')
-  local count = component:get_line_count()
-
-  for lnum = 1, count do
-    local item = self.list_view:get_list_item(lnum)
-    if item and item.entry and item.entry.type == target_entry_type and item.entry.status then
-      local full_entry = self.model:get_entry(item.entry.id)
-      if not full_entry then goto continue end
-
-      -- Ensure diff is computed to get content_ids
-      self.model:ensure_hunk_count(full_entry)
-      local next_ctx = self:get_entry_context(full_entry)
-      local next_content_ids = self.model:get_content_ids(full_entry)
-      if #next_content_ids == 0 then goto continue end
-
-      for i, next_content_id in ipairs(next_content_ids) do
-        local is_seen = self.model:is_hunk_seen(next_ctx.mark_key, next_content_id)
-        if is_seen == target_seen_state then
-          loop.free_textlock()
-          component:unlock():set_lnum(lnum):lock()
-          self.model:set_entry_id(item.entry.id)
-          self.diff_view:render()
-          loop.free_textlock()
-          local filtered_idx = self:get_filtered_hunk_index(i)
-          loop.free_textlock()
-          self.diff_view:move_to_hunk(filtered_idx, hunk_alignment)
-          return
-        end
-      end
-      ::continue::
+  -- All remaining hunks in this file don't match, navigate to next file
+  -- Use next_file found before rebuild if available
+  if next_file then
+    local found_entry = self.list_view:move_to_entry(function(e)
+      if e.type ~= target_entry_type then return false end
+      if not e.status or e.status.filename ~= next_file.filename then return false end
+      if next_file.commit_hash and e.commit_hash ~= next_file.commit_hash then return false end
+      return true
+    end)
+    if found_entry then
+      self.model:set_entry_id(found_entry.id)
+      loop.free_textlock()
+      self.diff_view:render()
+      self.diff_view:move_to_hunk(1, hunk_alignment)
+      return
     end
   end
 
-  -- No matching hunks found - fall back to first entry of target type, or stay on current file
+  -- Fallback: find first entry of target type
   local fallback_entry = self.list_view:find_entry(function(e)
     return e.type == target_entry_type
   end)
@@ -395,11 +380,30 @@ function ProjectReviewScreen:mark_hunk()
   local current_commit = ctx.commit_hash
   local current_hunk = hunk_index
 
+  -- Find next unseen file BEFORE rebuilding the list (so we search from correct position)
+  local next_file = nil
+  local found_current = false
+  self.list_view:each_list_item(function(node)
+    if not node.entry or not node.entry.status then return end
+    local item_entry = node.entry
+    if item_entry.type == 'unseen' then
+      local item_filename = item_entry.status.filename
+      local is_current = item_filename == current_filename
+        and (not current_commit or item_entry.commit_hash == current_commit)
+      if found_current and not next_file then
+        next_file = { filename = item_filename, commit_hash = item_entry.commit_hash }
+      end
+      if is_current then
+        found_current = true
+      end
+    end
+  end)
+
   self.model:mark_hunk(ctx.mark_key, content_id)
   self.list_view:render()
 
   -- Navigate to next unmarked hunk using saved context
-  self:move_to_hunk_matching(false, current_mark_key, current_filename, current_commit, current_hunk, total_hunks)
+  self:move_to_hunk_matching(false, current_mark_key, current_filename, current_commit, current_hunk, total_hunks, next_file)
   self._marking = false
 end
 
@@ -435,11 +439,30 @@ function ProjectReviewScreen:unmark_hunk()
   local current_commit = ctx.commit_hash
   local current_hunk = hunk_index
 
+  -- Find next seen file BEFORE rebuilding the list (so we search from correct position)
+  local next_file = nil
+  local found_current = false
+  self.list_view:each_list_item(function(node)
+    if not node.entry or not node.entry.status then return end
+    local item_entry = node.entry
+    if item_entry.type == 'seen' then
+      local item_filename = item_entry.status.filename
+      local is_current = item_filename == current_filename
+        and (not current_commit or item_entry.commit_hash == current_commit)
+      if found_current and not next_file then
+        next_file = { filename = item_filename, commit_hash = item_entry.commit_hash }
+      end
+      if is_current then
+        found_current = true
+      end
+    end
+  end)
+
   self.model:unmark_hunk(ctx.mark_key, content_id)
   self.list_view:render()
 
   -- Navigate to next marked hunk using saved context
-  self:move_to_hunk_matching(true, current_mark_key, current_filename, current_commit, current_hunk, total_hunks)
+  self:move_to_hunk_matching(true, current_mark_key, current_filename, current_commit, current_hunk, total_hunks, next_file)
   self._marking = false
 end
 
