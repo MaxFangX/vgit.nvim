@@ -128,7 +128,7 @@ function Model:fetch(base_branch_arg)
   for _, commit in ipairs(commits) do
     local files = self.state.commit_files[commit.hash] or {}
     for _, file in ipairs(files) do
-      self:preload_diff(commit.hash, file.filename)
+      self:preload_diff(commit.hash, file.filename, file.old_filename)
     end
   end
 
@@ -137,7 +137,7 @@ function Model:fetch(base_branch_arg)
 end
 
 -- Preload diff to populate content_ids cache (for accurate categorization)
-function Model:preload_diff(commit_hash, filename)
+function Model:preload_diff(commit_hash, filename, old_filename)
   local cache_key = make_key(commit_hash, filename)
   if self.state.diffs[cache_key] then return end
 
@@ -148,6 +148,7 @@ function Model:preload_diff(commit_hash, filename)
     parent = parent_hash,
     current = commit_hash,
     filename = filename,
+    old_filename = old_filename,
   })
 
   local hunk_list = hunks or {}
@@ -204,6 +205,7 @@ function Model:rebuild_entries()
           status = status,
           type = 'unseen',
           filename = file.filename,
+          old_filename = file.old_filename,
           commit_hash = commit.hash,
           commit = commit,
         }
@@ -218,6 +220,7 @@ function Model:rebuild_entries()
           status = status,
           type = 'seen',
           filename = file.filename,
+          old_filename = file.old_filename,
           commit_hash = commit.hash,
           commit = commit,
         }
@@ -266,6 +269,7 @@ function Model:get_full_diff(commit_hash, filename)
     parent = parent_hash,
     current = commit_hash,
     filename = filename,
+    old_filename = entry.old_filename,
   })
   if hunks_err then return nil, hunks_err end
 

@@ -103,7 +103,7 @@ function Model:fetch(base_branch_arg)
 
   -- Preload diffs to get content_ids for accurate seen/unseen categorization
   for _, file in ipairs(changed_files) do
-    self:preload_diff(file.filename)
+    self:preload_diff(file.filename, file.old_filename)
   end
 
   self:rebuild_entries()
@@ -111,7 +111,7 @@ function Model:fetch(base_branch_arg)
 end
 
 -- Preload diff to populate content_ids cache (for accurate categorization)
-function Model:preload_diff(filename)
+function Model:preload_diff(filename, old_filename)
   if self.state.diffs[filename] then return end
 
   local reponame = self.state.reponame
@@ -122,6 +122,7 @@ function Model:preload_diff(filename)
     parent = merge_base,
     current = 'HEAD',
     filename = filename,
+    old_filename = old_filename,
   })
 
   local hunk_list = hunks or {}
@@ -170,14 +171,14 @@ function Model:rebuild_entries()
 
     if has_unseen then
       local id = entry_id(file.filename, 'unseen')
-      local data = { id = id, status = status, type = 'unseen', filename = file.filename }
+      local data = { id = id, status = status, type = 'unseen', filename = file.filename, old_filename = file.old_filename }
       self.state.list_entries[id] = data
       unseen_files[#unseen_files + 1] = data
     end
 
     if has_seen then
       local id = entry_id(file.filename, 'seen')
-      local data = { id = id, status = status, type = 'seen', filename = file.filename }
+      local data = { id = id, status = status, type = 'seen', filename = file.filename, old_filename = file.old_filename }
       self.state.list_entries[id] = data
       seen_files[#seen_files + 1] = data
     end
@@ -212,6 +213,7 @@ function Model:get_full_diff(filename)
     parent = merge_base,
     current = 'HEAD',
     filename = filename,
+    old_filename = entry.old_filename,
   })
   if hunks_err then return nil, hunks_err end
 

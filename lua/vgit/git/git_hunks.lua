@@ -101,6 +101,7 @@ function git_hunks.list(reponame, opts)
   local current = opts.current
   local parent = opts.parent
   local filename = opts.filename
+  local old_filename = opts.old_filename  -- For renames: the filename at parent ref
   local empty_hash = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 
   local filenames = opts.filenames
@@ -130,6 +131,12 @@ function git_hunks.list(reponame, opts)
       string.format('%s:%s', current, filename),
       string.format('%s:%s', parent, filename),
     })
+  elseif old_filename and parent and current then
+    -- Renamed file: diff parent:old_filename against current:filename
+    utils.list.concat(args, {
+      string.format('%s:%s', #parent > 0 and parent or empty_hash, old_filename),
+      string.format('%s:%s', current, filename),
+    })
   elseif parent and current then
     utils.list.concat(args, {
       #parent > 0 and parent or empty_hash,
@@ -139,10 +146,13 @@ function git_hunks.list(reponame, opts)
     utils.list.concat(args, { parent })
   end
 
-  utils.list.concat(args, {
-    '--',
-    filename,
-  })
+  -- For renames with explicit blob refs, skip the -- filename part
+  if not (old_filename and parent and current) then
+    utils.list.concat(args, {
+      '--',
+      filename,
+    })
+  end
 
   local lines, err = gitcli.run(args)
 
