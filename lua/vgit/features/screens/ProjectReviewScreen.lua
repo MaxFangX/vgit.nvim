@@ -470,6 +470,29 @@ function ProjectReviewScreen:set_file_seen_state(mark_as_seen)
   local saved_hunk_index, _ = self:get_current_mark_index()
   local hunk_alignment = self.setting:get('hunk_alignment')
 
+  -- Find the next file in the opposite-state section BEFORE rebuilding
+  -- (After rebuild, current file moves to same_state section and we can't find "next")
+  local next_filename, next_commit = nil, nil
+  if current_type == opposite_state_type then
+    local found_current = false
+    self.list_view:each_list_item(function(node)
+      if not node.entry or not node.entry.status then return end
+      local item_entry = node.entry
+      if item_entry.type == opposite_state_type then
+        local item_filename = item_entry.status.filename
+        local is_current = item_filename == current_filename
+          and (not current_commit or item_entry.commit_hash == current_commit)
+        if found_current and not next_filename then
+          next_filename = item_filename
+          next_commit = item_entry.commit_hash
+        end
+        if is_current then
+          found_current = true
+        end
+      end
+    end)
+  end
+
   -- Perform the mark/unmark using mark_key (filename only)
   if mark_as_seen then
     self.model:mark_file(ctx.mark_key)
@@ -496,34 +519,13 @@ function ProjectReviewScreen:set_file_seen_state(mark_as_seen)
     return
   end
 
-  -- We were on opposite state entry - find the next file with opposite state
-  local target_filename, target_commit = nil, nil
-  local found_current = false
-
-  self.list_view:each_list_item(function(node)
-    if not node.entry or not node.entry.status then return end
-    local item_entry = node.entry
-    if item_entry.type == opposite_state_type then
-      local item_filename = item_entry.status.filename
-      local is_current = item_filename == current_filename
-        and (not current_commit or item_entry.commit_hash == current_commit)
-      if found_current and not target_filename then
-        target_filename = item_filename
-        target_commit = item_entry.commit_hash
-      end
-      if is_current then
-        found_current = true
-      end
-    end
-  end)
-
-  -- Navigate to next opposite-state file, or first opposite-state if none after current
+  -- Navigate to next opposite-state file (found before rebuild), or first if none after current
   local found_entry
-  if target_filename then
+  if next_filename then
     found_entry = self.list_view:move_to_entry(function(e)
       if e.type ~= opposite_state_type then return false end
-      if not e.status or e.status.filename ~= target_filename then return false end
-      if target_commit and e.commit_hash ~= target_commit then return false end
+      if not e.status or e.status.filename ~= next_filename then return false end
+      if next_commit and e.commit_hash ~= next_commit then return false end
       return true
     end)
   end
