@@ -79,6 +79,22 @@ function git_branch.exists(reponame, branch_name)
   return err == nil
 end
 
+-- Check if a ref exists (can be local branch, remote-tracking, tag, etc.)
+function git_branch.ref_exists(reponame, ref)
+  if not reponame then return false end
+  if not ref then return false end
+
+  local _, err = gitcli.run({
+    '-C',
+    reponame,
+    'rev-parse',
+    '--verify',
+    ref,
+  })
+
+  return err == nil
+end
+
 -- Get the merge-base between two commits/branches
 function git_branch.merge_base(reponame, ref1, ref2)
   if not reponame then return nil, { 'reponame is required' } end
@@ -99,22 +115,11 @@ function git_branch.merge_base(reponame, ref1, ref2)
 end
 
 -- Try to detect the default branch (main/master)
+-- Prefers origin/<branch> over local branch to avoid issues when local is out of date
 function git_branch.detect_base(reponame)
   if not reponame then return nil, { 'reponame is required' } end
 
-  -- Check if main exists locally
-  local has_main = git_branch.exists(reponame, 'main')
-  local has_master = git_branch.exists(reponame, 'master')
-
-  -- If only one exists, use it
-  if has_main and not has_master then
-    return 'main'
-  end
-  if has_master and not has_main then
-    return 'master'
-  end
-
-  -- If both or neither exist locally, try to detect from remote
+  -- First try to detect from origin/HEAD (most reliable)
   local result, _ = gitcli.run({
     '-C',
     reponame,
@@ -126,8 +131,36 @@ function git_branch.detect_base(reponame)
     -- Result is like "refs/remotes/origin/main"
     local branch = result[1]:match('refs/remotes/origin/(.+)')
     if branch and branch ~= '' then
-      return branch
+      return 'origin/' .. branch
     end
+  end
+
+  -- Fall back to checking for origin/main or origin/master
+  local has_origin_main = git_branch.ref_exists(reponame, 'origin/main')
+  local has_origin_master = git_branch.ref_exists(reponame, 'origin/master')
+
+  if has_origin_main and not has_origin_master then
+    return 'origin/main'
+  end
+  if has_origin_master and not has_origin_main then
+    return 'origin/master'
+  end
+  if has_origin_main then
+    return 'origin/main'
+  end
+
+  -- Last resort: check local branches (for repos without remotes)
+  local has_main = git_branch.exists(reponame, 'main')
+  local has_master = git_branch.exists(reponame, 'master')
+
+  if has_main and not has_master then
+    return 'main'
+  end
+  if has_master and not has_main then
+    return 'master'
+  end
+  if has_main then
+    return 'main'
   end
 
   -- Could not detect (avoid network operations)
