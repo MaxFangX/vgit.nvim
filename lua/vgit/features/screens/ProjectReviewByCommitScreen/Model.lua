@@ -92,16 +92,15 @@ function Model:fetch(base_branch_arg)
   if mb_err then return nil, mb_err end
   self.state.merge_base = merge_base
 
-  -- Get git_dir for persistence
-  local git_dir, git_dir_err = git_repo.dirname()
-  if git_dir_err then git_dir = nil end
+  -- Get repo name for persistence (from origin URL or directory name)
+  local repo_name = git_repo.get_name(reponame)
 
   -- Initialize or restore review state
   self.review_state = ReviewState({
     base_branch = base_branch,
     branch_name = branch_name,
     review_type = self:get_review_type(),
-    git_dir = git_dir,
+    repo_name = repo_name,
   })
   -- Load persisted state from disk (must be called from coroutine context)
   self.review_state:load_from_disk()

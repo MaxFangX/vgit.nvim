@@ -122,4 +122,28 @@ function git_repo.clean(reponame, filename)
   })
 end
 
+-- Get repo name from origin URL, or fall back to directory name
+function git_repo.get_name(reponame)
+  if not reponame then
+    reponame = git_repo.discover()
+    if not reponame then return nil end
+  end
+
+  -- Try to get origin URL
+  local result, _ = gitcli.run({ '-C', reponame, 'config', '--get', 'remote.origin.url' })
+  if result and result[1] and result[1] ~= '' then
+    local url = result[1]
+    -- Extract repo name from URL (handles git@, https://, etc.)
+    -- git@github.com:user/repo.git -> repo
+    -- https://github.com/user/repo.git -> repo
+    -- https://github.com/user/repo -> repo
+    local name = url:match('/([^/]+)%.git$') or url:match(':([^/]+)%.git$')
+      or url:match('/([^/]+)$') or url:match(':([^/]+)$')
+    if name then return name end
+  end
+
+  -- Fall back to directory name
+  return vim.fn.fnamemodify(reponame, ':t')
+end
+
 return git_repo

@@ -60,7 +60,7 @@ function ReviewState:constructor(opts)
     base_branch = opts.base_branch,
     branch_name = opts.branch_name,
     review_type = opts.review_type or 'by_file',
-    git_dir = opts.git_dir,         -- Path to .git directory for persistence
+    repo_name = opts.repo_name,     -- Repo name for persistence (from origin or dir name)
     _loaded = false,                -- Whether state has been loaded from disk
     _skip_persistence = false,      -- Set if user declines to delete corrupted state
   }
@@ -82,18 +82,18 @@ end
 
 -- Load state from disk (call explicitly from coroutine context)
 function ReviewState:load_from_disk()
-  if not self.git_dir or self._loaded then return end
+  if not self.repo_name or self._loaded then return end
   self._loaded = true
 
   -- Escape luv callback context to main Vim loop (required for vim.fn calls)
   loop.free_textlock()
-  local data, err = persistence.load(self.git_dir, self.base_branch, self.branch_name, self.review_type)
+  local data, err = persistence.load(self.repo_name, self.branch_name, self.review_type)
 
   if err then
-    local path = persistence.get_state_path(self.git_dir, self.base_branch, self.branch_name, self.review_type)
+    local path = persistence.get_state_path(self.repo_name, self.branch_name, self.review_type)
     local should_delete = persistence.handle_load_error(path, err)
     if should_delete then
-      persistence.delete(self.git_dir, self.base_branch, self.branch_name, self.review_type)
+      persistence.delete(self.repo_name, self.branch_name, self.review_type)
     else
       self._skip_persistence = true -- Don't overwrite
     end
@@ -252,7 +252,7 @@ end
 
 -- Save state to disk (position is session-only, not persisted)
 function ReviewState:save()
-  if not self.git_dir or self._skip_persistence then return end
+  if not self.repo_name or self._skip_persistence then return end
 
   -- Escape luv callback context to main Vim loop (required for vim.fn calls)
   loop.free_textlock()
@@ -262,7 +262,7 @@ function ReviewState:save()
     hunkCounts = state.hunk_counts,
     contentIds = state.content_ids,
   }
-  persistence.save(self.git_dir, self.base_branch, self.branch_name, self.review_type, data)
+  persistence.save(self.repo_name, self.branch_name, self.review_type, data)
 end
 
 return ReviewState

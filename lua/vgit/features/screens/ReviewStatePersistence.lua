@@ -5,7 +5,9 @@ local loop = require('vgit.core.loop')
 --[[
   ReviewStatePersistence handles disk I/O for review state.
 
-  Storage location: <repo>/.git/vgit/review-states/<base>/<branch>/<type>.json
+  Storage location: $XDG_DATA_HOME/vgit/<repo>/<branch>/<type>.json
+  (default: ~/.local/share/vgit/<repo>/<branch>/<type>.json)
+
   Branch names with / are encoded as -- (e.g., feature/foo -> feature--foo)
 
   Features:
@@ -18,7 +20,15 @@ local ReviewStatePersistence = {}
 
 local CURRENT_VERSION = 1
 local MAX_STATES = 16
-local STATE_DIR = 'vgit/review-states'
+
+-- Get XDG data home directory
+local function get_data_home()
+  local xdg = os.getenv('XDG_DATA_HOME')
+  if xdg and xdg ~= '' then
+    return xdg
+  end
+  return vim.fn.expand('~/.local/share')
+end
 
 -- Encode branch name for filesystem (/ -> --)
 local function encode_branch(name)
@@ -26,14 +36,14 @@ local function encode_branch(name)
 end
 
 -- Get state directory path for a repo
-function ReviewStatePersistence.get_state_dir(git_dir)
-  return git_dir .. '/' .. STATE_DIR
+function ReviewStatePersistence.get_state_dir(repo_name)
+  return get_data_home() .. '/vgit/' .. repo_name
 end
 
--- Get state file path for a (base, branch, review_type) tuple
-function ReviewStatePersistence.get_state_path(git_dir, base_branch, branch_name, review_type)
-  local dir = ReviewStatePersistence.get_state_dir(git_dir)
-  return dir .. '/' .. encode_branch(base_branch) .. '/' .. encode_branch(branch_name) .. '/' .. review_type .. '.json'
+-- Get state file path for a (repo, branch, review_type) tuple
+function ReviewStatePersistence.get_state_path(repo_name, branch_name, review_type)
+  local dir = ReviewStatePersistence.get_state_dir(repo_name)
+  return dir .. '/' .. encode_branch(branch_name) .. '/' .. review_type .. '.json'
 end
 
 -- Ensure state directory exists
@@ -79,8 +89,8 @@ end
 
 -- Load state from disk
 -- Returns: state_data or nil, error_message or nil
-function ReviewStatePersistence.load(git_dir, base_branch, branch_name, review_type)
-  local path = ReviewStatePersistence.get_state_path(git_dir, base_branch, branch_name, review_type)
+function ReviewStatePersistence.load(repo_name, branch_name, review_type)
+  local path = ReviewStatePersistence.get_state_path(repo_name, branch_name, review_type)
 
   if not fs.exists(path) then
     return nil, nil -- No existing state (not an error)
@@ -104,11 +114,11 @@ function ReviewStatePersistence.load(git_dir, base_branch, branch_name, review_t
 end
 
 -- Save state to disk
-function ReviewStatePersistence.save(git_dir, base_branch, branch_name, review_type, state_data)
-  local path = ReviewStatePersistence.get_state_path(git_dir, base_branch, branch_name, review_type)
-  local state_dir = ReviewStatePersistence.get_state_dir(git_dir)
+function ReviewStatePersistence.save(repo_name, branch_name, review_type, state_data)
+  local path = ReviewStatePersistence.get_state_path(repo_name, branch_name, review_type)
+  local state_dir = ReviewStatePersistence.get_state_dir(repo_name)
 
-  -- Ensure full directory path exists (base/branch subdirs)
+  -- Ensure full directory path exists (branch subdirs)
   ensure_dir(fs.dirname(path))
 
   -- Check if this is a new state file
@@ -120,7 +130,6 @@ function ReviewStatePersistence.save(git_dir, base_branch, branch_name, review_t
   -- Add metadata
   state_data.version = CURRENT_VERSION
   state_data.lastUsed = os.time()
-  state_data.baseBranch = base_branch
   state_data.branchName = branch_name
 
   local json = vim.fn.json_encode(state_data)
@@ -129,8 +138,8 @@ function ReviewStatePersistence.save(git_dir, base_branch, branch_name, review_t
 end
 
 -- Delete state file
-function ReviewStatePersistence.delete(git_dir, base_branch, branch_name, review_type)
-  local path = ReviewStatePersistence.get_state_path(git_dir, base_branch, branch_name, review_type)
+function ReviewStatePersistence.delete(repo_name, branch_name, review_type)
+  local path = ReviewStatePersistence.get_state_path(repo_name, branch_name, review_type)
   if fs.exists(path) then
     fs.remove_file(path)
   end
