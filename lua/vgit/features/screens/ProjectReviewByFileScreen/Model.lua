@@ -69,6 +69,9 @@ function Model:fetch(base_branch_arg)
   if branch_err then return nil, branch_err end
   self.state.branch_name = branch_name
 
+  -- Async fetch if stale — notifies user to reopen if base was updated
+  git_branch.fetch_ref_if_stale(reponame, base_branch)
+
   -- Get merge-base
   local merge_base, mb_err = git_branch.merge_base(reponame, base_branch, 'HEAD')
   if mb_err then return nil, mb_err end
@@ -128,10 +131,13 @@ function Model:preload_diff(filename, old_filename)
   local count = #hunk_list > 0 and #hunk_list or 1
   self:set_hunk_count(filename, count)
 
-  -- Compute and persist content_ids
+  -- Fetch file content for context
+  local lines = git_show.lines(reponame, filename, 'HEAD') or {}
+
+  -- Compute and persist content_ids (5-line context disambiguates identical hunks in same file)
   local content_ids = {}
   for _, hunk in ipairs(hunk_list) do
-    content_ids[#content_ids + 1] = hunk:get_content_id()
+    content_ids[#content_ids + 1] = hunk:get_content_id(lines, 5)
   end
   if #content_ids == 0 then
     content_ids[1] = 'empty'
@@ -231,9 +237,10 @@ function Model:get_full_diff(filename)
   self:set_hunk_count(filename, count)
 
   -- Compute content_ids for each hunk (for content-based mark persistence)
+  -- 5-line context disambiguates identical hunks in same file
   local content_ids = {}
   for _, hunk in ipairs(hunk_list) do
-    content_ids[#content_ids + 1] = hunk:get_content_id()
+    content_ids[#content_ids + 1] = hunk:get_content_id(lines, 5)
   end
   -- For empty/binary files, use a single 'empty' content_id
   if #content_ids == 0 then

@@ -114,6 +114,43 @@ function git_branch.merge_base(reponame, ref1, ref2)
   return result[1]
 end
 
+-- Track fetch state per repo
+local fetch_state = {}  -- { last_success = timestamp, in_progress = bool }
+
+-- Async fetch a remote ref if last fetch was over an hour ago.
+-- Shows a notification when done so user knows to reopen the view.
+function git_branch.fetch_ref_if_stale(reponame, ref)
+  if not reponame or not ref then return end
+
+  local remote, branch = ref:match('^([^/]+)/(.+)$')
+  if not remote or not branch then return end
+
+  local state = fetch_state[reponame] or {}
+  fetch_state[reponame] = state
+
+  -- Skip if fetch in progress or succeeded within the last hour
+  if state.in_progress then return end
+  if state.last_success and (os.time() - state.last_success) < 3600 then return end
+
+  state.in_progress = true
+
+  vim.loop.spawn('git', {
+    args = { '-C', reponame, 'fetch', remote, branch },
+    stdio = { nil, nil, nil },
+  }, function(code)
+    state.in_progress = false
+    if code == 0 then
+      state.last_success = os.time()
+      vim.schedule(function()
+        vim.notify(
+          string.format('Fetched %s/%s — reopen to see updated diff', remote, branch),
+          vim.log.levels.INFO
+        )
+      end)
+    end
+  end)
+end
+
 -- Try to detect the default branch (main/master)
 -- Prefers origin/<branch> over local branch to avoid issues when local is out of date
 function git_branch.detect_base(reponame)
