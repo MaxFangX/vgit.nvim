@@ -214,18 +214,20 @@ function ReviewState:clear_content_ids()
 end
 
 -- Store last viewed file for re-entry fallback (when current buffer is not in review)
-function ReviewState:save_position(section, filename)
+-- commit_message: first line of commit message (stable across rebases, unlike hash)
+function ReviewState:save_position(section, filename, commit_message)
   local state = get_state(self)
   state.position = {
     section = section,
     filename = filename,
+    commit_message = commit_message,
   }
 end
 
 -- Get last viewed file for re-entry fallback
 function ReviewState:get_position()
   local pos = get_state(self).position
-  return pos.section or 'unseen', pos.filename
+  return pos.section or 'unseen', pos.filename, pos.commit_message
 end
 
 -- Store hunk count for an entry

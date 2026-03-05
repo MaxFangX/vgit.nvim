@@ -90,11 +90,12 @@ end
 
 -- Like find_status but passes the full entry (with commit_hash, etc.)
 function BaseListView:find_entry(callback)
-  return self:find_list_item(function(node, lnum)
+  local node, lnum = self:find_list_item(function(node, lnum)
     local entry = node.entry
     if not entry or not entry.status then return false end
     return callback(entry, lnum) == true
   end)
+  if node then return node.entry, lnum end
 end
 
 function BaseListView:each_status(callback)

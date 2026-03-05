@@ -79,6 +79,7 @@ function StatusFolds:create_node(entry)
       entry = entry,
       value = entry.current,
       metadata = self.metadata,
+      node_type = 'file',
       virtual_text = {
         before = {
           text = status.value,
@@ -103,6 +104,7 @@ function StatusFolds:create_node(entry)
     entry = entry,
     value = entry.current,
     metadata = self.metadata,
+    node_type = 'folder',
     icon_before = function(item)
       return { icon = item.open and '' or '' }
     end,
