@@ -39,6 +39,13 @@ function ProjectReviewScreen:constructor(opts)
   }
 end
 
+-- Update commit message view if present (scheduled to escape fast event context)
+function ProjectReviewScreen:update_commit_message()
+  if not self.commit_message_view then return end
+  local view = self.commit_message_view
+  vim.schedule(function() view:render() end)
+end
+
 -- Initialize views (called by subclass after setting model and setting)
 function ProjectReviewScreen:init_views(list_plot, diff_plot)
   local model = self.model
@@ -275,6 +282,7 @@ function ProjectReviewScreen:navigate_commit_aware(direction)
   if target_info.commit_hash ~= active_hash or target_info.section ~= active_section then
     self.list_view:set_active_commit(target_info.commit_hash, target_info.section)
     self.list_view:render()
+    self:update_commit_message()
   end
 
   -- Navigate to the specific target file, expanding folders if needed
@@ -496,6 +504,7 @@ function ProjectReviewScreen:move_to_entry_expanding_commit(filename, commit_has
               -- Expand this commit and re-render
               if self.list_view:set_active_commit(commit_data.commit.hash, section.title) then
                 self.list_view:render()
+                self:update_commit_message()
               end
               -- Now find and move to the entry
               return self.list_view:move_to_entry(function(e)
@@ -926,6 +935,7 @@ function ProjectReviewScreen:update_commit_expansion(list_item, direction)
   if self.list_view:set_active_commit(target_hash, target_section) then
     self._navigating = true
     self:rerender_list_preserving_cursor(list_item)
+    self:update_commit_message()
 
     -- If on a commit header after expansion and going UP, move to last line
     -- (For DOWN, stay on header so next down goes to first line naturally)
@@ -993,6 +1003,7 @@ function ProjectReviewScreen:ensure_visible_file()
         local first_commit = section.commits[1].commit
         self.list_view:set_active_commit(first_commit.hash, section.title)
         self.list_view:render()
+        self:update_commit_message()
         return
       elseif not fallback_commit then
         fallback_section = section
@@ -1005,6 +1016,7 @@ function ProjectReviewScreen:ensure_visible_file()
   if fallback_commit then
     self.list_view:set_active_commit(fallback_commit.hash, fallback_section.title)
     self.list_view:render()
+    self:update_commit_message()
   end
 end
 
@@ -1343,6 +1355,9 @@ function ProjectReviewScreen:create(args)
   self.app_bar_view:define()
   self.diff_view:define()
   self.list_view:define()
+  if self.commit_message_view then
+    self.commit_message_view:define()
+  end
 
   self.diff_view:mount()
   self.app_bar_view:mount()
@@ -1356,10 +1371,16 @@ function ProjectReviewScreen:create(args)
       end,
     },
   })
+  if self.commit_message_view then
+    self.commit_message_view:mount()
+  end
 
   self.diff_view:render()
   self.app_bar_view:render()
   self.list_view:render()
+  if self.commit_message_view then
+    self.commit_message_view:render()
+  end
 
   self:setup_keymaps()
   self:ensure_visible_file()

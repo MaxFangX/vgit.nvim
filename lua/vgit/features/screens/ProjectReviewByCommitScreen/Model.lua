@@ -23,6 +23,7 @@ function Model:constructor(opts)
   local base = BaseReviewModel.constructor(self, opts)
   base.state.commits = {}
   base.state.commit_files = {} -- Cache: commit_hash -> files array
+  base.state.commit_messages = {} -- Cache: commit_hash -> message lines
   return base
 end
 
@@ -38,6 +39,7 @@ function Model:reset()
     list_entries = {},
     commits = {},
     commit_files = {},
+    commit_messages = {},
     hunk_counts = {},
     layout_type = self.state.layout_type,
   }
@@ -120,6 +122,11 @@ function Model:fetch(base_branch_arg)
   end
 
   self.state.commits = commits
+
+  -- Preload commit messages (avoids async issues during render)
+  for _, commit in ipairs(commits) do
+    self:get_commit_message(commit.hash)
+  end
 
   -- Cache commit files in a single git command (batched for performance)
   local all_files, files_err = git_branch.all_commit_files(reponame, merge_base, 'HEAD')
@@ -252,6 +259,21 @@ function Model:rebuild_entries()
   end
 
   self.state.entries = entries
+end
+
+-- Get the full commit message for a commit (cached)
+function Model:get_commit_message(commit_hash)
+  if not commit_hash then return nil end
+
+  if self.state.commit_messages[commit_hash] then
+    return self.state.commit_messages[commit_hash]
+  end
+
+  local lines, err = git_show.commit_message(self.state.reponame, commit_hash)
+  if err then return nil end
+
+  self.state.commit_messages[commit_hash] = lines
+  return lines
 end
 
 -- Get or create the full (unfiltered) diff for a commit+file
