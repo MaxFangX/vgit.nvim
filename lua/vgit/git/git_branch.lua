@@ -118,7 +118,7 @@ end
 local fetch_state = {}  -- { last_success = timestamp, in_progress = bool }
 
 -- Async fetch a remote ref if last fetch was over an hour ago.
--- Shows a notification when done so user knows to reopen the view.
+-- Shows a notification only if the ref was actually updated.
 function git_branch.fetch_ref_if_stale(reponame, ref)
   if not reponame or not ref then return end
 
@@ -134,20 +134,57 @@ function git_branch.fetch_ref_if_stale(reponame, ref)
 
   state.in_progress = true
 
+  -- Get current SHA before fetch
+  local old_sha_chunks = {}
+  local sha_stdout = vim.loop.new_pipe(false)
   vim.loop.spawn('git', {
-    args = { '-C', reponame, 'fetch', remote, branch },
-    stdio = { nil, nil, nil },
-  }, function(code)
-    state.in_progress = false
-    if code == 0 then
-      state.last_success = os.time()
-      vim.schedule(function()
-        vim.notify(
-          string.format('Fetched %s/%s — reopen to see updated diff', remote, branch),
-          vim.log.levels.INFO
-        )
-      end)
-    end
+    args = { '-C', reponame, 'rev-parse', ref },
+    stdio = { nil, sha_stdout, nil },
+  }, function()
+    sha_stdout:read_stop()
+    if not sha_stdout:is_closing() then sha_stdout:close() end
+
+    local old_sha = table.concat(old_sha_chunks):gsub('%s+', '')
+
+    -- Now fetch
+    vim.loop.spawn('git', {
+      args = { '-C', reponame, 'fetch', remote, branch },
+      stdio = { nil, nil, nil },
+    }, function(code)
+      state.in_progress = false
+      if code == 0 then
+        state.last_success = os.time()
+
+        -- Get new SHA after fetch
+        local new_sha_chunks = {}
+        local new_sha_stdout = vim.loop.new_pipe(false)
+        vim.loop.spawn('git', {
+          args = { '-C', reponame, 'rev-parse', ref },
+          stdio = { nil, new_sha_stdout, nil },
+        }, function()
+          new_sha_stdout:read_stop()
+          if not new_sha_stdout:is_closing() then new_sha_stdout:close() end
+
+          local new_sha = table.concat(new_sha_chunks):gsub('%s+', '')
+
+          -- Only notify if ref actually changed
+          if old_sha ~= new_sha then
+            vim.schedule(function()
+              vim.notify(
+                string.format('Fetched %s/%s — reopen to see updated diff', remote, branch),
+                vim.log.levels.INFO
+              )
+            end)
+          end
+        end)
+        new_sha_stdout:read_start(function(_, chunk)
+          if chunk then new_sha_chunks[#new_sha_chunks + 1] = chunk end
+        end)
+      end
+    end)
+  end)
+  sha_stdout:read_start(function(_, chunk)
+    if chunk then old_sha_chunks[#old_sha_chunks + 1] = chunk end
   end)
 end
 
