@@ -3,6 +3,10 @@ local StatusFolds = require('vgit.ui.views.StatusListView.StatusFolds')
 
 local StatusListView = BaseListView:extend()
 
+function StatusListView:get_entries()
+  return self.props.entries()
+end
+
 function StatusListView:render()
   local entries = self.props.entries()
 

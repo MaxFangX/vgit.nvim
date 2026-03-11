@@ -272,17 +272,20 @@ function ProjectReviewScreen:navigate_commit_aware(direction)
     or (direction == 'prev' and target_idx > current_idx)
 
   local target_info = all_files[target_idx]
-  local active = self.list_view:get_active_commit()
-  local active_hash = active and active.hash
-  local active_section = active and active.section
 
   self._navigating = true
 
-  -- Change active commit if needed (check both hash and section)
-  if target_info.commit_hash ~= active_hash or target_info.section ~= active_section then
-    self.list_view:set_active_commit(target_info.commit_hash, target_info.section)
-    self.list_view:render()
-    self:update_commit_message()
+  -- Change active commit if needed (by-commit mode only)
+  if self.list_view.get_active_commit then
+    local active = self.list_view:get_active_commit()
+    local active_hash = active and active.hash
+    local active_section = active and active.section
+
+    if target_info.commit_hash ~= active_hash or target_info.section ~= active_section then
+      self.list_view:set_active_commit(target_info.commit_hash, target_info.section)
+      self.list_view:render()
+      self:update_commit_message()
+    end
   end
 
   -- Navigate to the specific target file, expanding folders if needed
@@ -393,9 +396,29 @@ end
 function ProjectReviewScreen:build_logical_file_list(entries)
   local files = {}
   for _, section in ipairs(entries) do
-    for _, commit_data in ipairs(section.commits or {}) do
+    -- Handle by-commit structure: section.commits
+    if section.commits then
+      for _, commit_data in ipairs(section.commits) do
+        local sorted = {}
+        for _, file in ipairs(commit_data.files or {}) do
+          sorted[#sorted + 1] = file
+        end
+        table.sort(sorted, function(a, b)
+          return compare_paths(a.status.filename, b.status.filename)
+        end)
+
+        for _, file in ipairs(sorted) do
+          files[#files + 1] = {
+            section = section.title,
+            commit_hash = commit_data.commit.hash,
+            file = file,
+          }
+        end
+      end
+    -- Handle by-file structure: section.entries
+    elseif section.entries then
       local sorted = {}
-      for _, file in ipairs(commit_data.files or {}) do
+      for _, file in ipairs(section.entries) do
         sorted[#sorted + 1] = file
       end
       table.sort(sorted, function(a, b)
@@ -405,7 +428,7 @@ function ProjectReviewScreen:build_logical_file_list(entries)
       for _, file in ipairs(sorted) do
         files[#files + 1] = {
           section = section.title,
-          commit_hash = commit_data.commit.hash,
+          commit_hash = nil,
           file = file,
         }
       end
@@ -494,25 +517,37 @@ function ProjectReviewScreen:move_to_entry_expanding_commit(filename, commit_has
     return not commit_hash or commit.hash == commit_hash
   end
 
-  -- Find which commit contains this file
   for _, section in ipairs(entries) do
     if not entry_type or section.title:lower() == entry_type then
-      for _, commit_data in ipairs(section.commits or {}) do
-        if commit_matches(commit_data.commit) then
-          for _, file in ipairs(commit_data.files or {}) do
-            if file.status.filename == filename then
-              -- Expand this commit and re-render
-              if self.list_view:set_active_commit(commit_data.commit.hash, section.title) then
-                self.list_view:render()
-                self:update_commit_message()
+      -- Handle by-commit structure: section.commits
+      if section.commits then
+        for _, commit_data in ipairs(section.commits) do
+          if commit_matches(commit_data.commit) then
+            for _, file in ipairs(commit_data.files or {}) do
+              if file.status.filename == filename then
+                -- Expand this commit and re-render
+                if self.list_view:set_active_commit(commit_data.commit.hash, section.title) then
+                  self.list_view:render()
+                  self:update_commit_message()
+                end
+                -- Now find and move to the entry
+                return self.list_view:move_to_entry(function(e)
+                  return (not entry_type or e.type == entry_type)
+                    and e.status.filename == filename
+                    and e.commit_hash == commit_data.commit.hash
+                end)
               end
-              -- Now find and move to the entry
-              return self.list_view:move_to_entry(function(e)
-                return (not entry_type or e.type == entry_type)
-                  and e.status.filename == filename
-                  and e.commit_hash == commit_data.commit.hash
-              end)
             end
+          end
+        end
+      -- Handle by-file structure: section.entries
+      elseif section.entries then
+        for _, file in ipairs(section.entries) do
+          if file.status.filename == filename then
+            return self.list_view:move_to_entry(function(e)
+              return (not entry_type or e.type == entry_type)
+                and e.status.filename == filename
+            end)
           end
         end
       end
