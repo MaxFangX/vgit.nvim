@@ -1,9 +1,11 @@
 local Diff = require('vgit.core.Diff')
 local loop = require('vgit.core.loop')
+local gitcli = require('vgit.git.gitcli')
 local git_repo = require('vgit.git.git_repo')
 local git_show = require('vgit.git.git_show')
 local git_hunks = require('vgit.git.git_hunks')
 local git_branch = require('vgit.git.git_branch')
+local git_setting = require('vgit.settings.git')
 local ReviewState = require('vgit.features.screens.ReviewState')
 local BaseReviewModel = require('vgit.features.screens.BaseReviewModel')
 
@@ -133,16 +135,114 @@ function Model:fetch(base_branch_arg)
   if files_err then return nil, files_err end
   self.state.commit_files = all_files or {}
 
-  -- Preload diffs to get content_ids for accurate seen/unseen categorization
-  for _, commit in ipairs(commits) do
-    local files = self.state.commit_files[commit.hash] or {}
-    for _, file in ipairs(files) do
-      self:preload_diff(commit.hash, file.filename, file.old_filename)
-    end
-  end
+  -- Preload diffs in parallel for content_ids
+  self:preload_diffs_parallel(commits)
 
   self:rebuild_entries()
   return self.state.entries
+end
+
+-- Build git diff args for a single file (mirrors git_hunks.list logic)
+local function build_diff_args(reponame, commit_hash, filename, old_filename)
+  local parent_hash = commit_hash .. '^'
+  local args = {
+    '-C', reponame,
+    '--no-pager',
+    '-c', 'core.safecrlf=false',
+    'diff',
+    '--color=never',
+    string.format('--diff-algorithm=%s', git_setting:get('algorithm')),
+    '--patch-with-raw',
+    '--unified=0',
+  }
+
+  if old_filename then
+    -- Renamed file: diff parent:old_filename against current:filename
+    args[#args + 1] = string.format('%s:%s', parent_hash, old_filename)
+    args[#args + 1] = string.format('%s:%s', commit_hash, filename)
+  else
+    args[#args + 1] = parent_hash
+    args[#args + 1] = commit_hash
+    args[#args + 1] = '--'
+    args[#args + 1] = filename
+  end
+
+  return args
+end
+
+-- Build git show args for file content
+local function build_show_args(reponame, commit_hash, filename)
+  return {
+    '-C', reponame,
+    'show',
+    string.format('%s:%s', commit_hash, filename),
+  }
+end
+
+
+-- Preload all diffs in parallel
+function Model:preload_diffs_parallel(commits)
+  local reponame = self.state.reponame
+
+  -- Collect all files to preload
+  local jobs = {}
+  for _, commit in ipairs(commits) do
+    local files = self.state.commit_files[commit.hash] or {}
+    for _, file in ipairs(files) do
+      local cache_key = make_key(commit.hash, file.filename)
+      if not self.state.diffs[cache_key] then
+        jobs[#jobs + 1] = {
+          commit_hash = commit.hash,
+          filename = file.filename,
+          old_filename = file.old_filename,
+          cache_key = cache_key,
+        }
+      end
+    end
+  end
+
+  if #jobs == 0 then return 0 end
+
+  -- Build all git commands (2 per file: diff + show)
+  local commands = {}
+  for _, job in ipairs(jobs) do
+    commands[#commands + 1] = build_diff_args(reponame, job.commit_hash, job.filename, job.old_filename)
+    commands[#commands + 1] = build_show_args(reponame, job.commit_hash, job.filename)
+  end
+
+  -- Run all commands in parallel
+  local results = gitcli.run_parallel(commands)
+
+  -- Process results (pairs of diff + show for each job)
+  for i, job in ipairs(jobs) do
+    local diff_idx = (i - 1) * 2 + 1
+    local show_idx = (i - 1) * 2 + 2
+
+    local diff_result = results[diff_idx]
+    local show_result = results[show_idx]
+
+    local hunk_list = {}
+    if diff_result and diff_result.result then
+      hunk_list = git_hunks.parse(diff_result.result)
+    end
+
+    local count = #hunk_list > 0 and #hunk_list or 1
+    self:set_hunk_count(job.cache_key, count)
+
+    local file_lines = (show_result and show_result.result) or {}
+
+    -- Compute content_ids
+    local content_ids = {}
+    for _, hunk in ipairs(hunk_list) do
+      content_ids[#content_ids + 1] = hunk:get_content_id(file_lines, 5)
+    end
+    if #content_ids == 0 then
+      content_ids[1] = 'empty'
+    end
+    self.review_state:set_content_ids(job.cache_key, content_ids)
+  end
+
+  return #jobs
 end
 
 -- Preload diff to populate content_ids cache (for accurate categorization)

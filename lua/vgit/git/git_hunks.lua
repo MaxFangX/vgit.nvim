@@ -6,6 +6,20 @@ local git_setting = require('vgit.settings.git')
 
 local git_hunks = {}
 
+-- Parse raw diff output lines into GitHunk objects
+function git_hunks.parse(lines)
+  local result = {}
+  for i = 1, #lines do
+    local line = lines[i]
+    if vim.startswith(line, '@@') then
+      result[#result + 1] = GitHunk(line)
+    elseif #result > 0 then
+      result[#result]:push(line)
+    end
+  end
+  return result
+end
+
 function git_hunks.live(reponame, original_lines, current_lines)
   local lines_limit = 5000
 
@@ -155,21 +169,7 @@ function git_hunks.list(reponame, opts)
   end
 
   local lines, err = gitcli.run(args)
-
-  local result = {}
-  for i = 1, #lines do
-    local line = lines[i]
-    if vim.startswith(line, '@@') then
-      result[#result + 1] = GitHunk(line)
-    else
-      if #result > 0 then
-        local hunk = result[#result]
-        hunk:push(line)
-      end
-    end
-  end
-
-  return result, err
+  return git_hunks.parse(lines), err
 end
 
 return git_hunks

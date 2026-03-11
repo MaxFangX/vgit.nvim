@@ -1,9 +1,11 @@
 local Diff = require('vgit.core.Diff')
 local loop = require('vgit.core.loop')
+local gitcli = require('vgit.git.gitcli')
 local git_repo = require('vgit.git.git_repo')
 local git_show = require('vgit.git.git_show')
 local git_hunks = require('vgit.git.git_hunks')
 local git_branch = require('vgit.git.git_branch')
+local git_setting = require('vgit.settings.git')
 local ReviewState = require('vgit.features.screens.ReviewState')
 local BaseReviewModel = require('vgit.features.screens.BaseReviewModel')
 
@@ -103,13 +105,106 @@ function Model:fetch(base_branch_arg)
 
   self.state.changed_files = changed_files
 
-  -- Preload diffs to get content_ids for accurate seen/unseen categorization
-  for _, file in ipairs(changed_files) do
-    self:preload_diff(file.filename, file.old_filename)
-  end
+  -- Preload diffs in parallel to get content_ids for accurate categorization
+  self:preload_diffs_parallel(changed_files)
 
   self:rebuild_entries()
   return self.state.entries
+end
+
+-- Build git diff args for a single file
+local function build_diff_args(reponame, merge_base, filename, old_filename)
+  local args = {
+    '-C', reponame,
+    '--no-pager',
+    '-c', 'core.safecrlf=false',
+    'diff',
+    '--color=never',
+    string.format('--diff-algorithm=%s', git_setting:get('algorithm')),
+    '--patch-with-raw',
+    '--unified=0',
+  }
+
+  if old_filename then
+    -- Renamed file: diff merge_base:old_filename against HEAD:filename
+    args[#args + 1] = string.format('%s:%s', merge_base, old_filename)
+    args[#args + 1] = string.format('%s:%s', 'HEAD', filename)
+  else
+    args[#args + 1] = merge_base
+    args[#args + 1] = 'HEAD'
+    args[#args + 1] = '--'
+    args[#args + 1] = filename
+  end
+
+  return args
+end
+
+-- Build git show args for file content
+local function build_show_args(reponame, filename)
+  return {
+    '-C', reponame,
+    'show',
+    string.format('%s:%s', 'HEAD', filename),
+  }
+end
+
+
+-- Preload all diffs in parallel
+function Model:preload_diffs_parallel(changed_files)
+  local reponame = self.state.reponame
+  local merge_base = self.state.merge_base
+
+  -- Collect all files to preload
+  local jobs = {}
+  for _, file in ipairs(changed_files) do
+    if not self.state.diffs[file.filename] then
+      jobs[#jobs + 1] = {
+        filename = file.filename,
+        old_filename = file.old_filename,
+      }
+    end
+  end
+
+  if #jobs == 0 then return end
+
+  -- Build all git commands (2 per file: diff + show)
+  local commands = {}
+  for _, job in ipairs(jobs) do
+    commands[#commands + 1] = build_diff_args(reponame, merge_base, job.filename, job.old_filename)
+    commands[#commands + 1] = build_show_args(reponame, job.filename)
+  end
+
+  -- Run all commands in parallel
+  local results = gitcli.run_parallel(commands)
+
+  -- Process results (pairs of diff + show for each job)
+  for i, job in ipairs(jobs) do
+    local diff_idx = (i - 1) * 2 + 1
+    local show_idx = (i - 1) * 2 + 2
+
+    local diff_result = results[diff_idx]
+    local show_result = results[show_idx]
+
+    local hunk_list = {}
+    if diff_result and diff_result.result then
+      hunk_list = git_hunks.parse(diff_result.result)
+    end
+
+    local count = #hunk_list > 0 and #hunk_list or 1
+    self:set_hunk_count(job.filename, count)
+
+    local file_lines = (show_result and show_result.result) or {}
+
+    -- Compute content_ids
+    local content_ids = {}
+    for _, hunk in ipairs(hunk_list) do
+      content_ids[#content_ids + 1] = hunk:get_content_id(file_lines, 5)
+    end
+    if #content_ids == 0 then
+      content_ids[1] = 'empty'
+    end
+    self.review_state:set_content_ids(job.filename, content_ids)
+  end
 end
 
 -- Preload diff to populate content_ids cache (for accurate categorization)
