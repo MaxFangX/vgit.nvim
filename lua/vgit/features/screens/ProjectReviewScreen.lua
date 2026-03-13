@@ -929,8 +929,10 @@ function ProjectReviewScreen:toggle_focus()
     local hunk_alignment = self.setting:get('hunk_alignment')
     diff_component:focus()
     self.diff_view:move_to_hunk(1, hunk_alignment)
+    self._current_focus = 'diff'
   else
     list_component:focus()
+    self._current_focus = 'list'
   end
 end
 
@@ -1421,9 +1423,22 @@ function ProjectReviewScreen:create(args)
   self:ensure_visible_file()
   local found_current_buffer = self:focus_relative_buffer_entry(buffer)
   self:handle_list_move()
-  self:toggle_focus()
 
-  -- Position cursor at source file line (must be after toggle_focus which resets to first hunk)
+  -- Set focus explicitly based on saved state (default to diff for bias towards action)
+  -- Don't use toggle_focus() here since commit_message_view may have stolen focus during mount
+  local review_state = self.model:get_review_state()
+  local _, _, _, saved_focus = review_state:get_position()
+  if saved_focus == 'list' then
+    self.scene:get('list'):focus()
+    self._current_focus = 'list'
+  else
+    local hunk_alignment = self.setting:get('hunk_alignment')
+    self.scene:get('current'):focus()
+    self.diff_view:move_to_hunk(1, hunk_alignment)
+    self._current_focus = 'diff'
+  end
+
+  -- Position cursor at source file line (must be after focus logic which resets to first hunk)
   if found_current_buffer then
     vim.schedule(function()
       self.diff_view:set_source_lnum(source_cursor_lnum, source_cursor_col, source_winline)
@@ -1437,15 +1452,15 @@ function ProjectReviewScreen:create(args)
 end
 
 function ProjectReviewScreen:on_quit()
-  local diff_component = self.scene:get('current')
-  local is_diff_focused = diff_component:is_focused()
+  local focus = self._current_focus or 'diff'
+  local is_diff_focused = focus == 'diff'
 
   -- Always save state, regardless of which component is focused
   local entry = self.model:get_entry()
   local review_state = self.model:get_review_state()
   if review_state and entry then
     local commit_message = entry.commit and entry.commit.message or nil
-    review_state:save_position(entry.type, entry.filename, commit_message)
+    review_state:save_position(entry.type, entry.filename, commit_message, focus)
   end
   if review_state then
     review_state:save()
@@ -1493,6 +1508,22 @@ function ProjectReviewScreen:on_quit()
 end
 
 function ProjectReviewScreen:destroy()
+  -- Save review state before destroying (handles :q, window close, etc.)
+  -- Use pcall since destroy may be called from various contexts
+  local current_focus = self._current_focus
+  pcall(function()
+    local entry = self.model:get_entry()
+    local review_state = self.model:get_review_state()
+    if review_state and entry then
+      local focus = current_focus or 'diff'
+      local commit_message = entry.commit and entry.commit.message or nil
+      review_state:save_position(entry.type, entry.filename, commit_message, focus)
+    end
+    if review_state then
+      review_state:save()
+    end
+  end)
+
   loop.close_debounced_handlers(self.diff_keymaps)
   self.diff_keymaps = {}
   self.scene:destroy()

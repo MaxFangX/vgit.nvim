@@ -215,19 +215,22 @@ end
 
 -- Store last viewed file for re-entry fallback (when current buffer is not in review)
 -- commit_message: first line of commit message (stable across rebases, unlike hash)
-function ReviewState:save_position(section, filename, commit_message)
+-- focus: 'diff' or 'list' - which component had focus
+function ReviewState:save_position(section, filename, commit_message, focus)
   local state = get_state(self)
   state.position = {
     section = section,
     filename = filename,
     commit_message = commit_message,
+    focus = focus,
   }
 end
 
 -- Get last viewed file for re-entry fallback
+-- Returns: section, filename, commit_message, focus
 function ReviewState:get_position()
   local pos = get_state(self).position
-  return pos.section or 'unseen', pos.filename, pos.commit_message
+  return pos.section or 'unseen', pos.filename, pos.commit_message, pos.focus
 end
 
 -- Store hunk count for an entry
