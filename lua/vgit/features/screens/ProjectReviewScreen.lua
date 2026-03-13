@@ -1294,59 +1294,41 @@ function ProjectReviewScreen:setup_keymaps()
   self:setup_diff_keymaps()
 end
 
--- Returns true if current buffer is in the review, false otherwise
+-- Returns true if current buffer is in the review (triggers source line positioning)
 function ProjectReviewScreen:focus_relative_buffer_entry(buffer)
   local review_state = self.model:get_review_state()
   local last_section, last_filename, last_commit_message = review_state:get_position()
 
-  -- Try to find current buffer's file in the review
+  -- Priority 1: Find current buffer's file, preferring saved section
+  -- This keeps the review in sync with what you're editing in vim
   local filename = buffer:get_relative_name()
   if filename ~= '' then
-    -- For CommitListView, use method that can expand collapsed commits
     if self.list_view.get_entries then
-      -- Try exact match: same file, section, and commit
       local found = self:move_to_entry_expanding_commit(filename, nil, last_section, last_commit_message)
-      if found then return true end
-      -- Fall back: same file and section, any commit
-      found = self:move_to_entry_expanding_commit(filename, nil, last_section)
-      if found then return true end
-      -- Fall back: same file, any section/commit
-      found = self:move_to_entry_expanding_commit(filename, nil, nil)
+        or self:move_to_entry_expanding_commit(filename, nil, last_section)
+        or self:move_to_entry_expanding_commit(filename, nil, nil)
       if found then return true end
     else
-      -- Prefer the section we were last viewing
       local list_item = self:move_to(function(status, entry_type)
         return status.filename == filename and entry_type == last_section
-      end)
-      if list_item then return true end
-
-      -- Fall back to any section
-      list_item = self:move_to(function(status)
+      end) or self:move_to(function(status)
         return status.filename == filename
       end)
       if list_item then return true end
     end
   end
 
-  -- Current buffer not in review - try to restore to last viewed file
+  -- Priority 2: Current buffer not in review - restore saved position
   if last_filename then
     if self.list_view.get_entries then
-      -- Try exact match: same file, section, and commit
       local found = self:move_to_entry_expanding_commit(last_filename, nil, last_section, last_commit_message)
-      if found then return false end
-      -- Fall back: same file and section, any commit
-      found = self:move_to_entry_expanding_commit(last_filename, nil, last_section)
-      if found then return false end
-      -- Fall back: same file, any section/commit
-      found = self:move_to_entry_expanding_commit(last_filename, nil, nil)
+        or self:move_to_entry_expanding_commit(last_filename, nil, last_section)
+        or self:move_to_entry_expanding_commit(last_filename, nil, nil)
       if found then return false end
     else
       local list_item = self:move_to(function(status, entry_type)
         return status.filename == last_filename and entry_type == last_section
-      end)
-      if list_item then return false end
-
-      list_item = self:move_to(function(status)
+      end) or self:move_to(function(status)
         return status.filename == last_filename
       end)
       if list_item then return false end
@@ -1354,13 +1336,8 @@ function ProjectReviewScreen:focus_relative_buffer_entry(buffer)
   end
 
   -- Fallback: prefer unseen entries
-  local found = self:move_to(function(_, entry_type)
-    return entry_type == 'unseen'
-  end)
-  if not found then
-    self:move_to(function()
-      return true
-    end)
+  if not self:move_to(function(_, entry_type) return entry_type == 'unseen' end) then
+    self:move_to(function() return true end)
   end
   return false
 end
@@ -1466,15 +1443,14 @@ function ProjectReviewScreen:on_quit()
     review_state:save()
   end
 
-  -- If not in diff view, just indicate we didn't handle the quit
-  -- (allows list view to handle its own quit behavior)
-  if not is_diff_focused then
-    return false
-  end
-
   local filepath = self.model:get_filepath()
-  local file_lnum = self.diff_view:get_file_lnum()
-  local diff_winline = vim.fn.winline()
+
+  -- Get cursor position info only if focused on diff
+  local file_lnum, diff_winline
+  if is_diff_focused then
+    file_lnum = self.diff_view:get_file_lnum()
+    diff_winline = vim.fn.winline()
+  end
 
   -- Handle deleted files: just close the screen
   if not filepath or not fs.exists(filepath) then
@@ -1494,9 +1470,9 @@ function ProjectReviewScreen:on_quit()
 
   fs.open(filepath)
 
+  -- Restore cursor position if we were in the diff view
   if file_lnum then
     Window(0):set_lnum(file_lnum)
-    -- Restore scroll position so cursor is at same relative position in window
     local target_top = file_lnum - diff_winline + 1
     if target_top >= 1 then
       vim.fn.winrestview({ topline = target_top })
