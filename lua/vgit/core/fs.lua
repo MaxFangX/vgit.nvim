@@ -67,7 +67,7 @@ function fs.is_dir(filepath)
 end
 
 function fs.open(filepath)
-  vim.cmd(string.format('e %s', filepath))
+  vim.cmd(string.format('drop %s', filepath))
 
   return fs
 end
