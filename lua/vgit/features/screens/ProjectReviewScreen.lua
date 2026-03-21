@@ -563,7 +563,7 @@ end
 
 function ProjectReviewScreen:next_hunk()
   local filtered_index, filtered_total = self:get_filtered_mark_info()
-  local hunk_alignment = self.setting:get('hunk_alignment')
+  local hunk_alignment = 'center'
 
   if not filtered_index or filtered_total == 0 or filtered_index >= filtered_total then
     local list_item = self:move_to_next_file()
@@ -578,7 +578,7 @@ end
 
 function ProjectReviewScreen:prev_hunk()
   local filtered_index, filtered_total = self:get_filtered_mark_info()
-  local hunk_alignment = self.setting:get('hunk_alignment')
+  local hunk_alignment = 'center'
 
   if not filtered_index or filtered_total == 0 or filtered_index <= 1 then
     local list_item = self:move_to_prev_file()
@@ -649,7 +649,7 @@ end
 --   4. Hunks before current in same file (catches skipped hunks in current file)
 --   5. Section complete - stay on current file (now in opposite section)
 function ProjectReviewScreen:move_to_hunk_matching(target_seen_state, mark_key, filename, commit_hash, from_hunk, total_hunks, next_file, prev_file, first_file)
-  local hunk_alignment = self.setting:get('hunk_alignment')
+  local hunk_alignment = 'center'
   local target_entry_type = target_seen_state and 'seen' or 'unseen'
 
   -- Get content_ids for current file
@@ -838,7 +838,7 @@ function ProjectReviewScreen:set_file_seen_state(mark_as_seen)
 
   -- Save the original hunk index before operation (for cursor preservation)
   local saved_hunk_index, _ = self:get_current_mark_index()
-  local hunk_alignment = self.setting:get('hunk_alignment')
+  local hunk_alignment = 'center'
 
   -- Find adjacent files in the opposite-state section BEFORE rebuilding
   local next_file, prev_file = nil, nil
@@ -926,7 +926,7 @@ function ProjectReviewScreen:toggle_focus()
   local diff_component = self.scene:get('current')
 
   if list_component:is_focused() then
-    local hunk_alignment = self.setting:get('hunk_alignment')
+    local hunk_alignment = 'center'
     diff_component:focus()
     self.diff_view:move_to_hunk(1, hunk_alignment)
     self._current_focus = 'diff'
@@ -951,7 +951,7 @@ function ProjectReviewScreen:handle_list_move()
   -- keyboard_direction is nil for mouse clicks, so "move to last line" won't trigger
   list_item = self:update_commit_expansion(list_item, keyboard_direction) or list_item
 
-  local hunk_alignment = self.setting:get('hunk_alignment')
+  local hunk_alignment = 'center'
   self.model:set_entry_id(list_item.id)
   self.diff_view:render()
   self.diff_view:move_to_hunk(nil, hunk_alignment)
@@ -1103,7 +1103,7 @@ function ProjectReviewScreen:render(on_list_render)
     self.model:set_entry_id(list_item.id)
   end
 
-  local hunk_alignment = self.setting:get('hunk_alignment')
+  local hunk_alignment = 'center'
   self.diff_view:render()
   self.diff_view:move_to_hunk(nil, hunk_alignment)
 end
@@ -1183,7 +1183,7 @@ function ProjectReviewScreen:setup_list_keymaps()
         local list_item = self:move_to_next_file()
         if not list_item then return end
         self.model:set_entry_id(list_item.id)
-        local hunk_alignment = self.setting:get('hunk_alignment')
+        local hunk_alignment = 'center'
         self.diff_view:render()
         self.diff_view:move_to_hunk(1, hunk_alignment)
       end, 15),
@@ -1195,7 +1195,7 @@ function ProjectReviewScreen:setup_list_keymaps()
         local list_item = self:move_to_prev_file()
         if not list_item then return end
         self.model:set_entry_id(list_item.id)
-        local hunk_alignment = self.setting:get('hunk_alignment')
+        local hunk_alignment = 'center'
         self.diff_view:render()
         self.diff_view:move_to_hunk(0, hunk_alignment)
       end, 15),
@@ -1409,7 +1409,7 @@ function ProjectReviewScreen:create(args)
     self.scene:get('list'):focus()
     self._current_focus = 'list'
   else
-    local hunk_alignment = self.setting:get('hunk_alignment')
+    local hunk_alignment = 'center'
     self.scene:get('current'):focus()
     self.diff_view:move_to_hunk(1, hunk_alignment)
     self._current_focus = 'diff'

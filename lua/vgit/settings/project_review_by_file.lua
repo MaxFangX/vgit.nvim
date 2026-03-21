@@ -1,7 +1,6 @@
 local Config = require('vgit.core.Config')
 
 return Config({
-  hunk_alignment = 'center',
   keymaps = {
     toggle_focus = {
       key = '<Tab>',
