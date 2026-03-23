@@ -107,21 +107,7 @@ function CommitMessageView:resize(body_line_count)
   local component = self.scene:get('commit_message')
   if not component then return end
 
-  -- Resize and reposition main window
-  if component.window and component.window.win_id then
-    local win_id = component.window.win_id
-    if vim.api.nvim_win_is_valid(win_id) then
-      vim.api.nvim_win_set_config(win_id, {
-        relative = 'editor',
-        row = msg_row,
-        col = msg_col,
-        width = msg_width,
-        height = target_height,
-      })
-    end
-  end
-
-  -- Reposition header element window
+  -- Reposition header element window (at msg_row)
   if component.elements and component.elements.header and component.elements.header.window then
     local header_win_id = component.elements.header.window.win_id
     if header_win_id and vim.api.nvim_win_is_valid(header_win_id) then
@@ -131,6 +117,20 @@ function CommitMessageView:resize(body_line_count)
         col = msg_col,
         width = msg_width,
         height = 1,
+      })
+    end
+  end
+
+  -- Resize and reposition main window (below header)
+  if component.window and component.window.win_id then
+    local win_id = component.window.win_id
+    if vim.api.nvim_win_is_valid(win_id) then
+      vim.api.nvim_win_set_config(win_id, {
+        relative = 'editor',
+        row = msg_row + 1,
+        col = msg_col,
+        width = msg_width,
+        height = math.max(1, target_height - 1),
       })
     end
   end
@@ -196,8 +196,12 @@ function CommitMessageView:render()
     for i = 1, line_count do
       display_lines[i] = body[i]
     end
-    self:resize(self:get_wrapped_height(display_lines))
-    component:unlock():set_lines(self:prepend_padding(body)):lock()
+    -- +1 for bottom padding (keeps last line above command line)
+    self:resize(self:get_wrapped_height(display_lines) + 1)
+
+    local lines = self:prepend_padding(body)
+    lines[#lines + 1] = ''
+    component:unlock():set_lines(lines):lock()
   end
 end
 
