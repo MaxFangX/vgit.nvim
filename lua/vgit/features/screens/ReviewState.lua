@@ -12,7 +12,7 @@ local persistence = require('vgit.features.screens.ReviewStatePersistence')
 
   All mark operations use a unified key-based API. The key is provided by
   callers - typically the filename. Marks use content-based identifiers
-  (SHA-256 hashes of hunk content) so they persist when hunks shift position.
+  (FNV-1a hashes of hunk content) so they persist when hunks shift position.
 ]]
 
 local ReviewState = Object:extend()

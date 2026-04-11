@@ -1,5 +1,6 @@
 local Diff = require('vgit.core.Diff')
 local loop = require('vgit.core.loop')
+local utils = require('vgit.core.utils')
 local gitcli = require('vgit.git.gitcli')
 local git_repo = require('vgit.git.git_repo')
 local git_show = require('vgit.git.git_show')
@@ -11,14 +12,42 @@ local BaseReviewModel = require('vgit.features.screens.BaseReviewModel')
 
 local Model = BaseReviewModel:extend()
 
--- Generate a key from commit hash and filename
-local function make_key(commit_hash, filename)
-  return string.format('%s:%s', commit_hash, filename)
+--[[
+  HUNK KEYING STRATEGY
+
+  Hunk marks use composite keys for persistence: mark_key:content_id.
+  The mark_key portion differs by mode (filepath = path relative to repo root):
+
+  BY FILE:   mark_key = filepath                   (e.g., "src/lib/Cargo.lock")
+  BY COMMIT: mark_key = subject_hash:filepath      (e.g., "ccb4da92:src/lib/Cargo.lock")
+
+  By-file uses filepath alone since each file appears once in the cumulative diff.
+  By-commit adds subject_hash because the same file can appear in multiple commits
+  with identical hunk content (e.g., Cargo.lock version bumps).
+
+  Why subject_hash instead of commit_hash?
+  - Commit hashes change on rebase, invalidating marks
+  - Subjects typically survive rebases unchanged
+  - FNV-1a hash keeps keys compact and avoids delimiter issues (subjects may contain colons)
+
+  Trade-off: commits with identical subjects share marks (rare in practice).
+]]
+
+-- Generate cache key from commit hash and filepath (for diff caching)
+local function make_key(commit_hash, filepath)
+  return string.format('%s:%s', commit_hash, filepath)
 end
 
--- Generate stable entry ID from commit, filename, and type
-local function entry_id(commit_hash, filename, entry_type)
-  return string.format('%s|%s|%s', commit_hash, filename, entry_type)
+-- Generate stable entry ID from commit, filepath, and type
+local function entry_id(commit_hash, filepath, entry_type)
+  return string.format('%s|%s|%s', commit_hash, filepath, entry_type)
+end
+
+-- Generate mark key from commit subject and filepath.
+-- See "HUNK KEYING STRATEGY" comment above for rationale.
+local function make_mark_key(commit_subject, filepath)
+  local subject_hash = utils.str.fnv1a(vim.trim(commit_subject))
+  return string.format('%s:%s', subject_hash, filepath)
 end
 
 function Model:constructor(opts)
@@ -59,6 +88,10 @@ end
 -- For by-commit mode, diff args are commit_hash and filename
 function Model:get_diff_args(entry)
   return entry.commit_hash, entry.filename
+end
+
+function Model:get_mark_key(entry)
+  return make_mark_key(entry.commit.message, entry.filename)
 end
 
 function Model:get_commit_hash()
@@ -296,8 +329,7 @@ function Model:rebuild_entries()
     local seen_files = {}
 
     for _, file in ipairs(files) do
-      -- Mark key is filename only (marks are shared across commits)
-      local mark_key = file.filename
+      local mark_key = make_mark_key(commit.message, file.filename)
 
       -- Get content_ids from local cache or persisted ReviewState
       local cache_key = make_key(commit.hash, file.filename)

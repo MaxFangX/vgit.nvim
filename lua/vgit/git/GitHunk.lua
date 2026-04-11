@@ -103,15 +103,7 @@ function GitHunk:push(line)
   return self
 end
 
--- Simple FNV-1a hash (pure Lua, works in async contexts)
-local function fnv1a(str)
-  local hash = 2166136261
-  for i = 1, #str do
-    hash = bit.bxor(hash, str:byte(i))
-    hash = bit.band(hash * 16777619, 0xFFFFFFFF)
-  end
-  return string.format('%08x', hash)
-end
+local fnv1a = require('vgit.core.utils').str.fnv1a
 
 -- Compute content-based identifier for this hunk.
 -- Hashes diff + 5 lines of surrounding context to disambiguate identical hunks

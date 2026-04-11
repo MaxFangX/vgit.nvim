@@ -13,10 +13,10 @@ local Object = require('vgit.core.Object')
     - get_full_diff(key) - gets the unfiltered diff for a key
     - get_diff_args(entry) - returns args for get_full_diff from entry
 
-  Key concepts:
-    - entry_key: Used for diff caching (by-file: filename, by-commit: commit:filename)
-    - mark_key: Used for mark storage (always filename only, so marks persist across commits)
-    - content_id: SHA-256 hash of hunk content (marks persist when hunks shift position)
+  Key concepts (filepath = path relative to repo root):
+    - entry_key: Used for diff caching (by-file: filepath, by-commit: commit_hash:filepath)
+    - mark_key: Used for mark storage (by-file: filepath, by-commit: subject_hash:filepath)
+    - content_id: FNV-1a hash of hunk content (marks persist when hunks shift position)
 ]]
 
 local BaseReviewModel = Object:extend()
@@ -121,10 +121,11 @@ function BaseReviewModel:set_hunk_count(key, count)
   self.review_state:set_hunk_count(key, count)
 end
 
--- Get mark key for an entry (used for mark storage, always filename only)
--- This allows marks to persist across commits in by-commit mode
+-- Get mark key for an entry (used for mark storage)
+-- By-file: filepath only
+-- By-commit: subject_hash:filepath (overridden in subclass)
 function BaseReviewModel:get_mark_key(entry)
-  return entry.filename
+  return entry.filename  -- "filename" field is actually the filepath
 end
 
 -- Get content_ids for an entry (from cached diff or ReviewState)
@@ -134,9 +135,8 @@ function BaseReviewModel:get_content_ids(entry)
   if diff and diff._content_ids then
     return diff._content_ids
   end
-  -- Fall back to ReviewState (populated during preload)
-  local mark_key = self:get_mark_key(entry)
-  return self.review_state:get_content_ids(mark_key) or {}
+  -- Fall back to ReviewState (populated during preload, keyed by cache_key)
+  return self.review_state:get_content_ids(cache_key) or {}
 end
 
 -- Get filtered diff based on entry type (seen/unseen)

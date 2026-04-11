@@ -3,6 +3,30 @@ local utils = require('vgit.core.utils')
 local eq = assert.are.same
 
 describe('utils.str:', function()
+  describe('str.fnv1a', function()
+    it('should return an 8-character hex string', function()
+      local hash = utils.str.fnv1a('hello')
+      eq(#hash, 8)
+      eq(hash:match('^%x+$') ~= nil, true)
+    end)
+
+    it('should return consistent hashes', function()
+      eq(utils.str.fnv1a('test'), utils.str.fnv1a('test'))
+    end)
+
+    it('should return different hashes for different inputs', function()
+      assert.are_not.equal(utils.str.fnv1a('foo'), utils.str.fnv1a('bar'))
+    end)
+
+    it('should handle empty strings', function()
+      eq(#utils.str.fnv1a(''), 8)
+    end)
+
+    it('should handle special characters', function()
+      eq(#utils.str.fnv1a('feat(auth): add login'), 8)
+    end)
+  end)
+
   describe('str.split', function()
     it('should split a string by the given delimiter', function()
       local s = 'a,b,c'

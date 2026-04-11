@@ -1,6 +1,21 @@
+local bit = require('bit')
+
 local str = {}
 
 str.split = vim.split
+
+-- FNV-1a hash (32-bit, pure Lua)
+-- Returns an 8-character hex string.
+function str.fnv1a(s)
+  local hash = 2166136261
+  for i = 1, #s do
+    hash = bit.bxor(hash, s:byte(i))
+    hash = bit.band(hash * 16777619, 0xFFFFFFFF)
+  end
+  -- Ensure unsigned for formatting (LuaJIT bit ops return signed int32)
+  if hash < 0 then hash = hash + 0x100000000 end
+  return string.format('%08x', hash)
+end
 
 function str.length(s)
   local _, count = string.gsub(s, '[^\128-\193]', '')
