@@ -73,6 +73,12 @@ function DiffComponent:mount(opts)
 
   self.window = Window:open(buffer, plot.win_plot):assign_options(config.win_options)
 
+  -- Enforce minimum scrolloff of 2 to account for floating header
+  local global_scrolloff = vim.o.scrolloff
+  if global_scrolloff < 2 then
+    self.window:set_option('scrolloff', 2)
+  end
+
   self.mounted = true
 
   return self
