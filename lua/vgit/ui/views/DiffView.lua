@@ -31,7 +31,30 @@ function DiffView:constructor(scene, props, plot, config)
     props = props,
     config = config or {},
     state = DiffView:get_initial_state(),
+    _saved_viewport = nil,  -- Saved viewport for smart positioning across render()
+    _saved_viewport_previous = nil,  -- Saved viewport for previous (split) component
   }
+end
+
+-- Capture viewport state from a component's window
+local function capture_viewport(component)
+  if not component or not component.window then return nil end
+  local viewport = {}
+  component.window:call(function()
+    local view = vim.fn.winsaveview()
+    viewport.topline = view.topline
+    viewport.lnum = view.lnum
+    viewport.col = view.col
+  end)
+  return viewport
+end
+
+-- Save current viewport before render() for smart positioning
+function DiffView:save_viewport()
+  self._saved_viewport = capture_viewport(self.scene:get('current'))
+  if self.props.layout_type() == 'split' then
+    self._saved_viewport_previous = capture_viewport(self.scene:get('previous'))
+  end
 end
 
 function DiffView:define()
@@ -568,9 +591,101 @@ function DiffView:get_file_lnum()
   return nil
 end
 
+-- Check if lnum is visible using saved or current viewport, return viewport info
+local function check_visibility(component, lnum, saved_viewport)
+  local viewport = saved_viewport
+  local is_visible = false
+
+  if viewport then
+    -- Use saved viewport, just need window height
+    component.window:call(function()
+      local win_height = vim.fn.winheight(0)
+      local botline = viewport.topline + win_height - 1
+      is_visible = lnum >= viewport.topline and lnum <= botline
+    end)
+  else
+    -- Capture current viewport
+    component.window:call(function()
+      local view = vim.fn.winsaveview()
+      viewport = { topline = view.topline }
+      local win_height = vim.fn.winheight(0)
+      local botline = view.topline + win_height - 1
+      is_visible = lnum >= view.topline and lnum <= botline
+    end)
+  end
+
+  return viewport, is_visible
+end
+
+-- Move cursor to lnum while preserving scroll position
+local function move_cursor_preserving_scroll(component, lnum, saved_topline)
+  component.window:call(function()
+    vim.api.nvim_win_set_cursor(0, { lnum, 0 })
+    vim.fn.winrestview({ topline = saved_topline })
+  end)
+end
+
 function DiffView:set_lnum(lnum, position)
-  if self.props.layout_type() == 'split' then self.scene:get('previous'):set_lnum(lnum):position_cursor(position) end
-  self.scene:get('current'):set_lnum(lnum):position_cursor(position)
+  local current = self.scene:get('current')
+  local previous = self.props.layout_type() == 'split' and self.scene:get('previous') or nil
+
+  -- For non-smart positioning, use simple path
+  if position ~= 'smart' then
+    if previous then previous:set_lnum(lnum):position_cursor(position) end
+    current:set_lnum(lnum):position_cursor(position)
+    return
+  end
+
+  -- Smart positioning: center only if target line is off-screen
+
+  -- Determine visibility using saved viewport (from before render) or current
+  local current_viewport, is_visible = check_visibility(
+    current, lnum, self._saved_viewport
+  )
+  self._saved_viewport = nil
+
+  local previous_viewport = nil
+  if previous then
+    previous_viewport = self._saved_viewport_previous or capture_viewport(previous)
+    self._saved_viewport_previous = nil
+  end
+
+  -- If off-screen, just center both windows
+  if not is_visible then
+    if previous then previous:set_lnum(lnum):position_cursor('center') end
+    current:set_lnum(lnum):position_cursor('center')
+    return
+  end
+
+  -- Target is visible: move cursor without changing scroll position
+  -- Disable scrollbind temporarily so windows don't interfere
+  local had_scrollbind_current, had_scrollbind_previous
+  current.window:call(function()
+    had_scrollbind_current = vim.wo.scrollbind
+    vim.wo.scrollbind = false
+  end)
+  if previous then
+    previous.window:call(function()
+      had_scrollbind_previous = vim.wo.scrollbind
+      vim.wo.scrollbind = false
+    end)
+  end
+
+  -- Move cursors while preserving scroll positions
+  if previous and previous_viewport then
+    move_cursor_preserving_scroll(previous, lnum, previous_viewport.topline)
+  elseif previous then
+    previous:set_lnum(lnum)
+  end
+  move_cursor_preserving_scroll(current, lnum, current_viewport.topline)
+
+  -- Restore scrollbind
+  if had_scrollbind_current then
+    current.window:call(function() vim.wo.scrollbind = true end)
+  end
+  if had_scrollbind_previous and previous then
+    previous.window:call(function() vim.wo.scrollbind = true end)
+  end
 end
 
 function DiffView:set_relative_lnum(lnum, position)

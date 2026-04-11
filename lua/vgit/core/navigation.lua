@@ -2,6 +2,21 @@ local live_gutter_setting = require('vgit.settings.live_gutter')
 
 local navigation = {}
 
+-- Check if target line is visible and move cursor, centering only if off-screen
+local function move_and_position(window, new_lnum)
+  local is_visible = false
+  window:call(function()
+    -- Use winsaveview for reliable scroll position
+    local view = vim.fn.winsaveview()
+    local topline = view.topline
+    local win_height = vim.fn.winheight(0)
+    local botline = topline + win_height - 1
+    is_visible = new_lnum >= topline and new_lnum <= botline
+  end)
+  window:set_lnum(new_lnum)
+  if not is_visible then window:position_cursor('center') end
+end
+
 function navigation.up(window, marks)
   local new_lnum = nil
   local selected = nil
@@ -31,13 +46,11 @@ function navigation.up(window, marks)
   if new_lnum and new_lnum < 1 then new_lnum = 1 end
 
   if new_lnum and lnum ~= new_lnum then
-    window:set_lnum(new_lnum):position_cursor('center')
-
+    move_and_position(window, new_lnum)
     return selected
   else
     local mark = marks[#marks]
     new_lnum = is_edge_navigation and mark.bot or mark.top
-
     selected = #marks
 
     if new_lnum < 1 then
@@ -45,7 +58,7 @@ function navigation.up(window, marks)
       selected = 1
     end
 
-    window:set_lnum(new_lnum):position_cursor('center')
+    move_and_position(window, new_lnum)
     return selected
   end
 end
@@ -79,8 +92,7 @@ function navigation.down(window, marks)
   if new_lnum and new_lnum < 1 then new_lnum = 1 end
 
   if new_lnum then
-    window:set_lnum(new_lnum):position_cursor('center')
-
+    move_and_position(window, new_lnum)
     return selected
   else
     local first_mark = marks[1]
@@ -92,8 +104,7 @@ function navigation.down(window, marks)
       selected = 1
     end
 
-    window:set_lnum(new_lnum):position_cursor('center')
-
+    move_and_position(window, new_lnum)
     return selected
   end
 end
