@@ -66,8 +66,8 @@ function Model:fetch(base_branch_arg)
   end
   self.state.base_branch = base_branch
 
-  -- Get current branch name for state keying (persists across commits)
-  local branch_name, branch_err = git_branch.current(reponame)
+  -- Get current branch name for state keying (survives rebases)
+  local branch_name, branch_err = git_branch.current_persistent(reponame)
   if branch_err then return nil, branch_err end
   self.state.branch_name = branch_name
 

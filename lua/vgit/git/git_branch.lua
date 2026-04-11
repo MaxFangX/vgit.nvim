@@ -1,6 +1,27 @@
+local fs = require('vgit.core.fs')
 local gitcli = require('vgit.git.gitcli')
 
 local git_branch = {}
+
+-- Read the original branch name during a rebase.
+-- Interactive rebase stores in rebase-merge/, regular rebase in rebase-apply/.
+local function read_rebase_head_name(reponame)
+  local paths = {
+    reponame .. '/.git/rebase-merge/head-name',
+    reponame .. '/.git/rebase-apply/head-name',
+  }
+
+  for _, path in ipairs(paths) do
+    local lines = fs.read_file(path)
+    if lines and lines[1] then
+      -- Content is like "refs/heads/feature/my-branch"
+      local branch = lines[1]:match('refs/heads/(.+)')
+      if branch then return branch end
+    end
+  end
+
+  return nil
+end
 
 -- Parse file status lines from git diff --name-status or diff-tree --name-status
 local function parse_file_status_lines(lines)
@@ -43,6 +64,18 @@ function git_branch.current(reponame)
   if not result[1] or result[1] == '' then return nil, { 'Could not determine current branch' } end
 
   return result[1]
+end
+
+-- Get the original branch name, even during a rebase.
+-- Use this for persistence keys that should survive rebases.
+function git_branch.current_persistent(reponame)
+  if not reponame then return nil, { 'reponame is required' } end
+
+  -- Check for rebase-in-progress first (HEAD is detached during rebases)
+  local rebase_branch = read_rebase_head_name(reponame)
+  if rebase_branch then return rebase_branch end
+
+  return git_branch.current(reponame)
 end
 
 -- Get HEAD commit hash
