@@ -31,14 +31,14 @@ function Model:get_layout_type()
   return self.state.layout_type
 end
 
-function Model:fetch(filename, opts)
+function Model:fetch(abs_filepath, opts)
   opts = opts or {}
 
-  if not filename or filename == '' then return nil, { 'Buffer has no history associated with it' } end
+  if not abs_filepath or abs_filepath == '' then return nil, { 'Buffer has no history associated with it' } end
 
   self:reset()
 
-  self.git_file = GitFile(filename)
+  self.git_file = GitFile(abs_filepath)
 
   local entries, err = self.git_file:logs()
   if err then return nil, err end
@@ -88,7 +88,7 @@ function Model:get_diff()
   loop.free_textlock()
 
   if lines_err then
-    local err_str = string.format("fatal: path '%s' exists on disk, but not in '%s'", self.git_file.filename, commit_hash)
+    local err_str = string.format("fatal: path '%s' exists on disk, but not in '%s'", self.git_file.filepath, commit_hash)
     if lines_err[1] == err_str then
       loop.free_textlock()
       lines, lines_err = self.git_file:lines(parent_hash)
@@ -106,8 +106,8 @@ function Model:get_diff()
   return diff
 end
 
-function Model:get_filename()
-  return self.git_file:get_filename()
+function Model:get_filepath()
+  return self.git_file:get_filepath()
 end
 
 function Model:get_filetype()

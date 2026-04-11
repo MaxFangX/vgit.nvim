@@ -34,7 +34,7 @@ function GitBlame:constructor(info)
   return {
     id = utils.math.uuid(),
     lnum = blame.lnum,
-    filename = blame.filename,
+    filepath = blame.filename,  -- git blame outputs "filename" field but it's the path
     commit_hash = blame.commit,
     parent_hash = blame.previous,
     author = blame.author,

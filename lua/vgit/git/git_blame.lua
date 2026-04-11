@@ -3,9 +3,9 @@ local GitBlame = require('vgit.git.GitBlame')
 
 local git_blame = {}
 
-function git_blame.list(reponame, filename, commit)
+function git_blame.list(reponame, filepath, commit)
   if not reponame then return nil, { 'reponame is required' } end
-  if not filename then return nil, { 'filename is required' } end
+  if not filepath then return nil, { 'filepath is required' } end
 
   commit = commit or 'HEAD'
 
@@ -15,7 +15,7 @@ function git_blame.list(reponame, filename, commit)
     'blame',
     '--line-porcelain',
     '--',
-    filename,
+    filepath,
     commit,
   })
 
@@ -37,9 +37,9 @@ function git_blame.list(reponame, filename, commit)
   return blames
 end
 
-function git_blame.get(reponame, filename, lnum)
+function git_blame.get(reponame, filepath, lnum)
   if not reponame then return nil, { 'reponame is required' } end
-  if not filename then return nil, { 'filename is required' } end
+  if not filepath then return nil, { 'filepath is required' } end
   if not lnum then return nil, { 'lnum is required' } end
 
   local blame_info, err = gitcli.run({
@@ -50,7 +50,7 @@ function git_blame.get(reponame, filename, lnum)
     string.format('%s,+1', lnum),
     '--line-porcelain',
     '--',
-    filename,
+    filepath,
   })
 
   if err then return nil, err end

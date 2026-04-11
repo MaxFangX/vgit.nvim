@@ -3,7 +3,7 @@ local GitStatus = require('vgit.git.GitStatus')
 
 local git_status = {}
 
-function git_status.ls(reponame, filename)
+function git_status.ls(reponame, filepath)
   if not reponame then return nil, { 'reponame is required' } end
   local result, err = gitcli.run({
     '-C',
@@ -15,7 +15,7 @@ function git_status.ls(reponame, filename)
     '--no-renames',
     '--ignore-submodules',
     '--',
-    filename or '.',
+    filepath or '.',
   })
   if err then return nil, err end
 
@@ -25,7 +25,7 @@ function git_status.ls(reponame, filename)
     files[#files + 1] = GitStatus(line)
   end
 
-  if filename then return files[1] end
+  if filepath then return files[1] end
   return files
 end
 

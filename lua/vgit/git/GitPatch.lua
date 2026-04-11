@@ -2,7 +2,7 @@ local Object = require('vgit.core.Object')
 
 local GitPatch = Object:extend()
 
-function GitPatch:constructor(filename, hunk)
+function GitPatch:constructor(filepath, hunk)
   local header = hunk.header
 
   if hunk.type == 'add' then
@@ -11,10 +11,10 @@ function GitPatch:constructor(filename, hunk)
   end
 
   local patch = {
-    string.format('diff --git a/%s b/%s', filename, filename),
+    string.format('diff --git a/%s b/%s', filepath, filepath),
     'index 000000..000000',
-    string.format('--- a/%s', filename),
-    string.format('+++ a/%s', filename),
+    string.format('--- a/%s', filepath),
+    string.format('+++ a/%s', filepath),
     header,
   }
 

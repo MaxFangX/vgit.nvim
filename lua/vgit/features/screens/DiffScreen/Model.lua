@@ -39,10 +39,10 @@ function Model:toggle_staged()
   return is_staged
 end
 
-function Model:get_lines(filename)
+function Model:get_lines(abs_filepath)
   if self:is_staged() then return self.git_file:lines() end
   loop.free_textlock()
-  return fs.read_file(filename)
+  return fs.read_file(abs_filepath)
 end
 
 function Model:get_hunks(lines)
@@ -52,8 +52,8 @@ end
 
 -- Lightweight refresh that skips redundant checks (conflict, status).
 -- Use after staging/unstaging when we know the file state hasn't fundamentally changed.
-function Model:refresh_hunks(filename)
-  local lines, lines_err = self:get_lines(filename)
+function Model:refresh_hunks(abs_filepath)
+  local lines, lines_err = self:get_lines(abs_filepath)
   if lines_err then return nil, lines_err end
 
   local hunks, hunks_err = self:get_hunks(lines)
@@ -63,10 +63,10 @@ function Model:refresh_hunks(filename)
   return self.state.diff
 end
 
-function Model:fetch(filename)
-  if not fs.exists(filename) then return nil, { 'Buffer has no diff associated with it' } end
+function Model:fetch(abs_filepath)
+  if not fs.exists(abs_filepath) then return nil, { 'Buffer has no diff associated with it' } end
 
-  self.git_file = GitFile(filename)
+  self.git_file = GitFile(abs_filepath)
 
   -- Fast filesystem check: are we in a merge/rebase/cherry-pick state?
   -- Only run expensive per-file conflict checks if so.
@@ -80,7 +80,7 @@ function Model:fetch(filename)
 
     local status = self.git_file:status()
     if status and status:is_unmerged() then
-      local lines, lines_err = self:get_lines(filename)
+      local lines, lines_err = self:get_lines(abs_filepath)
       if lines_err then return nil, lines_err end
 
       local layout_type = self:get_layout_type()
@@ -90,7 +90,7 @@ function Model:fetch(filename)
     end
   end
 
-  local lines, lines_err = self:get_lines(filename)
+  local lines, lines_err = self:get_lines(abs_filepath)
   if lines_err then return nil, lines_err end
 
   local hunks, hunks_err = self:get_hunks(lines)
@@ -104,8 +104,8 @@ function Model:get_diff()
   return self.state.diff
 end
 
-function Model:get_filename()
-  return self.git_file:get_filename()
+function Model:get_filepath()
+  return self.git_file:get_filepath()
 end
 
 function Model:get_filetype()
@@ -138,10 +138,10 @@ end
 
 function Model:reset_file()
   local reponame = self.git_file.reponame
-  local filename = self.git_file.filename
-  if git_repo.has(reponame, filename) then return git_repo.reset(reponame, filename) end
+  local filepath = self.git_file.filepath
+  if git_repo.has(reponame, filepath) then return git_repo.reset(reponame, filepath) end
 
-  return git_repo.clean(reponame, filename)
+  return git_repo.clean(reponame, filepath)
 end
 
 return Model

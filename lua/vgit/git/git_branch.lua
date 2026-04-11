@@ -12,15 +12,15 @@ local function parse_file_status_lines(lines)
       if status then
         files[#files + 1] = {
           status = 'R',
-          filename = new_name,
-          old_filename = old_name,
+          filepath = new_name,
+          old_filepath = old_name,
         }
       else
         status, old_name = line:match('^(%a)%s+(.+)$')
         if status then
           files[#files + 1] = {
             status = status,
-            filename = old_name,
+            filepath = old_name,
           }
         end
       end
@@ -357,15 +357,15 @@ function git_branch.all_commit_files(reponame, base_ref, head_ref)
       if status then
         current_files[#current_files + 1] = {
           status = 'R',
-          filename = new_name,
-          old_filename = old_name,
+          filepath = new_name,
+          old_filepath = old_name,
         }
       else
         status, old_name = line:match('^(%a)%s+(.+)$')
         if status then
           current_files[#current_files + 1] = {
             status = status,
-            filename = old_name,
+            filepath = old_name,
           }
         end
       end

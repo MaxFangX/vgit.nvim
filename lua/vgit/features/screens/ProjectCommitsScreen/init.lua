@@ -38,8 +38,8 @@ function ProjectCommitsScreen:constructor(opts)
       layout_type = function()
         return model:get_layout_type()
       end,
-      filename = function()
-        return model:get_filename()
+      filepath = function()
+        return model:get_filepath()
       end,
       filetype = function()
         return model:get_filetype()
@@ -77,10 +77,10 @@ function ProjectCommitsScreen:handle_list_move(direction)
 end
 
 function ProjectCommitsScreen:open_file()
-  local filename = self.model:get_filename()
-  if not filename then return end
+  local filepath = self.model:get_filepath()
+  if not filepath then return end
 
-  if not fs.exists(filename) then
+  if not fs.exists(filepath) then
     local commit_hash, commit_err = self.model:get_parent_commit()
     loop.free_textlock()
 
@@ -90,7 +90,7 @@ function ProjectCommitsScreen:open_file()
     end
 
     local reponame = git_repo.discover()
-    local lines, lines_err = git_show.lines(reponame, filename, commit_hash)
+    local lines, lines_err = git_show.lines(reponame, filepath, commit_hash)
     loop.free_textlock()
 
     if lines_err then
@@ -102,7 +102,7 @@ function ProjectCommitsScreen:open_file()
     vim.cmd('enew')
 
     local buffer = Buffer(0)
-    local filetype = fs.detect_filetype(filename)
+    local filetype = fs.detect_filetype(filepath)
 
     buffer:set_lines(lines)
     buffer:set_option('ft', filetype)
@@ -112,7 +112,7 @@ function ProjectCommitsScreen:open_file()
 
   self:destroy()
 
-  fs.open(filename)
+  fs.open(filepath)
 
   local diff, diff_err = self.model:get_diff()
   if diff_err or not diff then return end
@@ -125,15 +125,15 @@ end
 function ProjectCommitsScreen:create(args)
   local commits = {}
   local buffer = Buffer(0)
-  local filename = buffer:get_name()
+  local filepath = buffer:get_name()
 
   for i = 1, #args do
     local arg = args[i]
 
-    if vim.startswith(arg, '--filename') then
-      filename = arg:sub(#'--filename=' + 1, #arg)
+    if vim.startswith(arg, '--filepath') then
+      filepath = arg:sub(#'--filepath=' + 1, #arg)
 
-      if filename == '' then filename = nil end
+      if filepath == '' then filepath = nil end
     else
       commits[#commits + 1] = arg
     end

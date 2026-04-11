@@ -32,14 +32,14 @@ function Model:get_layout_type()
   return self.state.layout_type
 end
 
-function Model:fetch(filename, lnum, opts)
+function Model:fetch(abs_filepath, lnum, opts)
   opts = opts or {}
 
-  if not filename or filename == '' then return nil, { 'Buffer has no blame associated with it' } end
+  if not abs_filepath or abs_filepath == '' then return nil, { 'Buffer has no blame associated with it' } end
 
   self:reset()
 
-  self.git_file = GitFile(filename)
+  self.git_file = GitFile(abs_filepath)
 
   loop.free_textlock()
   local blame, err = self.git_file:blame(lnum)
@@ -48,7 +48,7 @@ function Model:fetch(filename, lnum, opts)
   if blame:is_uncommitted() then return nil, { 'Line is uncommitted' } end
 
   loop.free_textlock()
-  local reponame = git_repo.discover(filename)
+  local reponame = git_repo.discover(abs_filepath)
   local log, log_err = git_log.get(reponame, blame.commit_hash)
   if log_err then return nil, log_err end
   if not log then return nil, { 'log not found' } end
@@ -59,20 +59,20 @@ function Model:fetch(filename, lnum, opts)
   local lines_err, lines
   local is_deleted = false
 
-  -- blame.filename will contain original name of the file if it was renamed.
-  -- this is why we should use blame.filename filename passed as args.
-  filename = blame.filename
+  -- blame.filepath will contain original name of the file if it was renamed.
+  -- this is why we should use blame.filepath instead of the filepath passed as args.
+  local filepath = blame.filepath
 
-  if not git_repo.has(reponame, filename, commit_hash) then
-    local new_filename = self.git_file.filename
-    if new_filename ~= filename and git_repo.has(reponame, new_filename, commit_hash) then
-      lines, lines_err = git_show.lines(reponame, filename, commit_hash)
+  if not git_repo.has(reponame, filepath, commit_hash) then
+    local new_filepath = self.git_file.filepath
+    if new_filepath ~= filepath and git_repo.has(reponame, new_filepath, commit_hash) then
+      lines, lines_err = git_show.lines(reponame, filepath, commit_hash)
     else
       is_deleted = true
-      lines, lines_err = git_show.lines(reponame, filename, parent_hash)
+      lines, lines_err = git_show.lines(reponame, filepath, parent_hash)
     end
   else
-    lines, lines_err = git_show.lines(reponame, filename, commit_hash)
+    lines, lines_err = git_show.lines(reponame, filepath, commit_hash)
   end
   if lines_err then return nil, lines_err end
 
@@ -81,7 +81,7 @@ function Model:fetch(filename, lnum, opts)
     hunks = git_hunks.custom(lines, { deleted = true })
   else
     hunks, hunks_err = git_hunks.list(reponame, {
-      filename = filename,
+      filepath = filepath,
       parent = parent_hash,
       current = commit_hash,
     })
@@ -103,8 +103,8 @@ function Model:get_diff()
   return self.state.diff
 end
 
-function Model:get_filename()
-  return self.git_file:get_filename()
+function Model:get_filepath()
+  return self.git_file:get_filepath()
 end
 
 function Model:get_filetype()

@@ -17,8 +17,8 @@ function DiffScreen:create_diff_view(scene, model)
     layout_type = function()
       return model:get_layout_type()
     end,
-    filename = function()
-      return model:get_filename()
+    filepath = function()
+      return model:get_filepath()
     end,
     filetype = function()
       return model:get_filetype()
@@ -135,8 +135,8 @@ function DiffScreen:reset(buffer)
   if decision ~= 'yes' and decision ~= 'y' then return end
 
   loop.free_textlock()
-  local filename = self.model:get_filename()
-  if not filename then return end
+  local filepath = self.model:get_filepath()
+  if not filepath then return end
 
   -- Performance: Suppress VGitSync broadcast; refresh only this buffer after delay
   local git_buffer_store = require('vgit.git.git_buffer_store')
@@ -165,13 +165,13 @@ function DiffScreen:enter_view()
   if not mark then return end
 
   loop.free_textlock()
-  local filename = self.model:get_filename()
-  if not filename then return end
+  local filepath = self.model:get_filepath()
+  if not filepath then return end
 
   self:destroy()
   loop.free_textlock()
 
-  fs.open(filename)
+  fs.open(filepath)
 
   loop.free_textlock()
   Window(0):set_lnum(mark.top_relative):position_cursor('center')
@@ -182,8 +182,8 @@ function DiffScreen:stage_hunk(buffer)
   if self.model:is_staged() then return end
 
   loop.free_textlock()
-  local filename = self.model:get_filename()
-  if not filename then return end
+  local filepath = self.model:get_filepath()
+  if not filepath then return end
 
   loop.free_textlock()
   local hunk, index = self.diff_view:get_hunk_under_cursor()
@@ -213,8 +213,8 @@ function DiffScreen:unstage_hunk(buffer)
   if not self.model:is_staged() then return end
 
   loop.free_textlock()
-  local filename = self.model:get_filename()
-  if not filename then return end
+  local filepath = self.model:get_filepath()
+  if not filepath then return end
 
   loop.free_textlock()
   local hunk, index = self.diff_view:get_hunk_under_cursor()
@@ -245,8 +245,8 @@ function DiffScreen:reset_hunk(buffer)
   if self.model:is_staged() then return end
 
   loop.free_textlock()
-  local filename = self.model:get_filename()
-  if not filename then return end
+  local filepath = self.model:get_filepath()
+  if not filepath then return end
 
   loop.free_textlock()
   local hunk, index = self.diff_view:get_hunk_under_cursor()
@@ -284,8 +284,8 @@ function DiffScreen:stage(buffer)
   if self.model:is_staged() then return end
 
   loop.free_textlock()
-  local filename = self.model:get_filename()
-  if not filename then return end
+  local filepath = self.model:get_filepath()
+  if not filepath then return end
 
   -- Performance: Suppress VGitSync broadcast; refresh only this buffer after delay
   local git_buffer_store = require('vgit.git.git_buffer_store')
@@ -309,8 +309,8 @@ function DiffScreen:unstage(buffer)
   if not self.model:is_staged() then return end
 
   loop.free_textlock()
-  local filename = self.model:get_filename()
-  if not filename then return end
+  local filepath = self.model:get_filepath()
+  if not filepath then return end
 
   -- Performance: Suppress VGitSync broadcast; refresh only this buffer after delay
   local git_buffer_store = require('vgit.git.git_buffer_store')

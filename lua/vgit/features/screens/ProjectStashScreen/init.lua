@@ -51,8 +51,8 @@ function ProjectStashScreen:constructor(opts)
       layout_type = function()
         return model:get_layout_type()
       end,
-      filename = function()
-        return model:get_filename()
+      filepath = function()
+        return model:get_filepath()
       end,
       filetype = function()
         return model:get_filetype()

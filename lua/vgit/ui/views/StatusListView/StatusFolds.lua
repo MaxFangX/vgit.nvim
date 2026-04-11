@@ -70,9 +70,9 @@ function StatusFolds:create_node(entry)
   if entry.status then
     local id = entry.id
     local status = entry.status
-    local filename = status.filename
+    local filepath = status.filepath
     local filetype = status.filetype
-    local icon, icon_hl = icons.get(filename, filetype)
+    local icon, icon_hl = icons.get(filepath, filetype)
 
     local node = {
       id = id,
@@ -142,10 +142,10 @@ function StatusFolds:normalize_entries(entries)
     local status = entry.status
     local entry_type = entry.type
     local commit_hash = entry.commit_hash
-    local filename = status.filename
+    local filepath = status.filepath
 
-    -- Split the filename by it's seperator and create a list of all folders.
-    local segmented_folders = vim.split(filename, self.seperator)
+    -- Split the filepath by its separator and create a list of all folders.
+    local segmented_folders = vim.split(filepath, self.seperator)
 
     -- Loop over each segment and create paths by concanating 1..i items in
     -- the segmented folder, storing all the necessary metadata in the process.

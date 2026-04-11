@@ -16,7 +16,7 @@ local Model = BaseReviewModel:extend()
   HUNK KEYING STRATEGY
 
   Hunk marks use composite keys for persistence: mark_key:content_id.
-  The mark_key portion differs by mode (filepath = path relative to repo root):
+  The mark_key portion differs by mode:
 
   BY FILE:   mark_key = filepath                   (e.g., "src/lib/Cargo.lock")
   BY COMMIT: mark_key = subject_hash:filepath      (e.g., "ccb4da92:src/lib/Cargo.lock")
@@ -76,22 +76,22 @@ function Model:reset()
   }
 end
 
--- Entry key for by-commit mode is "commit_hash:filename"
+-- Entry key for by-commit mode is "commit_hash:filepath"
 function Model:get_entry_key(entry)
-  return make_key(entry.commit_hash, entry.filename)
+  return make_key(entry.commit_hash, entry.filepath)
 end
 
 function Model:get_review_type()
   return 'by_commit'
 end
 
--- For by-commit mode, diff args are commit_hash and filename
+-- For by-commit mode, diff args are commit_hash and filepath
 function Model:get_diff_args(entry)
-  return entry.commit_hash, entry.filename
+  return entry.commit_hash, entry.filepath
 end
 
 function Model:get_mark_key(entry)
-  return make_mark_key(entry.commit.message, entry.filename)
+  return make_mark_key(entry.commit.message, entry.filepath)
 end
 
 function Model:get_commit_hash()
@@ -176,7 +176,7 @@ function Model:fetch(base_branch_arg)
 end
 
 -- Build git diff args for a single file (mirrors git_hunks.list logic)
-local function build_diff_args(reponame, commit_hash, filename, old_filename)
+local function build_diff_args(reponame, commit_hash, filepath, old_filepath)
   local parent_hash = commit_hash .. '^'
   local args = {
     '-C', reponame,
@@ -189,26 +189,26 @@ local function build_diff_args(reponame, commit_hash, filename, old_filename)
     '--unified=0',
   }
 
-  if old_filename then
-    -- Renamed file: diff parent:old_filename against current:filename
-    args[#args + 1] = string.format('%s:%s', parent_hash, old_filename)
-    args[#args + 1] = string.format('%s:%s', commit_hash, filename)
+  if old_filepath then
+    -- Renamed file: diff parent:old_filepath against current:filepath
+    args[#args + 1] = string.format('%s:%s', parent_hash, old_filepath)
+    args[#args + 1] = string.format('%s:%s', commit_hash, filepath)
   else
     args[#args + 1] = parent_hash
     args[#args + 1] = commit_hash
     args[#args + 1] = '--'
-    args[#args + 1] = filename
+    args[#args + 1] = filepath
   end
 
   return args
 end
 
 -- Build git show args for file content
-local function build_show_args(reponame, commit_hash, filename)
+local function build_show_args(reponame, commit_hash, filepath)
   return {
     '-C', reponame,
     'show',
-    string.format('%s:%s', commit_hash, filename),
+    string.format('%s:%s', commit_hash, filepath),
   }
 end
 
@@ -222,12 +222,12 @@ function Model:preload_diffs_parallel(commits)
   for _, commit in ipairs(commits) do
     local files = self.state.commit_files[commit.hash] or {}
     for _, file in ipairs(files) do
-      local cache_key = make_key(commit.hash, file.filename)
+      local cache_key = make_key(commit.hash, file.filepath)
       if not self.state.diffs[cache_key] then
         jobs[#jobs + 1] = {
           commit_hash = commit.hash,
-          filename = file.filename,
-          old_filename = file.old_filename,
+          filepath = file.filepath,
+          old_filepath = file.old_filepath,
           cache_key = cache_key,
         }
       end
@@ -239,8 +239,8 @@ function Model:preload_diffs_parallel(commits)
   -- Build all git commands (2 per file: diff + show)
   local commands = {}
   for _, job in ipairs(jobs) do
-    commands[#commands + 1] = build_diff_args(reponame, job.commit_hash, job.filename, job.old_filename)
-    commands[#commands + 1] = build_show_args(reponame, job.commit_hash, job.filename)
+    commands[#commands + 1] = build_diff_args(reponame, job.commit_hash, job.filepath, job.old_filepath)
+    commands[#commands + 1] = build_show_args(reponame, job.commit_hash, job.filepath)
   end
 
   -- Run all commands in parallel
@@ -279,8 +279,8 @@ function Model:preload_diffs_parallel(commits)
 end
 
 -- Preload diff to populate content_ids cache (for accurate categorization)
-function Model:preload_diff(commit_hash, filename, old_filename)
-  local cache_key = make_key(commit_hash, filename)
+function Model:preload_diff(commit_hash, filepath, old_filepath)
+  local cache_key = make_key(commit_hash, filepath)
   if self.state.diffs[cache_key] then return end
 
   local reponame = self.state.reponame
@@ -289,8 +289,8 @@ function Model:preload_diff(commit_hash, filename, old_filename)
   local hunks = git_hunks.list(reponame, {
     parent = parent_hash,
     current = commit_hash,
-    filename = filename,
-    old_filename = old_filename,
+    filepath = filepath,
+    old_filepath = old_filepath,
   })
 
   local hunk_list = hunks or {}
@@ -298,7 +298,7 @@ function Model:preload_diff(commit_hash, filename, old_filename)
   self:set_hunk_count(cache_key, count)
 
   -- Fetch file content for context
-  local lines = git_show.lines(reponame, filename, commit_hash) or {}
+  local lines = git_show.lines(reponame, filepath, commit_hash) or {}
 
   -- Compute and persist content_ids (5-line context disambiguates identical hunks in same file)
   local content_ids = {}
@@ -329,10 +329,10 @@ function Model:rebuild_entries()
     local seen_files = {}
 
     for _, file in ipairs(files) do
-      local mark_key = make_mark_key(commit.message, file.filename)
+      local mark_key = make_mark_key(commit.message, file.filepath)
 
       -- Get content_ids from local cache or persisted ReviewState
-      local cache_key = make_key(commit.hash, file.filename)
+      local cache_key = make_key(commit.hash, file.filepath)
       local cached_diff = self.state.diffs[cache_key]
       local content_ids = cached_diff and cached_diff._content_ids
         or self.review_state:get_content_ids(cache_key)
@@ -340,16 +340,16 @@ function Model:rebuild_entries()
       local has_unseen = self.review_state:has_unseen_hunks(mark_key, content_ids)
       local has_seen = self.review_state:has_seen_hunks(mark_key, content_ids)
 
-      local status = ReviewState.create_status(file.filename, file.status, file.old_filename)
+      local status = ReviewState.create_status(file.filepath, file.status, file.old_filepath)
 
       if has_unseen then
-        local id = entry_id(commit.hash, file.filename, 'unseen')
+        local id = entry_id(commit.hash, file.filepath, 'unseen')
         local data = {
           id = id,
           status = status,
           type = 'unseen',
-          filename = file.filename,
-          old_filename = file.old_filename,
+          filepath = file.filepath,
+          old_filepath = file.old_filepath,
           commit_hash = commit.hash,
           commit = commit,
         }
@@ -358,13 +358,13 @@ function Model:rebuild_entries()
       end
 
       if has_seen then
-        local id = entry_id(commit.hash, file.filename, 'seen')
+        local id = entry_id(commit.hash, file.filepath, 'seen')
         local data = {
           id = id,
           status = status,
           type = 'seen',
-          filename = file.filename,
-          old_filename = file.old_filename,
+          filepath = file.filepath,
+          old_filepath = file.old_filepath,
           commit_hash = commit.hash,
           commit = commit,
         }
@@ -409,8 +409,8 @@ function Model:get_commit_message(commit_hash)
 end
 
 -- Get or create the full (unfiltered) diff for a commit+file
-function Model:get_full_diff(commit_hash, filename)
-  local cache_key = make_key(commit_hash, filename)
+function Model:get_full_diff(commit_hash, filepath)
+  local cache_key = make_key(commit_hash, filepath)
 
   if self.state.diffs[cache_key] then
     return self.state.diffs[cache_key]
@@ -427,13 +427,13 @@ function Model:get_full_diff(commit_hash, filename)
   local hunks, hunks_err = git_hunks.list(reponame, {
     parent = parent_hash,
     current = commit_hash,
-    filename = filename,
-    old_filename = entry.old_filename,
+    filepath = filepath,
+    old_filepath = entry.old_filepath,
   })
   if hunks_err then return nil, hunks_err end
 
   -- Get file content at commit
-  local lines, lines_err = git_show.lines(reponame, filename, commit_hash)
+  local lines, lines_err = git_show.lines(reponame, filepath, commit_hash)
   if lines_err then
     lines = {}
   end
@@ -456,7 +456,7 @@ function Model:get_full_diff(commit_hash, filename)
     content_ids[1] = 'empty'
   end
   -- Persist content_ids in ReviewState (survives screen re-entry)
-  -- Key by cache_key (commit:filename) since each commit has different hunks
+  -- Key by cache_key (commit:filepath) since each commit has different hunks
   self.review_state:set_content_ids(cache_key, content_ids)
 
   local is_deleted = entry.status.first == 'D'

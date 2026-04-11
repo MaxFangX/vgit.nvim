@@ -45,9 +45,9 @@ function git_repo.exists(filepath)
   return true
 end
 
-function git_repo.has(reponame, filename, commit)
+function git_repo.has(reponame, filepath, commit)
   if not reponame then return nil, { 'reponame is required' } end
-  if not filename then return nil, { 'filename is required' } end
+  if not filepath then return nil, { 'filepath is required' } end
 
   commit = commit or 'HEAD'
 
@@ -58,7 +58,7 @@ function git_repo.has(reponame, filename, commit)
     'ls-files',
     '--exclude-standard',
     commit,
-    filename,
+    filepath,
   })
 
   if err then return nil, err end
@@ -66,11 +66,11 @@ function git_repo.has(reponame, filename, commit)
   return true
 end
 
-function git_repo.ignores(reponame, filename)
+function git_repo.ignores(reponame, filepath)
   if not reponame then return nil, { 'reponame is required' } end
-  if not filename then return nil, { 'filename is required' } end
+  if not filepath then return nil, { 'filepath is required' } end
 
-  local result, err = gitcli.run({ '-C', reponame, '--no-pager', 'check-ignore', filename })
+  local result, err = gitcli.run({ '-C', reponame, '--no-pager', 'check-ignore', filepath })
 
   if err then return nil, err end
   if #result == 0 then return false end
@@ -83,7 +83,7 @@ function git_repo.checkout(reponame, name)
   return gitcli.run({ '-C', reponame, '--no-pager', 'checkout', '--quiet', name })
 end
 
-function git_repo.reset(reponame, filename)
+function git_repo.reset(reponame, filepath)
   if not reponame then return nil, { 'reponame is required' } end
 
   local _, err = gitcli.run({
@@ -93,7 +93,7 @@ function git_repo.reset(reponame, filename)
     'checkout',
     '-q',
     '--',
-    filename or '.',
+    filepath or '.',
   })
   if err then return nil, err end
 
@@ -104,11 +104,11 @@ function git_repo.reset(reponame, filename)
     'clean',
     '-fd',
     '--',
-    filename or '.',
+    filepath or '.',
   })
 end
 
-function git_repo.clean(reponame, filename)
+function git_repo.clean(reponame, filepath)
   if not reponame then return nil, { 'reponame is required' } end
 
   return gitcli.run({
@@ -118,7 +118,7 @@ function git_repo.clean(reponame, filename)
     'clean',
     '-fd',
     '--',
-    filename or '.',
+    filepath or '.',
   })
 end
 

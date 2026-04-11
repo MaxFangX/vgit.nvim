@@ -30,8 +30,8 @@ function LineBlameScreen:constructor(opts)
       layout_type = function()
         return model:get_layout_type()
       end,
-      filename = function()
-        return model:get_filename()
+      filepath = function()
+        return model:get_filepath()
       end,
       filetype = function()
         return model:get_filetype()
@@ -54,8 +54,8 @@ end
 function LineBlameScreen:handle_on_enter(buffer, blame)
   vim.cmd('quit')
 
-  local filename = buffer:get_name()
-  vim.cmd(string.format('VGit project_commits_preview --filename=%s %s', filename, blame.commit_hash))
+  local abs_filepath = buffer:get_name()
+  vim.cmd(string.format('VGit project_commits_preview --filepath=%s %s', abs_filepath, blame.commit_hash))
 end
 
 function LineBlameScreen:create()
@@ -63,8 +63,8 @@ function LineBlameScreen:create()
   local window = Window(0)
 
   local lnum = window:get_lnum()
-  local filename = buffer:get_name()
-  local blame, err = self.model:fetch(filename, lnum)
+  local abs_filepath = buffer:get_name()
+  local blame, err = self.model:fetch(abs_filepath, lnum)
   loop.free_textlock()
 
   if err then

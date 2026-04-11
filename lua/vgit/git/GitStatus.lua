@@ -6,17 +6,17 @@ local GitStatus = Object:extend()
 
 function GitStatus:constructor(status)
   local value = status:sub(1, 2)
-  local filename = status:sub(4, #status):gsub('"', '')
+  local filepath = status:sub(4, #status):gsub('"', '')
 
   local first, second = GitStatus:parse(value)
-  local filetype = fs.detect_filetype(filename)
+  local filetype = fs.detect_filetype(filepath)
 
   return {
     id = utils.math.uuid(),
     value = value,
     first = first,
     second = second,
-    filename = filename,
+    filepath = filepath,
     filetype = filetype,
   }
 end

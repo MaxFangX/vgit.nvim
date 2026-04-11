@@ -71,9 +71,9 @@ function git_conflict.parse(lines)
   return conflicts
 end
 
-function git_conflict.has_conflict(reponame, filename)
+function git_conflict.has_conflict(reponame, filepath)
   if not reponame then return nil, { 'reponame is required' } end
-  if not filename then return nil, { 'filename is required' } end
+  if not filepath then return nil, { 'filepath is required' } end
 
   local result, err = gitcli.run({
     '-C',
@@ -81,7 +81,7 @@ function git_conflict.has_conflict(reponame, filename)
     'ls-files',
     '-u',
     '--',
-    filename,
+    filepath,
   })
 
   if err then return nil, err end

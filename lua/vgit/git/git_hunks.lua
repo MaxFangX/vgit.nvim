@@ -114,8 +114,8 @@ function git_hunks.list(reponame, opts)
   local unmerged = opts.unmerged
   local current = opts.current
   local parent = opts.parent
-  local filename = opts.filename
-  local old_filename = opts.old_filename  -- For renames: the filename at parent ref
+  local filepath = opts.filepath
+  local old_filepath = opts.old_filepath  -- For renames: the filepath at parent ref
   local empty_hash = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 
   local filenames = opts.filenames
@@ -142,14 +142,14 @@ function git_hunks.list(reponame, opts)
     if not current then return nil, { 'current is required' } end
 
     utils.list.concat(args, {
-      string.format('%s:%s', current, filename),
-      string.format('%s:%s', parent, filename),
+      string.format('%s:%s', current, filepath),
+      string.format('%s:%s', parent, filepath),
     })
-  elseif old_filename and parent and current then
-    -- Renamed file: diff parent:old_filename against current:filename
+  elseif old_filepath and parent and current then
+    -- Renamed file: diff parent:old_filepath against current:filepath
     utils.list.concat(args, {
-      string.format('%s:%s', #parent > 0 and parent or empty_hash, old_filename),
-      string.format('%s:%s', current, filename),
+      string.format('%s:%s', #parent > 0 and parent or empty_hash, old_filepath),
+      string.format('%s:%s', current, filepath),
     })
   elseif parent and current then
     utils.list.concat(args, {
@@ -160,11 +160,11 @@ function git_hunks.list(reponame, opts)
     utils.list.concat(args, { parent })
   end
 
-  -- For renames with explicit blob refs, skip the -- filename part
-  if not (old_filename and parent and current) then
+  -- For renames with explicit blob refs, skip the -- filepath part
+  if not (old_filepath and parent and current) then
     utils.list.concat(args, {
       '--',
-      filename,
+      filepath,
     })
   end
 

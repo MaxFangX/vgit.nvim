@@ -4,7 +4,7 @@ local GitPatch = require('vgit.git.GitPatch')
 
 local git_stager = {}
 
-function git_stager.stage(reponame, filename)
+function git_stager.stage(reponame, filepath)
   if not reponame then return nil, { 'reponame is required' } end
 
   return gitcli.run({
@@ -13,11 +13,11 @@ function git_stager.stage(reponame, filename)
     '--no-pager',
     'add',
     '--',
-    filename or '.',
+    filepath or '.',
   })
 end
 
-function git_stager.unstage(reponame, filename)
+function git_stager.unstage(reponame, filepath)
   if not reponame then return nil, { 'reponame is required' } end
 
   return gitcli.run({
@@ -27,19 +27,19 @@ function git_stager.unstage(reponame, filename)
     '-q',
     'HEAD',
     '--',
-    filename or '.',
+    filepath or '.',
   })
 end
 
-function git_stager.stage_hunk(reponame, filename, hunk)
+function git_stager.stage_hunk(reponame, filepath, hunk)
   if not reponame then return nil, { 'reponame is required' } end
-  if not filename then return nil, { 'filename is required' } end
+  if not filepath then return nil, { 'filepath is required' } end
   if not hunk then return nil, { 'hunk is required' } end
 
-  local patch = GitPatch(filename, hunk)
-  local patch_filename = fs.tmpname()
+  local patch = GitPatch(filepath, hunk)
+  local patch_filepath = fs.tmpname()
 
-  fs.write_file(patch_filename, patch)
+  fs.write_file(patch_filepath, patch)
 
   local _, err = gitcli.run({
     '-C',
@@ -49,23 +49,23 @@ function git_stager.stage_hunk(reponame, filename, hunk)
     '--cached',
     '--whitespace=nowarn',
     '--unidiff-zero',
-    patch_filename,
+    patch_filepath,
   })
 
-  fs.remove_file(patch_filename)
+  fs.remove_file(patch_filepath)
 
   return nil, err
 end
 
-function git_stager.unstage_hunk(reponame, filename, hunk)
+function git_stager.unstage_hunk(reponame, filepath, hunk)
   if not reponame then return nil, { 'reponame is required' } end
-  if not filename then return nil, { 'filename is required' } end
+  if not filepath then return nil, { 'filepath is required' } end
   if not hunk then return nil, { 'hunk is required' } end
 
-  local patch = GitPatch(filename, hunk)
-  local patch_filename = fs.tmpname()
+  local patch = GitPatch(filepath, hunk)
+  local patch_filepath = fs.tmpname()
 
-  fs.write_file(patch_filename, patch)
+  fs.write_file(patch_filepath, patch)
 
   local _, err = gitcli.run({
     '-C',
@@ -76,24 +76,24 @@ function git_stager.unstage_hunk(reponame, filename, hunk)
     '--cached',
     '--whitespace=nowarn',
     '--unidiff-zero',
-    patch_filename,
+    patch_filepath,
   })
 
-  fs.remove_file(patch_filename)
+  fs.remove_file(patch_filepath)
 
   return nil, err
 end
 
 -- Reset (discard) a hunk in the working directory
-function git_stager.reset_hunk(reponame, filename, hunk)
+function git_stager.reset_hunk(reponame, filepath, hunk)
   if not reponame then return nil, { 'reponame is required' } end
-  if not filename then return nil, { 'filename is required' } end
+  if not filepath then return nil, { 'filepath is required' } end
   if not hunk then return nil, { 'hunk is required' } end
 
-  local patch = GitPatch(filename, hunk)
-  local patch_filename = fs.tmpname()
+  local patch = GitPatch(filepath, hunk)
+  local patch_filepath = fs.tmpname()
 
-  fs.write_file(patch_filename, patch)
+  fs.write_file(patch_filepath, patch)
 
   -- Apply the patch in reverse to the working directory (not staged)
   local _, err = gitcli.run({
@@ -104,10 +104,10 @@ function git_stager.reset_hunk(reponame, filename, hunk)
     '--reverse',
     '--whitespace=nowarn',
     '--unidiff-zero',
-    patch_filename,
+    patch_filepath,
   })
 
-  fs.remove_file(patch_filename)
+  fs.remove_file(patch_filepath)
 
   return nil, err
 end

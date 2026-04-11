@@ -70,8 +70,8 @@ function ProjectReviewScreen:init_views(list_plot, diff_plot)
     layout_type = function()
       return model:get_layout_type()
     end,
-    filename = function()
-      return model:get_filename()
+    filepath = function()
+      return model:get_filepath()
     end,
     filetype = function()
       return model:get_filetype()
@@ -119,8 +119,8 @@ end
 function ProjectReviewScreen:get_entry_context(entry)
   return {
     key = self.model:get_entry_key(entry),       -- For entry identification and diff caching
-    mark_key = self.model:get_mark_key(entry),   -- For mark storage (filename only)
-    filename = entry.filename,
+    mark_key = self.model:get_mark_key(entry),   -- For mark storage (filepath only)
+    filepath = entry.filepath,
     commit_hash = entry.commit_hash, -- nil for by-file review
   }
 end
@@ -404,7 +404,7 @@ function ProjectReviewScreen:build_logical_file_list(entries)
           sorted[#sorted + 1] = file
         end
         table.sort(sorted, function(a, b)
-          return compare_paths(a.status.filename, b.status.filename)
+          return compare_paths(a.status.filepath, b.status.filepath)
         end)
 
         for _, file in ipairs(sorted) do
@@ -422,7 +422,7 @@ function ProjectReviewScreen:build_logical_file_list(entries)
         sorted[#sorted + 1] = file
       end
       table.sort(sorted, function(a, b)
-        return compare_paths(a.status.filename, b.status.filename)
+        return compare_paths(a.status.filepath, b.status.filepath)
       end)
 
       for _, file in ipairs(sorted) do
@@ -438,9 +438,9 @@ function ProjectReviewScreen:build_logical_file_list(entries)
 end
 
 -- Find adjacent files in a section (for navigation after mark/unmark)
--- Returns next_file, prev_file, first_file as {filename, commit_hash} tables or nil
+-- Returns next_file, prev_file, first_file as {filepath, commit_hash} tables or nil
 -- first_file: first file in section (for wrap-around when reaching end)
-function ProjectReviewScreen:find_adjacent_files(target_section, current_filename, current_commit)
+function ProjectReviewScreen:find_adjacent_files(target_section, current_filepath, current_commit)
   if not self.list_view.get_entries then return nil, nil, nil end
 
   local entries = self.list_view:get_entries()
@@ -455,20 +455,20 @@ function ProjectReviewScreen:find_adjacent_files(target_section, current_filenam
     if info.section == target_section then
       -- Track first file in section for wrap-around
       if not first_file then
-        first_file = { filename = info.file.status.filename, commit_hash = info.commit_hash }
+        first_file = { filepath = info.file.status.filepath, commit_hash = info.commit_hash }
       end
 
-      local is_current = info.file.status.filename == current_filename
+      local is_current = info.file.status.filepath == current_filepath
         and (not current_commit or info.commit_hash == current_commit)
 
       if found_current and not next_file then
-        next_file = { filename = info.file.status.filename, commit_hash = info.commit_hash }
+        next_file = { filepath = info.file.status.filepath, commit_hash = info.commit_hash }
         break
       end
       if is_current then
         found_current = true
         if last_before_current then
-          prev_file = { filename = last_before_current.file.status.filename, commit_hash = last_before_current.commit_hash }
+          prev_file = { filepath = last_before_current.file.status.filepath, commit_hash = last_before_current.commit_hash }
         end
       else
         last_before_current = info
@@ -503,7 +503,7 @@ end
 
 -- Move to an entry, expanding its commit if needed
 -- commit_message: match by commit message (stable across rebases) instead of hash
-function ProjectReviewScreen:move_to_entry_expanding_commit(filename, commit_hash, entry_type, commit_message)
+function ProjectReviewScreen:move_to_entry_expanding_commit(filepath, commit_hash, entry_type, commit_message)
   if not self.list_view.get_entries then return nil end
 
   local entries = self.list_view:get_entries()
@@ -524,7 +524,7 @@ function ProjectReviewScreen:move_to_entry_expanding_commit(filename, commit_has
         for _, commit_data in ipairs(section.commits) do
           if commit_matches(commit_data.commit) then
             for _, file in ipairs(commit_data.files or {}) do
-              if file.status.filename == filename then
+              if file.status.filepath == filepath then
                 -- Expand this commit and re-render
                 if self.list_view:set_active_commit(commit_data.commit.hash, section.title) then
                   self.list_view:render()
@@ -533,7 +533,7 @@ function ProjectReviewScreen:move_to_entry_expanding_commit(filename, commit_has
                 -- Now find and move to the entry
                 return self.list_view:move_to_entry(function(e)
                   return (not entry_type or e.type == entry_type)
-                    and e.status.filename == filename
+                    and e.status.filepath == filepath
                     and e.commit_hash == commit_data.commit.hash
                 end)
               end
@@ -543,10 +543,10 @@ function ProjectReviewScreen:move_to_entry_expanding_commit(filename, commit_has
       -- Handle by-file structure: section.entries
       elseif section.entries then
         for _, file in ipairs(section.entries) do
-          if file.status.filename == filename then
+          if file.status.filepath == filepath then
             return self.list_view:move_to_entry(function(e)
               return (not entry_type or e.type == entry_type)
-                and e.status.filename == filename
+                and e.status.filepath == filepath
             end)
           end
         end
@@ -591,11 +591,11 @@ function ProjectReviewScreen:prev_hunk()
   end
 end
 
--- Position the list cursor on a specific file (by filename, optional commit_hash, and entry type)
-function ProjectReviewScreen:move_list_cursor_to_file(filename, commit_hash, entry_type)
+-- Position the list cursor on a specific file (by filepath, optional commit_hash, and entry type)
+function ProjectReviewScreen:move_list_cursor_to_file(filepath, commit_hash, entry_type)
   -- For CommitListView, expand the correct commit first
   if self.list_view.get_entries then
-    self:move_to_entry_expanding_commit(filename, commit_hash, entry_type)
+    self:move_to_entry_expanding_commit(filepath, commit_hash, entry_type)
     return
   end
 
@@ -603,7 +603,7 @@ function ProjectReviewScreen:move_list_cursor_to_file(filename, commit_hash, ent
   local component = self.list_view.scene:get('list')
   self.list_view:find_list_item(function(item, lnum)
     if not item.entry or not item.entry.status then return false end
-    if item.entry.status.filename ~= filename then return false end
+    if item.entry.status.filepath ~= filepath then return false end
     if commit_hash and item.entry.commit_hash ~= commit_hash then return false end
     if entry_type and item.entry.type ~= entry_type then return false end
     loop.free_textlock()
@@ -640,7 +640,7 @@ end
 -- Find next hunk matching target_seen_state starting from a specific file/hunk
 -- target_seen_state: true = find seen hunks (for auto-advance after unmarking)
 --                    false = find unseen hunks (for auto-advance after marking)
--- next_file/prev_file/first_file: optional {filename, commit_hash} found BEFORE rebuild
+-- next_file/prev_file/first_file: optional {filepath, commit_hash} found BEFORE rebuild
 --
 -- Navigation order (section is a cohesive loop):
 --   1. Hunks after current in same file
@@ -648,7 +648,7 @@ end
 --   3. Wrap to first file in section (catches skipped files at start)
 --   4. Hunks before current in same file (catches skipped hunks in current file)
 --   5. Section complete - stay on current file (now in opposite section)
-function ProjectReviewScreen:move_to_hunk_matching(target_seen_state, mark_key, filename, commit_hash, from_hunk, total_hunks, next_file, prev_file, first_file)
+function ProjectReviewScreen:move_to_hunk_matching(target_seen_state, mark_key, filepath, commit_hash, from_hunk, total_hunks, next_file, prev_file, first_file)
   local hunk_alignment = 'smart'
   local target_entry_type = target_seen_state and 'seen' or 'unseen'
 
@@ -659,7 +659,7 @@ function ProjectReviewScreen:move_to_hunk_matching(target_seen_state, mark_key, 
   -- 1. Check hunks after current in same file
   local match_idx = find_hunk_in_range(self.model, content_ids, mark_key, target_seen_state, from_hunk + 1, total_hunks)
   if match_idx then
-    local found_entry = self:move_to_entry_expanding_commit(filename, commit_hash, target_entry_type)
+    local found_entry = self:move_to_entry_expanding_commit(filepath, commit_hash, target_entry_type)
     if found_entry then
       self.model:set_entry_id(found_entry.id)
       loop.free_textlock()
@@ -674,7 +674,7 @@ function ProjectReviewScreen:move_to_hunk_matching(target_seen_state, mark_key, 
   -- 2. Try next file in section (first hunk)
   if next_file then
     local found_entry = self:move_to_entry_expanding_commit(
-      next_file.filename, next_file.commit_hash, target_entry_type)
+      next_file.filepath, next_file.commit_hash, target_entry_type)
     if found_entry then
       self.model:set_entry_id(found_entry.id)
       loop.free_textlock()
@@ -687,7 +687,7 @@ function ProjectReviewScreen:move_to_hunk_matching(target_seen_state, mark_key, 
   -- 3. Wrap to first file in section (catches skipped files at start)
   if first_file then
     local found_entry = self:move_to_entry_expanding_commit(
-      first_file.filename, first_file.commit_hash, target_entry_type)
+      first_file.filepath, first_file.commit_hash, target_entry_type)
     if found_entry then
       self.model:set_entry_id(found_entry.id)
       loop.free_textlock()
@@ -700,7 +700,7 @@ function ProjectReviewScreen:move_to_hunk_matching(target_seen_state, mark_key, 
   -- 4. Check hunks before current in same file (catches skipped hunks)
   match_idx = find_hunk_in_range(self.model, content_ids, mark_key, target_seen_state, from_hunk - 1, 1, -1)
   if match_idx then
-    local found_entry = self:move_to_entry_expanding_commit(filename, commit_hash, target_entry_type)
+    local found_entry = self:move_to_entry_expanding_commit(filepath, commit_hash, target_entry_type)
     if found_entry then
       self.model:set_entry_id(found_entry.id)
       loop.free_textlock()
@@ -714,7 +714,7 @@ function ProjectReviewScreen:move_to_hunk_matching(target_seen_state, mark_key, 
 
   -- 5. Section complete - stay on current file (now in opposite section)
   local opposite_type = target_seen_state and 'unseen' or 'seen'
-  local current_entry = self:move_to_entry_expanding_commit(filename, commit_hash, opposite_type)
+  local current_entry = self:move_to_entry_expanding_commit(filepath, commit_hash, opposite_type)
   if current_entry then
     self.model:set_entry_id(current_entry.id)
   end
@@ -752,18 +752,18 @@ function ProjectReviewScreen:mark_hunk()
 
   -- Save context before marking (entry may be removed after render if file becomes fully seen)
   local current_mark_key = ctx.mark_key
-  local current_filename = ctx.filename
+  local current_filepath = ctx.filepath
   local current_commit = ctx.commit_hash
   local current_hunk = hunk_index
 
   -- Find adjacent unseen files BEFORE rebuilding (includes files in collapsed commits)
-  local next_file, prev_file, first_file = self:find_adjacent_files('Unseen', current_filename, current_commit)
+  local next_file, prev_file, first_file = self:find_adjacent_files('Unseen', current_filepath, current_commit)
 
   self.model:mark_hunk(ctx.mark_key, content_id)
   self.list_view:render()
 
   -- Navigate to next unmarked hunk using saved context
-  self:move_to_hunk_matching(false, current_mark_key, current_filename, current_commit, current_hunk, total_hunks, next_file, prev_file, first_file)
+  self:move_to_hunk_matching(false, current_mark_key, current_filepath, current_commit, current_hunk, total_hunks, next_file, prev_file, first_file)
   self._marking = false
 end
 
@@ -795,12 +795,12 @@ function ProjectReviewScreen:unmark_hunk()
 
   -- Save context before unmarking (entry may be removed after render if file becomes fully unseen)
   local current_mark_key = ctx.mark_key
-  local current_filename = ctx.filename
+  local current_filepath = ctx.filepath
   local current_commit = ctx.commit_hash
   local current_hunk = hunk_index
 
   -- Find adjacent seen files BEFORE rebuilding (includes files in collapsed commits)
-  local next_file, prev_file, first_file = self:find_adjacent_files('Seen', current_filename, current_commit)
+  local next_file, prev_file, first_file = self:find_adjacent_files('Seen', current_filepath, current_commit)
 
   self.model:unmark_hunk(ctx.mark_key, content_id)
 
@@ -811,7 +811,7 @@ function ProjectReviewScreen:unmark_hunk()
   self.list_view:render()
 
   -- Navigate to next marked hunk using saved context
-  self:move_to_hunk_matching(true, current_mark_key, current_filename, current_commit, current_hunk, total_hunks, next_file, prev_file, first_file)
+  self:move_to_hunk_matching(true, current_mark_key, current_filepath, current_commit, current_hunk, total_hunks, next_file, prev_file, first_file)
   self._marking = false
 end
 
@@ -829,7 +829,7 @@ function ProjectReviewScreen:set_file_seen_state(mark_as_seen)
   end
 
   local ctx = self:get_entry_context(entry)
-  local current_filename = ctx.filename
+  local current_filepath = ctx.filepath
   local current_commit = ctx.commit_hash
   local current_type = entry.type
 
@@ -846,10 +846,10 @@ function ProjectReviewScreen:set_file_seen_state(mark_as_seen)
   local next_file, prev_file = nil, nil
   if current_type == opposite_state_type then
     local target_section = opposite_state_type == 'seen' and 'Seen' or 'Unseen'
-    next_file, prev_file = self:find_adjacent_files(target_section, current_filename, current_commit)
+    next_file, prev_file = self:find_adjacent_files(target_section, current_filepath, current_commit)
   end
 
-  -- Perform the mark/unmark using mark_key (filename only)
+  -- Perform the mark/unmark using mark_key (filepath only)
   if mark_as_seen then
     self.model:mark_file(ctx.mark_key)
   else
@@ -865,7 +865,7 @@ function ProjectReviewScreen:set_file_seen_state(mark_as_seen)
   if current_type == same_state_type then
     local found_entry = self.list_view:move_to_entry(function(e)
       if e.type ~= same_state_type then return false end
-      if not e.status or e.status.filename ~= current_filename then return false end
+      if not e.status or e.status.filepath ~= current_filepath then return false end
       if current_commit and e.commit_hash ~= current_commit then return false end
       return true
     end)
@@ -882,14 +882,14 @@ function ProjectReviewScreen:set_file_seen_state(mark_as_seen)
   -- Navigate to next opposite-state file, or prev if on last, or stay if none left
   local found_entry
   if next_file then
-    found_entry = self:move_to_entry_expanding_commit(next_file.filename, next_file.commit_hash, opposite_state_type)
+    found_entry = self:move_to_entry_expanding_commit(next_file.filepath, next_file.commit_hash, opposite_state_type)
   elseif prev_file then
-    found_entry = self:move_to_entry_expanding_commit(prev_file.filename, prev_file.commit_hash, opposite_state_type)
+    found_entry = self:move_to_entry_expanding_commit(prev_file.filepath, prev_file.commit_hash, opposite_state_type)
   end
 
   -- If no opposite-state entries found, stay on the current file (now in same_state section)
   if not found_entry then
-    found_entry = self:move_to_entry_expanding_commit(current_filename, current_commit, same_state_type)
+    found_entry = self:move_to_entry_expanding_commit(current_filepath, current_commit, same_state_type)
   end
 
   if found_entry and found_entry.id then
@@ -1060,7 +1060,7 @@ function ProjectReviewScreen:ensure_visible_file()
 end
 
 function ProjectReviewScreen:open_file()
-  local filepath = self.model:get_filepath()
+  local filepath = self.model:get_abs_filepath()
   if not filepath then return end
 
   -- Handle deleted files: move to next file
@@ -1071,7 +1071,7 @@ function ProjectReviewScreen:open_file()
       return
     end
     self.model:set_entry_id(list_item.id)
-    filepath = self.model:get_filepath()
+    filepath = self.model:get_abs_filepath()
     if not filepath or not fs.exists(filepath) then
       console.info('File has been deleted')
       return
@@ -1299,39 +1299,39 @@ end
 -- Returns true if current buffer is in the review (triggers source line positioning)
 function ProjectReviewScreen:focus_relative_buffer_entry(buffer)
   local review_state = self.model:get_review_state()
-  local last_section, last_filename, last_commit_message = review_state:get_position()
+  local last_section, last_filepath, last_commit_message = review_state:get_position()
 
   -- Priority 1: Find current buffer's file, preferring saved section
   -- This keeps the review in sync with what you're editing in vim
-  local filename = buffer:get_relative_name()
-  if filename ~= '' then
+  local filepath = buffer:get_relative_name()
+  if filepath ~= '' then
     if self.list_view.get_entries then
-      local found = self:move_to_entry_expanding_commit(filename, nil, last_section, last_commit_message)
-        or self:move_to_entry_expanding_commit(filename, nil, last_section)
-        or self:move_to_entry_expanding_commit(filename, nil, nil)
+      local found = self:move_to_entry_expanding_commit(filepath, nil, last_section, last_commit_message)
+        or self:move_to_entry_expanding_commit(filepath, nil, last_section)
+        or self:move_to_entry_expanding_commit(filepath, nil, nil)
       if found then return true end
     else
       local list_item = self:move_to(function(status, entry_type)
-        return status.filename == filename and entry_type == last_section
+        return status.filepath == filepath and entry_type == last_section
       end) or self:move_to(function(status)
-        return status.filename == filename
+        return status.filepath == filepath
       end)
       if list_item then return true end
     end
   end
 
   -- Priority 2: Current buffer not in review - restore saved position
-  if last_filename then
+  if last_filepath then
     if self.list_view.get_entries then
-      local found = self:move_to_entry_expanding_commit(last_filename, nil, last_section, last_commit_message)
-        or self:move_to_entry_expanding_commit(last_filename, nil, last_section)
-        or self:move_to_entry_expanding_commit(last_filename, nil, nil)
+      local found = self:move_to_entry_expanding_commit(last_filepath, nil, last_section, last_commit_message)
+        or self:move_to_entry_expanding_commit(last_filepath, nil, last_section)
+        or self:move_to_entry_expanding_commit(last_filepath, nil, nil)
       if found then return false end
     else
       local list_item = self:move_to(function(status, entry_type)
-        return status.filename == last_filename and entry_type == last_section
+        return status.filepath == last_filepath and entry_type == last_section
       end) or self:move_to(function(status)
-        return status.filename == last_filename
+        return status.filepath == last_filepath
       end)
       if list_item then return false end
     end
@@ -1439,13 +1439,13 @@ function ProjectReviewScreen:on_quit()
   local review_state = self.model:get_review_state()
   if review_state and entry then
     local commit_message = entry.commit and entry.commit.message or nil
-    review_state:save_position(entry.type, entry.filename, commit_message, focus)
+    review_state:save_position(entry.type, entry.filepath, commit_message, focus)
   end
   if review_state then
     review_state:save()
   end
 
-  local filepath = self.model:get_filepath()
+  local filepath = self.model:get_abs_filepath()
 
   -- Get cursor position info only if focused on diff
   local file_lnum, diff_winline
@@ -1495,7 +1495,7 @@ function ProjectReviewScreen:destroy()
     if review_state and entry then
       local focus = current_focus or 'diff'
       local commit_message = entry.commit and entry.commit.message or nil
-      review_state:save_position(entry.type, entry.filename, commit_message, focus)
+      review_state:save_position(entry.type, entry.filepath, commit_message, focus)
     end
     if review_state then
       review_state:save()

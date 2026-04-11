@@ -11,15 +11,15 @@ local git_conflict = require('vgit.git.git_conflict')
 
 local GitFile = Object:extend()
 
-function GitFile:constructor(filepath)
-  local reponame = git_repo.discover(filepath)
-  local filename = fs.make_relative(reponame, filepath)
-  local filetype = fs.detect_filetype(filename)
+function GitFile:constructor(abs_filepath)
+  local reponame = git_repo.discover(abs_filepath)
+  local filepath = fs.make_relative(reponame, abs_filepath)
+  local filetype = fs.detect_filetype(filepath)
 
   return {
     reponame = reponame,
+    abs_filepath = abs_filepath,
     filepath = filepath,
-    filename = filename,
     filetype = filetype,
     state = { hunks = nil }
   }
@@ -29,8 +29,8 @@ function GitFile:config()
   return git_repo.config(self.reponame)
 end
 
-function GitFile:get_filename()
-  return self.filename
+function GitFile:get_filepath()
+  return self.filepath
 end
 
 function GitFile:get_filetype()
@@ -42,43 +42,43 @@ function GitFile:get_hunks()
 end
 
 function GitFile:is_ignored()
-  return git_repo.ignores(self.reponame, self.filename)
+  return git_repo.ignores(self.reponame, self.filepath)
 end
 
 function GitFile:is_tracked()
-  return git_repo.has(self.reponame, self.filename)
+  return git_repo.has(self.reponame, self.filepath)
 end
 
 function GitFile:stage_hunk(hunk)
-  return git_stager.stage_hunk(self.reponame, self.filename, hunk)
+  return git_stager.stage_hunk(self.reponame, self.filepath, hunk)
 end
 
 function GitFile:unstage_hunk(hunk)
-  return git_stager.unstage_hunk(self.reponame, self.filename, hunk)
+  return git_stager.unstage_hunk(self.reponame, self.filepath, hunk)
 end
 
 function GitFile:reset_hunk(hunk)
-  return git_stager.reset_hunk(self.reponame, self.filename, hunk)
+  return git_stager.reset_hunk(self.reponame, self.filepath, hunk)
 end
 
 function GitFile:stage()
-  return git_stager.stage(self.reponame, self.filename)
+  return git_stager.stage(self.reponame, self.filepath)
 end
 
 function GitFile:unstage()
-  return git_stager.unstage(self.reponame, self.filename)
+  return git_stager.unstage(self.reponame, self.filepath)
 end
 
 function GitFile:blame(lnum)
-  return git_blame.get(self.reponame, self.filename, lnum)
+  return git_blame.get(self.reponame, self.filepath, lnum)
 end
 
 function GitFile:blames()
-  return git_blame.list(self.reponame, self.filename)
+  return git_blame.list(self.reponame, self.filepath)
 end
 
 function GitFile:has_conflict()
-  return git_conflict.has_conflict(self.reponame, self.filename)
+  return git_conflict.has_conflict(self.reponame, self.filepath)
 end
 
 function GitFile:conflicts(lines)
@@ -94,11 +94,11 @@ function GitFile:log(opts)
 end
 
 function GitFile:logs()
-  return git_log.list(self.reponame, { filename = self.filename })
+  return git_log.list(self.reponame, { filepath = self.filepath })
 end
 
 function GitFile:status()
-  return git_status.ls(self.reponame, self.filename)
+  return git_status.ls(self.reponame, self.filepath)
 end
 
 function GitFile:generate_status()
@@ -116,11 +116,11 @@ function GitFile:generate_status()
 end
 
 function GitFile:lines(commit_hash)
-  return git_show.lines(self.reponame, self.filename, commit_hash)
+  return git_show.lines(self.reponame, self.filepath, commit_hash)
 end
 
 function GitFile:live_hunks(current_lines)
-  if not git_repo.has(self.reponame, self.filename) then
+  if not git_repo.has(self.reponame, self.filepath) then
     self.state.hunks = git_hunks.custom(current_lines, { untracked = true })
     return self.state.hunks
   end
@@ -145,7 +145,7 @@ function GitFile:list_hunks(opts)
     return git_hunks.custom(lines, opts)
   end
 
-  opts.filename = self.filename
+  opts.filepath = self.filepath
   return git_hunks.list(self.reponame, opts)
 end
 

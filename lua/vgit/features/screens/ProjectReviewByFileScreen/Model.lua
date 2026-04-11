@@ -33,18 +33,18 @@ function Model:reset()
   }
 end
 
--- Entry key for by-file mode is just the filename
+-- Entry key for by-file mode is just the filepath
 function Model:get_entry_key(entry)
-  return entry.filename
+  return entry.filepath
 end
 
 function Model:get_review_type()
   return 'by_file'
 end
 
--- For by-file mode, diff args is just the filename
+-- For by-file mode, diff args is just the filepath
 function Model:get_diff_args(entry)
-  return entry.filename
+  return entry.filepath
 end
 
 function Model:fetch(base_branch_arg)
@@ -113,7 +113,7 @@ function Model:fetch(base_branch_arg)
 end
 
 -- Build git diff args for a single file
-local function build_diff_args(reponame, merge_base, filename, old_filename)
+local function build_diff_args(reponame, merge_base, filepath, old_filepath)
   local args = {
     '-C', reponame,
     '--no-pager',
@@ -125,26 +125,26 @@ local function build_diff_args(reponame, merge_base, filename, old_filename)
     '--unified=0',
   }
 
-  if old_filename then
-    -- Renamed file: diff merge_base:old_filename against HEAD:filename
-    args[#args + 1] = string.format('%s:%s', merge_base, old_filename)
-    args[#args + 1] = string.format('%s:%s', 'HEAD', filename)
+  if old_filepath then
+    -- Renamed file: diff merge_base:old_filepath against HEAD:filepath
+    args[#args + 1] = string.format('%s:%s', merge_base, old_filepath)
+    args[#args + 1] = string.format('%s:%s', 'HEAD', filepath)
   else
     args[#args + 1] = merge_base
     args[#args + 1] = 'HEAD'
     args[#args + 1] = '--'
-    args[#args + 1] = filename
+    args[#args + 1] = filepath
   end
 
   return args
 end
 
 -- Build git show args for file content
-local function build_show_args(reponame, filename)
+local function build_show_args(reponame, filepath)
   return {
     '-C', reponame,
     'show',
-    string.format('%s:%s', 'HEAD', filename),
+    string.format('%s:%s', 'HEAD', filepath),
   }
 end
 
@@ -157,10 +157,10 @@ function Model:preload_diffs_parallel(changed_files)
   -- Collect all files to preload
   local jobs = {}
   for _, file in ipairs(changed_files) do
-    if not self.state.diffs[file.filename] then
+    if not self.state.diffs[file.filepath] then
       jobs[#jobs + 1] = {
-        filename = file.filename,
-        old_filename = file.old_filename,
+        filepath = file.filepath,
+        old_filepath = file.old_filepath,
       }
     end
   end
@@ -170,8 +170,8 @@ function Model:preload_diffs_parallel(changed_files)
   -- Build all git commands (2 per file: diff + show)
   local commands = {}
   for _, job in ipairs(jobs) do
-    commands[#commands + 1] = build_diff_args(reponame, merge_base, job.filename, job.old_filename)
-    commands[#commands + 1] = build_show_args(reponame, job.filename)
+    commands[#commands + 1] = build_diff_args(reponame, merge_base, job.filepath, job.old_filepath)
+    commands[#commands + 1] = build_show_args(reponame, job.filepath)
   end
 
   -- Run all commands in parallel
@@ -191,7 +191,7 @@ function Model:preload_diffs_parallel(changed_files)
     end
 
     local count = #hunk_list > 0 and #hunk_list or 1
-    self:set_hunk_count(job.filename, count)
+    self:set_hunk_count(job.filepath, count)
 
     local file_lines = (show_result and show_result.result) or {}
 
@@ -203,13 +203,13 @@ function Model:preload_diffs_parallel(changed_files)
     if #content_ids == 0 then
       content_ids[1] = 'empty'
     end
-    self.review_state:set_content_ids(job.filename, content_ids)
+    self.review_state:set_content_ids(job.filepath, content_ids)
   end
 end
 
 -- Preload diff to populate content_ids cache (for accurate categorization)
-function Model:preload_diff(filename, old_filename)
-  if self.state.diffs[filename] then return end
+function Model:preload_diff(filepath, old_filepath)
+  if self.state.diffs[filepath] then return end
 
   local reponame = self.state.reponame
   local merge_base = self.state.merge_base
@@ -218,16 +218,16 @@ function Model:preload_diff(filename, old_filename)
   local hunks = git_hunks.list(reponame, {
     parent = merge_base,
     current = 'HEAD',
-    filename = filename,
-    old_filename = old_filename,
+    filepath = filepath,
+    old_filepath = old_filepath,
   })
 
   local hunk_list = hunks or {}
   local count = #hunk_list > 0 and #hunk_list or 1
-  self:set_hunk_count(filename, count)
+  self:set_hunk_count(filepath, count)
 
   -- Fetch file content for context
-  local lines = git_show.lines(reponame, filename, 'HEAD') or {}
+  local lines = git_show.lines(reponame, filepath, 'HEAD') or {}
 
   -- Compute and persist content_ids (5-line context disambiguates identical hunks in same file)
   local content_ids = {}
@@ -237,12 +237,12 @@ function Model:preload_diff(filename, old_filename)
   if #content_ids == 0 then
     content_ids[1] = 'empty'
   end
-  self.review_state:set_content_ids(filename, content_ids)
+  self.review_state:set_content_ids(filepath, content_ids)
 end
 
--- Generate stable entry ID from filename and type
-local function entry_id(filename, entry_type)
-  return string.format('%s|%s', filename, entry_type)
+-- Generate stable entry ID from filepath and type
+local function entry_id(filepath, entry_type)
+  return string.format('%s|%s', filepath, entry_type)
 end
 
 -- Rebuild entries after marking/unmarking (uses stored changed_files)
@@ -257,9 +257,9 @@ function Model:rebuild_entries()
   local seen_files = {}
 
   for _, file in ipairs(changed_files) do
-    local status = ReviewState.create_status(file.filename, file.status, file.old_filename)
-    -- Mark key is just the filename
-    local mark_key = file.filename
+    local status = ReviewState.create_status(file.filepath, file.status, file.old_filepath)
+    -- Mark key is just the filepath
+    local mark_key = file.filepath
 
     -- Get content_ids from local cache or persisted ReviewState
     local cached_diff = self.state.diffs[mark_key]
@@ -270,15 +270,15 @@ function Model:rebuild_entries()
     local has_seen = self.review_state:has_seen_hunks(mark_key, content_ids)
 
     if has_unseen then
-      local id = entry_id(file.filename, 'unseen')
-      local data = { id = id, status = status, type = 'unseen', filename = file.filename, old_filename = file.old_filename }
+      local id = entry_id(file.filepath, 'unseen')
+      local data = { id = id, status = status, type = 'unseen', filepath = file.filepath, old_filepath = file.old_filepath }
       self.state.list_entries[id] = data
       unseen_files[#unseen_files + 1] = data
     end
 
     if has_seen then
-      local id = entry_id(file.filename, 'seen')
-      local data = { id = id, status = status, type = 'seen', filename = file.filename, old_filename = file.old_filename }
+      local id = entry_id(file.filepath, 'seen')
+      local data = { id = id, status = status, type = 'seen', filepath = file.filepath, old_filepath = file.old_filepath }
       self.state.list_entries[id] = data
       seen_files[#seen_files + 1] = data
     end
@@ -296,9 +296,9 @@ function Model:rebuild_entries()
 end
 
 -- Get or create the full (unfiltered) diff for a file
-function Model:get_full_diff(filename)
-  if self.state.diffs[filename] then
-    return self.state.diffs[filename]
+function Model:get_full_diff(filepath)
+  if self.state.diffs[filepath] then
+    return self.state.diffs[filepath]
   end
 
   local entry = self:get_entry()
@@ -312,13 +312,13 @@ function Model:get_full_diff(filename)
   local hunks, hunks_err = git_hunks.list(reponame, {
     parent = merge_base,
     current = 'HEAD',
-    filename = filename,
-    old_filename = entry.old_filename,
+    filepath = filepath,
+    old_filepath = entry.old_filepath,
   })
   if hunks_err then return nil, hunks_err end
 
   -- Get file content at HEAD
-  local lines, lines_err = git_show.lines(reponame, filename, 'HEAD')
+  local lines, lines_err = git_show.lines(reponame, filepath, 'HEAD')
   if lines_err then
     -- File might be deleted
     lines = {}
@@ -329,7 +329,7 @@ function Model:get_full_diff(filename)
   -- Cache hunk count (computed lazily here instead of during fetch)
   local hunk_list = hunks or {}
   local count = #hunk_list > 0 and #hunk_list or 1
-  self:set_hunk_count(filename, count)
+  self:set_hunk_count(filepath, count)
 
   -- Compute content_ids for each hunk (for content-based mark persistence)
   -- 5-line context disambiguates identical hunks in same file
@@ -342,7 +342,7 @@ function Model:get_full_diff(filename)
     content_ids[1] = 'empty'
   end
   -- Persist content_ids in ReviewState (survives screen re-entry)
-  self.review_state:set_content_ids(filename, content_ids)
+  self.review_state:set_content_ids(filepath, content_ids)
 
   local is_deleted = entry.status.first == 'D'
   local diff = Diff():generate(hunk_list, lines or {}, layout_type, { is_deleted = is_deleted })
@@ -351,7 +351,7 @@ function Model:get_full_diff(filename)
   diff._original_lines = lines or {}
   diff._is_deleted = is_deleted
   diff._content_ids = content_ids
-  self.state.diffs[filename] = diff
+  self.state.diffs[filepath] = diff
 
   return diff
 end

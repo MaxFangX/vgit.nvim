@@ -11,15 +11,15 @@ local persistence = require('vgit.features.screens.ReviewStatePersistence')
   where review_type is 'by_file' or 'by_commit'.
 
   All mark operations use a unified key-based API. The key is provided by
-  callers - typically the filename. Marks use content-based identifiers
+  callers - typically the filepath. Marks use content-based identifiers
   (FNV-1a hashes of hunk content) so they persist when hunks shift position.
 ]]
 
 local ReviewState = Object:extend()
 
 -- Create a status object that mimics GitStatus for display in list views
-function ReviewState.create_status(filename, file_status, old_filename)
-  local filetype = fs.detect_filetype(filename)
+function ReviewState.create_status(filepath, file_status, old_filepath)
+  local filetype = fs.detect_filetype(filepath)
   local status_char = file_status or 'M'
 
   return {
@@ -27,8 +27,8 @@ function ReviewState.create_status(filename, file_status, old_filename)
     value = status_char .. ' ',
     first = status_char,
     second = ' ',
-    filename = filename,
-    old_filename = old_filename,
+    filepath = filepath,
+    old_filepath = old_filepath,
     filetype = filetype,
     is_staged = function() return false end,
     is_unstaged = function() return true end,
@@ -50,7 +50,7 @@ function ReviewState.create_status(filename, file_status, old_filename)
 end
 
 -- Global state storage (persists across screen instances within a Vim session)
--- Each key maps to { marks = {}, position = { section, filename, cursor_lnum } }
+-- Each key maps to { marks = {}, position = { section, filepath, cursor_lnum } }
 local state_store = {}
 
 function ReviewState:constructor(opts)
@@ -216,21 +216,21 @@ end
 -- Store last viewed file for re-entry fallback (when current buffer is not in review)
 -- commit_message: first line of commit message (stable across rebases, unlike hash)
 -- focus: 'diff' or 'list' - which component had focus
-function ReviewState:save_position(section, filename, commit_message, focus)
+function ReviewState:save_position(section, filepath, commit_message, focus)
   local state = get_state(self)
   state.position = {
     section = section,
-    filename = filename,
+    filepath = filepath,
     commit_message = commit_message,
     focus = focus,
   }
 end
 
 -- Get last viewed file for re-entry fallback
--- Returns: section, filename, commit_message, focus
+-- Returns: section, filepath, commit_message, focus
 function ReviewState:get_position()
   local pos = get_state(self).position
-  return pos.section or 'unseen', pos.filename, pos.commit_message, pos.focus
+  return pos.section or 'unseen', pos.filepath, pos.commit_message, pos.focus
 end
 
 -- Store hunk count for an entry

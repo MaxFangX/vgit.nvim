@@ -13,7 +13,8 @@ local Object = require('vgit.core.Object')
     - get_full_diff(key) - gets the unfiltered diff for a key
     - get_diff_args(entry) - returns args for get_full_diff from entry
 
-  Key concepts (filepath = path relative to repo root):
+  Key concepts:
+    - filepath: path relative to repo root
     - entry_key: Used for diff caching (by-file: filepath, by-commit: commit_hash:filepath)
     - mark_key: Used for mark storage (by-file: filepath, by-commit: subject_hash:filepath)
     - content_id: FNV-1a hash of hunk content (marks persist when hunks shift position)
@@ -60,18 +61,18 @@ function BaseReviewModel:get_entries()
   return self.state.entries
 end
 
-function BaseReviewModel:get_filename()
+function BaseReviewModel:get_filepath()
   local entry = self:get_entry()
   if not entry then return nil end
-  return entry.filename
+  return entry.filepath
 end
 
-function BaseReviewModel:get_filepath()
+function BaseReviewModel:get_abs_filepath()
   local reponame = self.state.reponame
-  local filename = self:get_filename()
-  if not filename then return nil end
+  local filepath = self:get_filepath()
+  if not filepath then return nil end
 
-  return string.format('%s/%s', reponame, filename)
+  return string.format('%s/%s', reponame, filepath)
 end
 
 function BaseReviewModel:get_filetype()
@@ -125,7 +126,7 @@ end
 -- By-file: filepath only
 -- By-commit: subject_hash:filepath (overridden in subclass)
 function BaseReviewModel:get_mark_key(entry)
-  return entry.filename  -- "filename" field is actually the filepath
+  return entry.filepath
 end
 
 -- Get content_ids for an entry (from cached diff or ReviewState)

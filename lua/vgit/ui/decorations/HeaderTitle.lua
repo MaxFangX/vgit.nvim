@@ -7,22 +7,22 @@ local HeaderTitle = Object:extend()
 
 function HeaderTitle:set(source, title, opts)
   opts = opts or {}
-  local filename = opts.filename
+  local filepath = opts.filepath
   local filetype = opts.filetype
   local stat = opts.stat
   local text = title
 
-  if filename or filetype or stat then text = utils.str.concat(title, ': ') end
+  if filepath or filetype or stat then text = utils.str.concat(title, ': ') end
 
   local hl_range_infos = {}
 
-  if filename then
-    text = utils.str.concat(text, fs.short_filename(filename))
+  if filepath then
+    text = utils.str.concat(text, fs.short_filename(filepath))
     text = utils.str.concat(text, ' ')
   end
 
   if filetype then
-    local icon, icon_hl = icons.get(filename, filetype)
+    local icon, icon_hl = icons.get(filepath, filetype)
     if icon then
       local new_text, hl_range = utils.str.concat(text, icon)
       text = utils.str.concat(new_text, ' ')

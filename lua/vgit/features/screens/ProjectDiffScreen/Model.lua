@@ -125,23 +125,23 @@ function Model:get_entries()
   return self.state.entries
 end
 
-function Model:get_filename()
+function Model:get_filepath()
   local entry, err = self:get_entry()
   if err then return nil, err end
   if not entry then return nil, { 'entry not found' } end
 
-  return entry.status.filename
+  return entry.status.filepath
 end
 
-function Model:get_filepath()
+function Model:get_abs_filepath()
   local reponame = self.state.reponame
-  local filename = self:get_filename()
-  if not filename then return nil, { 'entry not found' } end
+  local filepath = self:get_filepath()
+  if not filepath then return nil, { 'entry not found' } end
 
-  filename = fs.make_relative(reponame, filename)
-  filename = string.format('%s/%s', reponame, filename)
+  filepath = fs.make_relative(reponame, filepath)
+  filepath = string.format('%s/%s', reponame, filepath)
 
-  return filename
+  return filepath
 end
 
 function Model:get_filetype()
@@ -157,26 +157,26 @@ function Model:conflict_status()
 end
 
 function Model:get_lines(status, type)
-  local filename = status.filename
+  local filepath = status.filepath
   local reponame = self.state.reponame
 
-  if status:has('D ') then return git_show.lines(reponame, filename, 'HEAD') end
+  if status:has('D ') then return git_show.lines(reponame, filepath, 'HEAD') end
   if type == 'staged' or status:has(' D') and not status:has_both('MD') then
-    return git_show.lines(reponame, filename)
+    return git_show.lines(reponame, filepath)
   end
-  if status:has('MD') then return git_show.lines(reponame, filename, 'HEAD^1') end
-  if type == 'unmerged' then return fs.read_file(self:get_filepath()) end
+  if status:has('MD') then return git_show.lines(reponame, filepath, 'HEAD^1') end
+  if type == 'unmerged' then return fs.read_file(self:get_abs_filepath()) end
 
-  return fs.read_file(self:get_filepath())
+  return fs.read_file(self:get_abs_filepath())
 end
 
 function Model:get_hunks(status, type, lines)
-  local filename = status.filename
+  local filepath = status.filepath
   local reponame = self.state.reponame
 
   if status:has_both('??') then return git_hunks.custom(lines, { untracked = true }) end
-  if type == 'staged' then return git_hunks.list(reponame, { filename = filename, staged = true }) end
-  if type == 'unstaged' then return git_hunks.list(reponame, { filename = filename }) end
+  if type == 'staged' then return git_hunks.list(reponame, { filepath = filepath, staged = true }) end
+  if type == 'unstaged' then return git_hunks.list(reponame, { filepath = filepath }) end
 
   return {}
 end
@@ -218,10 +218,10 @@ function Model:get_diff()
   return diff
 end
 
-function Model:stage_hunk(filename, hunk)
+function Model:stage_hunk(filepath, hunk)
   -- Use absolute path to avoid issues when cwd differs from repo root
-  local filepath = self.state.reponame .. '/' .. filename
-  local git_file = GitFile(filepath)
+  local abs_filepath = self.state.reponame .. '/' .. filepath
+  local git_file = GitFile(abs_filepath)
   if not git_file:is_tracked() then return git_file:stage() end
 
   local file, err = git_file:status()
@@ -231,10 +231,10 @@ function Model:stage_hunk(filename, hunk)
   return git_file:stage_hunk(hunk)
 end
 
-function Model:unstage_hunk(filename, hunk)
+function Model:unstage_hunk(filepath, hunk)
   -- Use absolute path to avoid issues when cwd differs from repo root
-  local filepath = self.state.reponame .. '/' .. filename
-  local git_file = GitFile(filepath)
+  local abs_filepath = self.state.reponame .. '/' .. filepath
+  local git_file = GitFile(abs_filepath)
   if not git_file:is_tracked() then return git_file:unstage() end
 
   local file, err = git_file:status()
@@ -244,25 +244,25 @@ function Model:unstage_hunk(filename, hunk)
   return git_file:unstage_hunk(hunk)
 end
 
-function Model:reset_hunk(filename, hunk)
-  local filepath = self.state.reponame .. '/' .. filename
-  local git_file = GitFile(filepath)
+function Model:reset_hunk(filepath, hunk)
+  local abs_filepath = self.state.reponame .. '/' .. filepath
+  local git_file = GitFile(abs_filepath)
   return git_file:reset_hunk(hunk)
 end
 
-function Model:stage_file(filename)
-  return git_stager.stage(self.state.reponame, filename)
+function Model:stage_file(filepath)
+  return git_stager.stage(self.state.reponame, filepath)
 end
 
-function Model:unstage_file(filename)
-  return git_stager.unstage(self.state.reponame, filename)
+function Model:unstage_file(filepath)
+  return git_stager.unstage(self.state.reponame, filepath)
 end
 
-function Model:reset_file(filename)
+function Model:reset_file(filepath)
   local reponame = self.state.reponame
-  if git_repo.has(reponame, filename) then return git_repo.reset(reponame, filename) end
+  if git_repo.has(reponame, filepath) then return git_repo.reset(reponame, filepath) end
 
-  return git_repo.clean(reponame, filename)
+  return git_repo.clean(reponame, filepath)
 end
 
 function Model:stage_all()

@@ -23,8 +23,8 @@ function HistoryScreen:constructor(opts)
       layout_type = function()
         return model:get_layout_type()
       end,
-      filename = function()
-        return model:get_filename()
+      filepath = function()
+        return model:get_filepath()
       end,
       filetype = function()
         return model:get_filetype()
@@ -75,7 +75,7 @@ function HistoryScreen:on_list_enter(buffer, row)
   vim.cmd('quit')
 
   loop.free_textlock()
-  vim.cmd(string.format('VGit project_commits_preview --filename=%s %s', buffer:get_name(), row.commit_hash))
+  vim.cmd(string.format('VGit project_commits_preview --filepath=%s %s', buffer:get_name(), row.commit_hash))
 end
 
 function HistoryScreen:create()

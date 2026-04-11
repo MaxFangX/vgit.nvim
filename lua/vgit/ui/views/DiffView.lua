@@ -289,8 +289,8 @@ function DiffView:clear_notification()
 end
 
 function DiffView:render_title()
-  local filename = self.props.filename()
-  if not filename then return end
+  local filepath = self.props.filepath()
+  if not filepath then return end
 
   local filetype = self.props.filetype()
   if not filetype then return end
@@ -299,7 +299,7 @@ function DiffView:render_title()
   if not diff then return end
 
   local options = {
-    filename = filename,
+    filepath = filepath,
     filetype = filetype,
     stat = diff.stat,
   }

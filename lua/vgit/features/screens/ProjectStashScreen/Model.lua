@@ -115,7 +115,7 @@ function Model:get_diff()
   if not log then return nil, { 'No log found in item' } end
 
   local id = status.id
-  local filename = status.filename
+  local filepath = status.filepath
   local parent_hash = log.parent_hash
   local commit_hash = log.commit_hash
 
@@ -125,15 +125,15 @@ function Model:get_diff()
   local reponame = git_repo.discover()
   local lines_err, lines
   if is_deleted then
-    lines, lines_err = git_show.lines(reponame, filename, parent_hash)
+    lines, lines_err = git_show.lines(reponame, filepath, parent_hash)
   else
-    lines, lines_err = git_show.lines(reponame, filename, commit_hash)
+    lines, lines_err = git_show.lines(reponame, filepath, commit_hash)
   end
   loop.free_textlock()
   if lines_err then return nil, lines_err end
 
   local hunks, hunks_err = git_hunks.list(reponame, {
-    filename = filename,
+    filepath = filepath,
     parent = parent_hash,
     current = commit_hash,
   })
@@ -148,12 +148,12 @@ function Model:get_diff()
   return diff
 end
 
-function Model:get_filename()
+function Model:get_filepath()
   local entry, err = self:get_entry()
   if err then return nil, err end
   if not entry then return nil, { 'entry not found' } end
 
-  return entry.status.filename
+  return entry.status.filepath
 end
 
 function Model:get_filetype()

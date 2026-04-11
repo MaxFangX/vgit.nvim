@@ -27,7 +27,7 @@ function git_log.list(reponame, opts)
 
   if not reponame then return nil, { 'reponame is required' } end
 
-  local filename = opts.filename
+  local filepath = opts.filepath
   local pagination = opts.pagination
 
   local args = {
@@ -48,7 +48,7 @@ function git_log.list(reponame, opts)
 
   utils.list.concat(args, {
     git_log.format,
-    filename,
+    filepath,
   })
 
   local result, err = gitcli.run(args)
