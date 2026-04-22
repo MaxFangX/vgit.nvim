@@ -105,18 +105,39 @@ function ProjectDiffScreen:find_next_file(filepath, target_entry_type)
   return next_filepath
 end
 
--- Restore cursor to same hunk index after staging/unstaging/resetting a hunk
-function ProjectDiffScreen:restore_hunk_position(filepath, entry_type, hunk_index)
+-- Render variant for hunk operations that maintains cursor position.
+-- If still on the same file/entry after the operation, restores viewport and
+-- moves to the same hunk index. Otherwise, renders normally with first hunk.
+function ProjectDiffScreen:render_stable(on_status_list_render, filepath, entry_type, hunk_index)
+  local entries = self.model:fetch()
+  loop.free_textlock()
+
+  if utils.object.is_empty(entries) then return self:destroy() end
+
+  self.status_list_view:render()
+  if on_status_list_render then on_status_list_render() end
+
+  local list_item = self.status_list_view:get_current_list_item()
+  self.model:set_entry_id(list_item.id)
+
   local new_entry = self.model:get_entry()
-  if new_entry
-      and new_entry.type == entry_type
-      and new_entry.status.filepath == filepath then
+  local same_file = new_entry
+    and new_entry.type == entry_type
+    and new_entry.status.filepath == filepath
+
+  if same_file then
+    -- Save viewport before render so we can restore scroll position
+    self.diff_view:save_viewport()
+    self.diff_view:render()
     local diff = self.model:get_diff()
     if diff and diff.marks and #diff.marks > 0 then
       local target = math.min(hunk_index, #diff.marks)
-      local hunk_alignment = project_diff_preview_setting:get('hunk_alignment')
-      self.diff_view:move_to_hunk(target, hunk_alignment)
+      self.diff_view:move_to_hunk(target, 'smart')
     end
+  else
+    self.diff_view:render()
+    local hunk_alignment = project_diff_preview_setting:get('hunk_alignment')
+    self.diff_view:move_to_hunk(1, hunk_alignment)
   end
 end
 
@@ -138,7 +159,7 @@ function ProjectDiffScreen:stage_hunk()
     return
   end
 
-  self:render(function()
+  self:render_stable(function()
     local has_unstaged = false
     self.status_list_view:each_status(function(status, entry_type)
       if entry_type == 'unstaged' and status.filepath == filepath then
@@ -159,9 +180,7 @@ function ProjectDiffScreen:stage_hunk()
         return status.filepath == filepath
       end)
     end
-  end)
-
-  self:restore_hunk_position(filepath, 'unstaged', hunk_index)
+  end, filepath, 'unstaged', hunk_index)
 end
 
 function ProjectDiffScreen:unstage_hunk()
@@ -182,7 +201,7 @@ function ProjectDiffScreen:unstage_hunk()
     return
   end
 
-  self:render(function()
+  self:render_stable(function()
     local has_staged = false
     self.status_list_view:each_status(function(status, entry_type)
       if entry_type == 'staged' and status.filepath == filepath then
@@ -203,9 +222,7 @@ function ProjectDiffScreen:unstage_hunk()
         return status.filepath == filepath
       end)
     end
-  end)
-
-  self:restore_hunk_position(filepath, 'staged', hunk_index)
+  end, filepath, 'staged', hunk_index)
 end
 
 function ProjectDiffScreen:reset_hunk()
@@ -231,7 +248,7 @@ function ProjectDiffScreen:reset_hunk()
     return
   end
 
-  self:render(function()
+  self:render_stable(function()
     -- Stay on this file if it still has unstaged hunks, else jump to next
     local has_unstaged = false
     self.status_list_view:each_status(function(status, entry_type)
@@ -253,9 +270,7 @@ function ProjectDiffScreen:reset_hunk()
         return status.filepath == filepath
       end)
     end
-  end)
-
-  self:restore_hunk_position(filepath, 'unstaged', hunk_index)
+  end, filepath, 'unstaged', hunk_index)
 end
 
 function ProjectDiffScreen:stage_file()
@@ -562,7 +577,6 @@ end
 
 function ProjectDiffScreen:next_hunk()
   local current_index, total_hunks = self:get_current_mark_index()
-  local hunk_alignment = project_diff_preview_setting:get('hunk_alignment')
 
   if not current_index or total_hunks == 0 or current_index >= total_hunks then
     -- At last hunk or no hunks - move to next file
@@ -570,15 +584,15 @@ function ProjectDiffScreen:next_hunk()
     if not list_item then return end
     self.model:set_entry_id(list_item.id)
     self.diff_view:render()
+    local hunk_alignment = project_diff_preview_setting:get('hunk_alignment')
     self.diff_view:move_to_hunk(1, hunk_alignment)
   else
-    self.diff_view:next(hunk_alignment)
+    self.diff_view:next('smart')
   end
 end
 
 function ProjectDiffScreen:prev_hunk()
   local current_index, total_hunks = self:get_current_mark_index()
-  local hunk_alignment = project_diff_preview_setting:get('hunk_alignment')
 
   if not current_index or total_hunks == 0 or current_index <= 1 then
     -- At first hunk or no hunks - move to previous file's last hunk
@@ -587,9 +601,10 @@ function ProjectDiffScreen:prev_hunk()
     self.model:set_entry_id(list_item.id)
     self.diff_view:render()
     -- Pass 0 to go to last hunk (move_to_hunk clamps <1 to #marks)
+    local hunk_alignment = project_diff_preview_setting:get('hunk_alignment')
     self.diff_view:move_to_hunk(0, hunk_alignment)
   else
-    self.diff_view:prev(hunk_alignment)
+    self.diff_view:prev('smart')
   end
 end
 
