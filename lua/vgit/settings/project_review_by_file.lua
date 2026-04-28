@@ -7,11 +7,11 @@ return Config({
       desc = 'Switch focus between file list and diff preview',
     },
     previous = {
-      key = 'K',
+      key = 'k',
       desc = 'Previous',
     },
     next = {
-      key = 'J',
+      key = 'j',
       desc = 'Next',
     },
     mark_hunk = {

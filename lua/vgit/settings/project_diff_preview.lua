@@ -49,11 +49,11 @@ return Config({
       desc = 'Switch focus between file list and diff preview'
     },
     next = {
-      key = 'J',
+      key = 'j',
       desc = 'Next'
     },
     previous = {
-      key = 'K',
+      key = 'k',
       desc = 'Previous'
     },
   },
