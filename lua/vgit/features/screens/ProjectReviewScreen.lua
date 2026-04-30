@@ -62,6 +62,7 @@ function ProjectReviewScreen:init_views(list_plot, diff_plot)
         { 'Reset',       keymaps['reset'] },
         { 'Next',        keymaps['next'] },
         { 'Previous',    keymaps['previous'] },
+        { 'Jump section', keymaps['jump_section_next'] },
       }
     end,
   })
@@ -237,8 +238,44 @@ function ProjectReviewScreen:scroll_list_to_bottom()
   end)
 end
 
+-- Find current file index in all_files list (works on file entries, commit headers, and section headers)
+function ProjectReviewScreen:get_current_file_index(all_files)
+  local current_item = self.list_view:get_current_list_item()
+  if not current_item then return nil end
+
+  -- Try entry id first (when on a file)
+  if current_item.entry and current_item.entry.id then
+    for i, info in ipairs(all_files) do
+      if info.file.id == current_item.entry.id then return i end
+    end
+  end
+
+  -- Fall back to commit_hash/section_type (when on a commit header)
+  if current_item.commit_hash then
+    for i, info in ipairs(all_files) do
+      if info.commit_hash == current_item.commit_hash and info.section == current_item.section_type then
+        return i
+      end
+    end
+  end
+
+  -- Fall back to active commit (when on a section header)
+  if self.list_view.get_active_commit then
+    local active = self.list_view:get_active_commit()
+    if active and active.hash then
+      for i, info in ipairs(all_files) do
+        if info.commit_hash == active.hash and info.section == active.section then
+          return i
+        end
+      end
+    end
+  end
+
+  return #all_files > 0 and 1 or nil
+end
+
 -- Handle navigation that involves commit expansion/collapse and folder expansion
--- direction: 'prev' (K key) or 'next' (J key)
+-- direction: 'prev' or 'next'
 -- Returns (item, wrapped) if handled, (nil, nil) if should fall back to standard navigation
 function ProjectReviewScreen:navigate_commit_aware(direction)
   if self._navigating then return nil end
@@ -250,17 +287,7 @@ function ProjectReviewScreen:navigate_commit_aware(direction)
   local all_files = self:build_logical_file_list(entries)
   if #all_files == 0 then return nil end
 
-  -- Find current file index
-  local current_item = self.list_view:get_current_list_item()
-  if not current_item or not current_item.entry then return nil end
-
-  local current_idx
-  for i, info in ipairs(all_files) do
-    if info.file.id == current_item.entry.id then
-      current_idx = i
-      break
-    end
-  end
+  local current_idx = self:get_current_file_index(all_files)
   if not current_idx then return nil end
 
   -- Target index with wrap-around
@@ -477,6 +504,70 @@ function ProjectReviewScreen:find_adjacent_files(target_section, current_filepat
   end
 
   return next_file, prev_file, first_file
+end
+
+-- Jump to a section header in the given direction
+-- For by-commit: jumps to commit headers
+-- For by-file: jumps to Seen/Unseen section headers
+function ProjectReviewScreen:jump_section(direction)
+  local component = self.list_view.scene:get('list')
+  local current_lnum = component:get_lnum()
+  local count = component:get_line_count()
+
+  local is_by_commit = self.list_view.get_active_commit ~= nil
+  local delta = direction == 'next' and 1 or -1
+
+  for offset = 1, count do
+    local target_lnum = ((current_lnum - 1 + offset * delta) % count) + 1
+    local item = self.list_view:get_list_item(target_lnum)
+
+    if item and self:is_section_header(item, is_by_commit) then
+      return self:move_to_section_header(item, is_by_commit)
+    end
+  end
+  return nil
+end
+
+-- Check if a list item is a section header
+function ProjectReviewScreen:is_section_header(item, is_by_commit)
+  if is_by_commit then
+    return item.commit_hash and not item.node_type
+  else
+    return (item.value == 'Seen' or item.value == 'Unseen') and not item.commit_hash
+  end
+end
+
+-- Move cursor to a section header, handling re-render for commit expansion
+function ProjectReviewScreen:move_to_section_header(item, is_by_commit)
+  local component = self.list_view.scene:get('list')
+
+  if is_by_commit then
+    if self.list_view:set_active_commit(item.commit_hash, item.section_type) then
+      self.list_view:render()
+      self:update_commit_message()
+    end
+  end
+
+  loop.free_textlock()
+
+  local match_fn = is_by_commit
+    and function(li)
+          return li.commit_hash == item.commit_hash
+             and li.section_type == item.section_type
+             and not li.node_type
+        end
+    or function(li)
+         return li.value == item.value and not li.commit_hash
+       end
+
+  self.list_view:find_list_item(function(list_item, lnum)
+    if match_fn(list_item) then
+      component:unlock():set_lnum(lnum):lock()
+      return true
+    end
+  end)
+
+  return item
 end
 
 -- Move cursor to first or last visible line in a commit
@@ -1202,6 +1293,20 @@ function ProjectReviewScreen:setup_list_keymaps()
         self.diff_view:move_to_hunk(0, hunk_alignment)
       end, 15),
     },
+    {
+      mode = 'n',
+      mapping = keymaps.jump_section_next,
+      handler = loop.debounce_coroutine(function()
+        self:jump_section('next')
+      end, 15),
+    },
+    {
+      mode = 'n',
+      mapping = keymaps.jump_section_prev,
+      handler = loop.debounce_coroutine(function()
+        self:jump_section('prev')
+      end, 15),
+    },
   })
 end
 
@@ -1233,6 +1338,12 @@ function ProjectReviewScreen:setup_diff_keymaps()
     enter = loop.coroutine(function()
       self:open_file()
     end),
+    jump_section_next = loop.debounce_coroutine(function()
+      self:jump_section('next')
+    end, 15),
+    jump_section_prev = loop.debounce_coroutine(function()
+      self:jump_section('prev')
+    end, 15),
   }
 
   self.diff_keymaps = handlers
@@ -1279,6 +1390,16 @@ function ProjectReviewScreen:setup_diff_keymaps()
       mode = 'n',
       mapping = keymaps.previous,
       handler = handlers.prev_hunk,
+    },
+    {
+      mode = 'n',
+      mapping = keymaps.jump_section_next,
+      handler = handlers.jump_section_next,
+    },
+    {
+      mode = 'n',
+      mapping = keymaps.jump_section_prev,
+      handler = handlers.jump_section_prev,
     },
     {
       mode = 'n',

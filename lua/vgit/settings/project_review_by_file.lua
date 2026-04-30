@@ -34,5 +34,13 @@ return Config({
       key = 'R',
       desc = 'Reset all marks',
     },
+    jump_section_next = {
+      key = 'J',
+      desc = 'Jump to next section',
+    },
+    jump_section_prev = {
+      key = 'K',
+      desc = 'Jump to previous section',
+    },
   },
 })
