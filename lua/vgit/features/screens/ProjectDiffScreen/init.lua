@@ -514,25 +514,7 @@ end
 
 function ProjectDiffScreen:get_current_mark_index()
   loop.free_textlock()
-  local diff = self.model:get_diff()
-  if not diff or not diff.marks or #diff.marks == 0 then
-    return nil, 0
-  end
-
-  local marks = diff.marks
-  -- Subtract tabline padding to match how marks are indexed (see DiffView:get_current_mark_under_cursor)
-  local padding = self.diff_view:get_tabline_padding()
-  local lnum = self.diff_view.scene:get('current'):get_lnum() - padding
-
-  for i, mark in ipairs(marks) do
-    if lnum >= mark.top and lnum <= mark.bot then
-      return i, #marks
-    elseif mark.top > lnum then
-      return math.max(1, i - 1), #marks
-    end
-  end
-
-  return #marks, #marks
+  return self.diff_view:get_cursor_mark_position()
 end
 
 function ProjectDiffScreen:move_to_next_file()
@@ -576,10 +558,14 @@ function ProjectDiffScreen:move_to_prev_file()
 end
 
 function ProjectDiffScreen:next_hunk()
-  local current_index, total_hunks = self:get_current_mark_index()
+  local current_index, total_hunks, position = self:get_current_mark_index()
 
-  if not current_index or total_hunks == 0 or current_index >= total_hunks then
-    -- At last hunk or no hunks - move to next file
+  -- Move to next file only when: no hunks, inside the last hunk, or below all hunks
+  local at_end = position == 'inside' and current_index >= total_hunks
+  local should_change_file = not current_index or total_hunks == 0
+    or at_end or position == 'below'
+
+  if should_change_file then
     local list_item = self:move_to_next_file()
     if not list_item then return end
     self.model:set_entry_id(list_item.id)
@@ -592,15 +578,18 @@ function ProjectDiffScreen:next_hunk()
 end
 
 function ProjectDiffScreen:prev_hunk()
-  local current_index, total_hunks = self:get_current_mark_index()
+  local current_index, total_hunks, position = self:get_current_mark_index()
 
-  if not current_index or total_hunks == 0 or current_index <= 1 then
-    -- At first hunk or no hunks - move to previous file's last hunk
+  -- Move to prev file only when: no hunks, inside the first hunk, or above all hunks
+  local at_start = position == 'inside' and current_index <= 1
+  local should_change_file = not current_index or total_hunks == 0
+    or at_start or position == 'above'
+
+  if should_change_file then
     local list_item = self:move_to_prev_file()
     if not list_item then return end
     self.model:set_entry_id(list_item.id)
     self.diff_view:render()
-    -- Pass 0 to go to last hunk (move_to_hunk clamps <1 to #marks)
     local hunk_alignment = project_diff_preview_setting:get('hunk_alignment')
     self.diff_view:move_to_hunk(0, hunk_alignment)
   else

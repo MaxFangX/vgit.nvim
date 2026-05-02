@@ -92,28 +92,8 @@ function ProjectReviewScreen:move_to(query_fn)
   return self.list_view:move_to(query_fn)
 end
 
--- Find which mark (hunk) the cursor is currently on
--- Returns (filtered_index, total_filtered_marks) or (nil, 0) if no marks
 function ProjectReviewScreen:get_mark_at_cursor()
-  local diff = self.model:get_diff()
-  if not diff or not diff.marks or #diff.marks == 0 then
-    return nil, 0
-  end
-
-  local marks = diff.marks
-  -- Subtract tabline padding to match how marks are indexed (see DiffView:get_current_mark_under_cursor)
-  local padding = self.diff_view:get_tabline_padding()
-  local lnum = self.diff_view.scene:get('current'):get_lnum() - padding
-
-  for i, mark in ipairs(marks) do
-    if lnum >= mark.top and lnum <= mark.bot then
-      return i, #marks
-    elseif mark.top > lnum then
-      return math.max(1, i - 1), #marks
-    end
-  end
-
-  return #marks, #marks
+  return self.diff_view:get_cursor_mark_position()
 end
 
 -- Get entry context with keys for ReviewState operations
@@ -647,38 +627,41 @@ function ProjectReviewScreen:move_to_entry_expanding_commit(filepath, commit_has
   return nil
 end
 
--- Get the filtered mark index and count for navigation
-function ProjectReviewScreen:get_filtered_mark_info()
-  return self:get_mark_at_cursor()
-end
-
 function ProjectReviewScreen:next_hunk()
-  local filtered_index, filtered_total = self:get_filtered_mark_info()
-  local hunk_alignment = 'smart'
+  local current_index, total_hunks, position = self:get_mark_at_cursor()
 
-  if not filtered_index or filtered_total == 0 or filtered_index >= filtered_total then
+  -- Move to next file only when: no hunks, inside the last hunk, or below all hunks
+  local at_end = position == 'inside' and current_index >= total_hunks
+  local should_change_file = not current_index or total_hunks == 0
+    or at_end or position == 'below'
+
+  if should_change_file then
     local list_item = self:move_to_next_file()
     if not list_item then return end
     self.model:set_entry_id(list_item.id)
     self.diff_view:render()
-    self.diff_view:move_to_hunk(1, hunk_alignment)
+    self.diff_view:move_to_hunk(1, 'smart')
   else
-    self.diff_view:next(hunk_alignment)
+    self.diff_view:next('smart')
   end
 end
 
 function ProjectReviewScreen:prev_hunk()
-  local filtered_index, filtered_total = self:get_filtered_mark_info()
-  local hunk_alignment = 'smart'
+  local current_index, total_hunks, position = self:get_mark_at_cursor()
 
-  if not filtered_index or filtered_total == 0 or filtered_index <= 1 then
+  -- Move to prev file only when: no hunks, inside the first hunk, or above all hunks
+  local at_start = position == 'inside' and current_index <= 1
+  local should_change_file = not current_index or total_hunks == 0
+    or at_start or position == 'above'
+
+  if should_change_file then
     local list_item = self:move_to_prev_file()
     if not list_item then return end
     self.model:set_entry_id(list_item.id)
     self.diff_view:render()
-    self.diff_view:move_to_hunk(0, hunk_alignment)
+    self.diff_view:move_to_hunk(0, 'smart')
   else
-    self.diff_view:prev(hunk_alignment)
+    self.diff_view:prev('smart')
   end
 end
 

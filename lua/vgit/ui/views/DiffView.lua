@@ -548,6 +548,37 @@ function DiffView:get_current_mark_under_cursor()
   end
 end
 
+-- Returns (index, total, position) where position is:
+--   'inside'  - cursor is within a hunk
+--   'above'   - cursor is above all hunks
+--   'below'   - cursor is below all hunks
+--   'between' - cursor is between hunks
+-- Returns (nil, 0, nil) if no marks exist.
+function DiffView:get_cursor_mark_position()
+  local diff = self.props.diff()
+  if not diff or not diff.marks or #diff.marks == 0 then
+    return nil, 0, nil
+  end
+
+  local marks = diff.marks
+  local padding = self:get_tabline_padding()
+  local lnum = self.scene:get('current'):get_lnum() - padding
+
+  for i, mark in ipairs(marks) do
+    if lnum >= mark.top and lnum <= mark.bot then
+      return i, #marks, 'inside'
+    elseif mark.top > lnum then
+      if i == 1 then
+        return 1, #marks, 'above'
+      else
+        return i - 1, #marks, 'between'
+      end
+    end
+  end
+
+  return #marks, #marks, 'below'
+end
+
 function DiffView:get_hunk_under_cursor()
   local diff = self.props.diff()
   if not diff then return end
