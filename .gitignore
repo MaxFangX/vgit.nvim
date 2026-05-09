@@ -28,3 +28,4 @@ luac.out
 *.vim
 .DS_Store
 doc/tags
+notes/*
