@@ -506,6 +506,10 @@ function ProjectDiffScreen:handle_list_move()
   local list_item = self.status_list_view:move()
   if not list_item then return end
 
+  -- Skip re-render when selection didn't change (preserves diff cursor across
+  -- tab toggles when CursorMoved fires spuriously on focus transitions).
+  if list_item.id == self.model.state.id then return end
+
   local hunk_alignment = project_diff_preview_setting:get('hunk_alignment')
   self.model:set_entry_id(list_item.id)
   self.diff_view:render()
@@ -642,9 +646,7 @@ function ProjectDiffScreen:toggle_focus()
   local diff_component = self.scene:get('current')
 
   if list_component:is_focused() then
-    local hunk_alignment = project_diff_preview_setting:get('hunk_alignment')
     diff_component:focus()
-    self.diff_view:move_to_hunk(1, hunk_alignment)
   else
     list_component:focus()
   end
@@ -920,7 +922,7 @@ function ProjectDiffScreen:create()
   self:handle_list_move()
   self:toggle_focus()
 
-  -- Position cursor at source file line (must be after toggle_focus which resets to first hunk)
+  -- Position cursor at source file line (must be after handle_list_move which resets to first hunk)
   if found_current_buffer then
     vim.schedule(function()
       self.diff_view:set_source_lnum(source_cursor_lnum, source_cursor_col, source_winline)

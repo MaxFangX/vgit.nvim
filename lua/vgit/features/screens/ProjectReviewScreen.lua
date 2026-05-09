@@ -1002,9 +1002,7 @@ function ProjectReviewScreen:toggle_focus()
   local diff_component = self.scene:get('current')
 
   if list_component:is_focused() then
-    local hunk_alignment = 'smart'
     diff_component:focus()
-    self.diff_view:move_to_hunk(1, hunk_alignment)
     self._current_focus = 'diff'
   else
     list_component:focus()
@@ -1026,6 +1024,11 @@ function ProjectReviewScreen:handle_list_move()
   -- Handle commit expansion (only for CommitListView)
   -- keyboard_direction is nil for mouse clicks, so "move to last line" won't trigger
   list_item = self:update_commit_expansion(list_item, keyboard_direction) or list_item
+
+  -- Skip re-render when the selected entry hasn't changed (e.g. spurious
+  -- CursorMoved on window-focus transitions). Re-rendering would reset the
+  -- diff cursor to hunk 1, defeating cursor preservation across tab toggles.
+  if list_item.id == self.model.state.id then return end
 
   local hunk_alignment = 'smart'
   self.model:set_entry_id(list_item.id)
