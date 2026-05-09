@@ -11,6 +11,7 @@ local DiffView = require('vgit.ui.views.DiffView')
 local StatusListView = require('vgit.ui.views.StatusListView')
 local KeyHelpBarView = require('vgit.ui.views.KeyHelpBarView')
 local Model = require('vgit.features.screens.ProjectDiffScreen.Model')
+local section_headings = require('vgit.ui.views.StatusListView.section_headings')
 local project_diff_preview_setting = require('vgit.settings.project_diff_preview')
 
 local ProjectDiffScreen = Object:extend()
@@ -38,6 +39,7 @@ function ProjectDiffScreen:constructor(opts)
           { 'Reset hunk',   keymaps['buffer_hunk_reset'] },
           { 'Next',         keymaps['next'] },
           { 'Previous',     keymaps['previous'] },
+          { 'Jump section', keymaps['jump_section_next'] },
           { 'Stage all',    keymaps['stage_all'] },
           { 'Unstage all',  keymaps['unstage_all'] },
           { 'Reset all',    keymaps['reset_all'] },
@@ -561,6 +563,25 @@ function ProjectDiffScreen:move_to_prev_file()
   return nil
 end
 
+function ProjectDiffScreen:jump_section(direction)
+  loop.free_textlock()
+  local component = self.status_list_view.scene:get('list')
+  local headings = section_headings(self.status_list_view.state.folds)
+
+  local current_lnum = component:get_lnum()
+  local count = component:get_line_count()
+  local delta = direction == 'next' and 1 or -1
+
+  for offset = 1, count do
+    local target_lnum = ((current_lnum - 1 + offset * delta) % count) + 1
+    local item = self.status_list_view:get_list_item(target_lnum)
+    if item and headings[item] then
+      component:unlock():set_lnum(target_lnum):lock()
+      return item
+    end
+  end
+end
+
 function ProjectDiffScreen:next_hunk()
   local current_index, total_hunks, position = self:get_current_mark_index()
 
@@ -736,6 +757,20 @@ function ProjectDiffScreen:setup_list_keymaps()
         self.diff_view:move_to_hunk(0, hunk_alignment)
       end, 15),
     },
+    {
+      mode = 'n',
+      mapping = keymaps.jump_section_next,
+      handler = loop.debounce_coroutine(function()
+        self:jump_section('next')
+      end, 15),
+    },
+    {
+      mode = 'n',
+      mapping = keymaps.jump_section_prev,
+      handler = loop.debounce_coroutine(function()
+        self:jump_section('prev')
+      end, 15),
+    },
   })
 end
 
@@ -782,6 +817,12 @@ function ProjectDiffScreen:setup_diff_keymaps()
     end, 15),
     prev_hunk = loop.debounce_coroutine(function()
       self:prev_hunk()
+    end, 15),
+    jump_section_next = loop.debounce_coroutine(function()
+      self:jump_section('next')
+    end, 15),
+    jump_section_prev = loop.debounce_coroutine(function()
+      self:jump_section('prev')
     end, 15),
   }
 
@@ -854,6 +895,16 @@ function ProjectDiffScreen:setup_diff_keymaps()
       mode = 'n',
       mapping = keymaps.previous,
       handler = handlers.prev_hunk,
+    },
+    {
+      mode = 'n',
+      mapping = keymaps.jump_section_next,
+      handler = handlers.jump_section_next,
+    },
+    {
+      mode = 'n',
+      mapping = keymaps.jump_section_prev,
+      handler = handlers.jump_section_prev,
     },
     {
       mode = 'n',

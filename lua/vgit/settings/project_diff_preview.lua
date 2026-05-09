@@ -56,5 +56,13 @@ return Config({
       key = 'k',
       desc = 'Previous'
     },
+    jump_section_next = {
+      key = 'J',
+      desc = 'Next section'
+    },
+    jump_section_prev = {
+      key = 'K',
+      desc = 'Previous section'
+    },
   },
 })

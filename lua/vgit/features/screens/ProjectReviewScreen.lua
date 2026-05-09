@@ -9,6 +9,7 @@ local Window = require('vgit.core.Window')
 local console = require('vgit.core.console')
 local DiffView = require('vgit.ui.views.DiffView')
 local KeyHelpBarView = require('vgit.ui.views.KeyHelpBarView')
+local section_headings = require('vgit.ui.views.StatusListView.section_headings')
 
 --[[
   ProjectReviewScreen is the base class for review screens
@@ -486,9 +487,10 @@ function ProjectReviewScreen:find_adjacent_files(target_section, current_filepat
   return next_file, prev_file, first_file
 end
 
--- Jump to a section header in the given direction
--- For by-commit: jumps to commit headers
--- For by-file: jumps to Seen/Unseen section headers
+-- Jump to a section header in the given direction.
+-- For by-commit: jumps to commit headers.
+-- For by-file: jumps to crate-level folder headings (see
+-- vgit.ui.views.StatusListView.section_headings for the rule).
 function ProjectReviewScreen:jump_section(direction)
   local component = self.list_view.scene:get('list')
   local current_lnum = component:get_lnum()
@@ -496,52 +498,50 @@ function ProjectReviewScreen:jump_section(direction)
 
   local is_by_commit = self.list_view.get_active_commit ~= nil
   local delta = direction == 'next' and 1 or -1
+  local headings = not is_by_commit and section_headings(self.list_view.state.folds) or nil
 
   for offset = 1, count do
     local target_lnum = ((current_lnum - 1 + offset * delta) % count) + 1
     local item = self.list_view:get_list_item(target_lnum)
 
-    if item and self:is_section_header(item, is_by_commit) then
-      return self:move_to_section_header(item, is_by_commit)
+    if item and self:is_section_header(item, is_by_commit, headings) then
+      return self:move_to_section_header(item, is_by_commit, target_lnum)
     end
   end
   return nil
 end
 
 -- Check if a list item is a section header
-function ProjectReviewScreen:is_section_header(item, is_by_commit)
+function ProjectReviewScreen:is_section_header(item, is_by_commit, headings)
   if is_by_commit then
     return item.commit_hash and not item.node_type
-  else
-    return (item.value == 'Seen' or item.value == 'Unseen') and not item.commit_hash
   end
+  return headings and headings[item] or false
 end
 
--- Move cursor to a section header, handling re-render for commit expansion
-function ProjectReviewScreen:move_to_section_header(item, is_by_commit)
+-- Move cursor to a section header. By-commit may need to re-render after
+-- expanding a commit, so it relocates the header by matching commit_hash.
+-- By-file targets a unique folder node, so it just sets the cursor lnum.
+function ProjectReviewScreen:move_to_section_header(item, is_by_commit, target_lnum)
   local component = self.list_view.scene:get('list')
 
-  if is_by_commit then
-    if self.list_view:set_active_commit(item.commit_hash, item.section_type) then
-      self.list_view:render()
-      self:update_commit_message()
-    end
+  if not is_by_commit then
+    loop.free_textlock()
+    component:unlock():set_lnum(target_lnum):lock()
+    return item
+  end
+
+  if self.list_view:set_active_commit(item.commit_hash, item.section_type) then
+    self.list_view:render()
+    self:update_commit_message()
   end
 
   loop.free_textlock()
 
-  local match_fn = is_by_commit
-    and function(li)
-          return li.commit_hash == item.commit_hash
-             and li.section_type == item.section_type
-             and not li.node_type
-        end
-    or function(li)
-         return li.value == item.value and not li.commit_hash
-       end
-
   self.list_view:find_list_item(function(list_item, lnum)
-    if match_fn(list_item) then
+    if list_item.commit_hash == item.commit_hash
+        and list_item.section_type == item.section_type
+        and not list_item.node_type then
       component:unlock():set_lnum(lnum):lock()
       return true
     end
