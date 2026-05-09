@@ -13,8 +13,14 @@ local KeyHelpBarView = require('vgit.ui.views.KeyHelpBarView')
 local Model = require('vgit.features.screens.ProjectDiffScreen.Model')
 local section_headings = require('vgit.ui.views.StatusListView.section_headings')
 local project_diff_preview_setting = require('vgit.settings.project_diff_preview')
+local file_navigation = require('vgit.features.screens.file_navigation')
 
 local ProjectDiffScreen = Object:extend()
+
+-- Entry-type predicates for find_adjacent_files / navigate_after_op.
+local function is_unstaged(t) return t == 'unstaged' end
+local function is_staged(t) return t == 'staged' end
+local function is_unstaged_or_unmerged(t) return t == 'unstaged' or t == 'unmerged' end
 
 function ProjectDiffScreen:constructor(opts)
   opts = opts or {}
@@ -90,21 +96,18 @@ function ProjectDiffScreen:move_to(query_fn)
   return self.status_list_view:move_to(query_fn)
 end
 
--- Find the next file of given entry_type after current filepath
-function ProjectDiffScreen:find_next_file(filepath, target_entry_type)
-  local next_filepath = nil
-  local found_current = false
-  self.status_list_view:each_status(function(status, entry_type)
-    if entry_type == target_entry_type then
-      if found_current and not next_filepath then
-        next_filepath = status.filepath
-      end
-      if status.filepath == filepath then
-        found_current = true
-      end
-    end
+-- Find adjacent files matching `type_predicate` (function(entry_type) -> bool)
+-- in the logical entry list (independent of which folders are expanded).
+-- Returns next_file, prev_file, first_file as { filepath } tables (or nil),
+-- where first_file enables wrap-around to the start of the section.
+function ProjectDiffScreen:find_adjacent_files(filepath, type_predicate)
+  local entries = self.model:get_entries()
+  if not entries then return nil, nil, nil end
+
+  local all_files = file_navigation.build_logical_file_list(entries)
+  return file_navigation.find_adjacent_files(all_files, filepath, nil, function(info)
+    return type_predicate(info.file.type)
   end)
-  return next_filepath
 end
 
 -- Render variant for hunk operations that maintains cursor position.
@@ -143,6 +146,28 @@ function ProjectDiffScreen:render_stable(on_status_list_render, filepath, entry_
   end
 end
 
+-- After a stage/unstage/reset op, decide where the cursor should land.
+-- Tries in order, all filtered by type_predicate (e.g. is_unstaged):
+--   1. stay on current file (e.g. partial hunk stage left more hunks)
+--   2. next match
+--   3. wrap to first match
+--   4. prev match (in case section was walked non-linearly)
+-- Falls back to current file in any section if none of the above match.
+function ProjectDiffScreen:navigate_after_op(filepath, type_predicate, next_file, prev_file, first_file)
+  local function try(target)
+    return target and self:move_to(function(status, entry_type)
+      return status.filepath == target.filepath and type_predicate(entry_type)
+    end) ~= nil
+  end
+
+  if try({ filepath = filepath }) then return end
+  if try(next_file) then return end
+  if try(first_file) then return end
+  if try(prev_file) then return end
+
+  self:move_to(function(status) return status.filepath == filepath end)
+end
+
 function ProjectDiffScreen:stage_hunk()
   local entry = self.model:get_entry()
   if not entry then return end
@@ -153,7 +178,7 @@ function ProjectDiffScreen:stage_hunk()
   if not hunk then return end
 
   local filepath = entry.status.filepath
-  local next_file = self:find_next_file(filepath, 'unstaged')
+  local next_file, prev_file, first_file = self:find_adjacent_files(filepath, is_unstaged)
 
   local _, err = self.model:stage_hunk(filepath, hunk)
   if err then
@@ -162,26 +187,7 @@ function ProjectDiffScreen:stage_hunk()
   end
 
   self:render_stable(function()
-    local has_unstaged = false
-    self.status_list_view:each_status(function(status, entry_type)
-      if entry_type == 'unstaged' and status.filepath == filepath then
-        has_unstaged = true
-      end
-    end)
-
-    if has_unstaged then
-      self:move_to(function(status, entry_type)
-        return status.filepath == filepath and entry_type == 'unstaged'
-      end)
-    elseif next_file then
-      self:move_to(function(status, entry_type)
-        return status.filepath == next_file and entry_type == 'unstaged'
-      end)
-    else
-      self:move_to(function(status)
-        return status.filepath == filepath
-      end)
-    end
+    self:navigate_after_op(filepath, is_unstaged, next_file, prev_file, first_file)
   end, filepath, 'unstaged', hunk_index)
 end
 
@@ -195,7 +201,7 @@ function ProjectDiffScreen:unstage_hunk()
   if not hunk then return end
 
   local filepath = entry.status.filepath
-  local next_file = self:find_next_file(filepath, 'staged')
+  local next_file, prev_file, first_file = self:find_adjacent_files(filepath, is_staged)
 
   local _, err = self.model:unstage_hunk(filepath, hunk)
   if err then
@@ -204,26 +210,7 @@ function ProjectDiffScreen:unstage_hunk()
   end
 
   self:render_stable(function()
-    local has_staged = false
-    self.status_list_view:each_status(function(status, entry_type)
-      if entry_type == 'staged' and status.filepath == filepath then
-        has_staged = true
-      end
-    end)
-
-    if has_staged then
-      self:move_to(function(status, entry_type)
-        return status.filepath == filepath and entry_type == 'staged'
-      end)
-    elseif next_file then
-      self:move_to(function(status, entry_type)
-        return status.filepath == next_file and entry_type == 'staged'
-      end)
-    else
-      self:move_to(function(status)
-        return status.filepath == filepath
-      end)
-    end
+    self:navigate_after_op(filepath, is_staged, next_file, prev_file, first_file)
   end, filepath, 'staged', hunk_index)
 end
 
@@ -237,7 +224,7 @@ function ProjectDiffScreen:reset_hunk()
   if not hunk then return end
 
   local filepath = entry.status.filepath
-  local next_file = self:find_next_file(filepath, 'unstaged')
+  local next_file, prev_file, first_file = self:find_adjacent_files(filepath, is_unstaged)
 
   loop.free_textlock()
   local decision = console.input('Are you sure you want to discard this hunk? (y/N) '):lower()
@@ -251,27 +238,7 @@ function ProjectDiffScreen:reset_hunk()
   end
 
   self:render_stable(function()
-    -- Stay on this file if it still has unstaged hunks, else jump to next
-    local has_unstaged = false
-    self.status_list_view:each_status(function(status, entry_type)
-      if entry_type == 'unstaged' and status.filepath == filepath then
-        has_unstaged = true
-      end
-    end)
-
-    if has_unstaged then
-      self:move_to(function(status, entry_type)
-        return status.filepath == filepath and entry_type == 'unstaged'
-      end)
-    elseif next_file then
-      self:move_to(function(status, entry_type)
-        return status.filepath == next_file and entry_type == 'unstaged'
-      end)
-    else
-      self:move_to(function(status)
-        return status.filepath == filepath
-      end)
-    end
+    self:navigate_after_op(filepath, is_unstaged, next_file, prev_file, first_file)
   end, filepath, 'unstaged', hunk_index)
 end
 
@@ -282,20 +249,7 @@ function ProjectDiffScreen:stage_file()
 
   loop.free_textlock()
   local filepath = entry.status.filepath
-
-  -- Find the next unstaged file after this one (before staging)
-  local next_unstaged_filepath = nil
-  local found_current = false
-  self.status_list_view:each_status(function(status, entry_type)
-    if entry_type == 'unstaged' or entry_type == 'unmerged' then
-      if found_current and not next_unstaged_filepath then
-        next_unstaged_filepath = status.filepath
-      end
-      if status.filepath == filepath then
-        found_current = true
-      end
-    end
-  end)
+  local next_file, prev_file, first_file = self:find_adjacent_files(filepath, is_unstaged_or_unmerged)
 
   local _, err = self.model:stage_file(filepath)
   if err then
@@ -304,23 +258,7 @@ function ProjectDiffScreen:stage_file()
   end
 
   self:render(function()
-    if next_unstaged_filepath then
-      -- Go to the next unstaged file
-      self:move_to(function(status, entry_type)
-        return status.filepath == next_unstaged_filepath
-            and (entry_type == 'unstaged' or entry_type == 'unmerged')
-      end)
-    else
-      -- No next unstaged file - try first unstaged, then staged version
-      local found = self:move_to(function(_, entry_type)
-        return entry_type == 'unstaged' or entry_type == 'unmerged'
-      end)
-      if not found then
-        self:move_to(function(status)
-          return status.filepath == filepath
-        end)
-      end
-    end
+    self:navigate_after_op(filepath, is_unstaged_or_unmerged, next_file, prev_file, first_file)
   end)
 end
 
@@ -331,20 +269,7 @@ function ProjectDiffScreen:unstage_file()
 
   loop.free_textlock()
   local filepath = entry.status.filepath
-
-  -- Find the next staged file after this one (before unstaging)
-  local next_staged_filepath = nil
-  local found_current = false
-  self.status_list_view:each_status(function(status, entry_type)
-    if entry_type == 'staged' then
-      if found_current and not next_staged_filepath then
-        next_staged_filepath = status.filepath
-      end
-      if status.filepath == filepath then
-        found_current = true
-      end
-    end
-  end)
+  local next_file, prev_file, first_file = self:find_adjacent_files(filepath, is_staged)
 
   local _, err = self.model:unstage_file(filepath)
   if err then
@@ -353,22 +278,7 @@ function ProjectDiffScreen:unstage_file()
   end
 
   self:render(function()
-    if next_staged_filepath then
-      -- Go to the next staged file
-      self:move_to(function(status, entry_type)
-        return status.filepath == next_staged_filepath and entry_type == 'staged'
-      end)
-    else
-      -- No next staged file - try first staged, then unstaged version
-      local found = self:move_to(function(_, entry_type)
-        return entry_type == 'staged'
-      end)
-      if not found then
-        self:move_to(function(status)
-          return status.filepath == filepath
-        end)
-      end
-    end
+    self:navigate_after_op(filepath, is_staged, next_file, prev_file, first_file)
   end)
 end
 

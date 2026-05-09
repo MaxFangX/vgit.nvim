@@ -10,6 +10,7 @@ local console = require('vgit.core.console')
 local DiffView = require('vgit.ui.views.DiffView')
 local KeyHelpBarView = require('vgit.ui.views.KeyHelpBarView')
 local section_headings = require('vgit.ui.views.StatusListView.section_headings')
+local file_navigation = require('vgit.features.screens.file_navigation')
 
 --[[
   ProjectReviewScreen is the base class for review screens
@@ -265,7 +266,7 @@ function ProjectReviewScreen:navigate_commit_aware(direction)
   local entries = self.list_view:get_entries()
   if not entries then return nil end
 
-  local all_files = self:build_logical_file_list(entries)
+  local all_files = file_navigation.build_logical_file_list(entries)
   if #all_files == 0 then return nil end
 
   local current_idx = self:get_current_file_index(all_files)
@@ -373,118 +374,19 @@ function ProjectReviewScreen:expand_folders_for_file(file_id, commit_hash)
   return true
 end
 
--- Compare paths in path order (folders before files at each level, then alphabetically)
-local function compare_paths(path_a, path_b)
-  local parts_a = vim.split(path_a, '/')
-  local parts_b = vim.split(path_b, '/')
-
-  for i = 1, math.max(#parts_a, #parts_b) do
-    local a = parts_a[i]
-    local b = parts_b[i]
-
-    if not a then return false end  -- a ended (file), b continues (folder) - folder first
-    if not b then return true end   -- b ended (file), a continues (folder) - folder first
-
-    local a_is_last = (i == #parts_a)
-    local b_is_last = (i == #parts_b)
-
-    if a_is_last ~= b_is_last then
-      return not a_is_last  -- folder (not last) comes before file (last)
-    end
-
-    if a ~= b then
-      return a < b
-    end
-  end
-
-  return false
-end
-
--- Build a flat list of all files in path order (folders before files, then alphabetically)
-function ProjectReviewScreen:build_logical_file_list(entries)
-  local files = {}
-  for _, section in ipairs(entries) do
-    -- Handle by-commit structure: section.commits
-    if section.commits then
-      for _, commit_data in ipairs(section.commits) do
-        local sorted = {}
-        for _, file in ipairs(commit_data.files or {}) do
-          sorted[#sorted + 1] = file
-        end
-        table.sort(sorted, function(a, b)
-          return compare_paths(a.status.filepath, b.status.filepath)
-        end)
-
-        for _, file in ipairs(sorted) do
-          files[#files + 1] = {
-            section = section.title,
-            commit_hash = commit_data.commit.hash,
-            file = file,
-          }
-        end
-      end
-    -- Handle by-file structure: section.entries
-    elseif section.entries then
-      local sorted = {}
-      for _, file in ipairs(section.entries) do
-        sorted[#sorted + 1] = file
-      end
-      table.sort(sorted, function(a, b)
-        return compare_paths(a.status.filepath, b.status.filepath)
-      end)
-
-      for _, file in ipairs(sorted) do
-        files[#files + 1] = {
-          section = section.title,
-          commit_hash = nil,
-          file = file,
-        }
-      end
-    end
-  end
-  return files
-end
-
--- Find adjacent files in a section (for navigation after mark/unmark)
--- Returns next_file, prev_file, first_file as {filepath, commit_hash} tables or nil
--- first_file: first file in section (for wrap-around when reaching end)
+-- Find adjacent files in a section (for navigation after mark/unmark).
+-- Returns next_file, prev_file, first_file as {filepath, commit_hash} tables or nil.
+-- first_file is used for wrap-around when reaching end of section.
 function ProjectReviewScreen:find_adjacent_files(target_section, current_filepath, current_commit)
   if not self.list_view.get_entries then return nil, nil, nil end
 
   local entries = self.list_view:get_entries()
   if not entries then return nil, nil, nil end
 
-  local all_files = self:build_logical_file_list(entries)
-  local next_file, prev_file, first_file = nil, nil, nil
-  local found_current = false
-  local last_before_current = nil
-
-  for _, info in ipairs(all_files) do
-    if info.section == target_section then
-      -- Track first file in section for wrap-around
-      if not first_file then
-        first_file = { filepath = info.file.status.filepath, commit_hash = info.commit_hash }
-      end
-
-      local is_current = info.file.status.filepath == current_filepath
-        and (not current_commit or info.commit_hash == current_commit)
-
-      if found_current and not next_file then
-        next_file = { filepath = info.file.status.filepath, commit_hash = info.commit_hash }
-        break
-      end
-      if is_current then
-        found_current = true
-        if last_before_current then
-          prev_file = { filepath = last_before_current.file.status.filepath, commit_hash = last_before_current.commit_hash }
-        end
-      else
-        last_before_current = info
-      end
-    end
-  end
-
-  return next_file, prev_file, first_file
+  local all_files = file_navigation.build_logical_file_list(entries)
+  return file_navigation.find_adjacent_files(all_files, current_filepath, current_commit, function(info)
+    return info.section == target_section
+  end)
 end
 
 -- Jump to a section header in the given direction.
