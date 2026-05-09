@@ -220,40 +220,42 @@ function ProjectReviewScreen:scroll_list_to_bottom()
   end)
 end
 
--- Find current file index in all_files list (works on file entries, commit headers, and section headers)
+-- Find current file index in all_files list. Also returns on_header=true
+-- when the cursor is on a commit/section header rather than a file. Callers
+-- use that to land on the first file (rather than +1 past it) when going next.
 function ProjectReviewScreen:get_current_file_index(all_files)
   local current_item = self.list_view:get_current_list_item()
   if not current_item then return nil end
 
-  -- Try entry id first (when on a file)
+  -- On a file: return its index directly
   if current_item.entry and current_item.entry.id then
     for i, info in ipairs(all_files) do
-      if info.file.id == current_item.entry.id then return i end
+      if info.file.id == current_item.entry.id then return i, false end
     end
   end
 
-  -- Fall back to commit_hash/section_type (when on a commit header)
-  if current_item.commit_hash then
+  -- On a commit header: return first file of that commit
+  if current_item.commit_hash and not current_item.node_type then
     for i, info in ipairs(all_files) do
       if info.commit_hash == current_item.commit_hash and info.section == current_item.section_type then
-        return i
+        return i, true
       end
     end
   end
 
-  -- Fall back to active commit (when on a section header)
+  -- On a section header: return first file of the active commit
   if self.list_view.get_active_commit then
     local active = self.list_view:get_active_commit()
     if active and active.hash then
       for i, info in ipairs(all_files) do
         if info.commit_hash == active.hash and info.section == active.section then
-          return i
+          return i, true
         end
       end
     end
   end
 
-  return #all_files > 0 and 1 or nil
+  return #all_files > 0 and 1 or nil, true
 end
 
 -- Handle navigation that involves commit expansion/collapse and folder expansion
@@ -269,12 +271,19 @@ function ProjectReviewScreen:navigate_commit_aware(direction)
   local all_files = file_navigation.build_logical_file_list(entries)
   if #all_files == 0 then return nil end
 
-  local current_idx = self:get_current_file_index(all_files)
+  local current_idx, on_header = self:get_current_file_index(all_files)
   if not current_idx then return nil end
 
-  -- Target index with wrap-around
-  local delta = direction == 'prev' and -1 or 1
-  local target_idx = ((current_idx - 1 + delta) % #all_files) + 1
+  -- When on a header, current_idx is the first file of the enclosing commit:
+  --   'next' lands there directly (skipping the +1 step would skip that file),
+  --   'prev' steps -1 to the previous commit's last file, which is correct.
+  local target_idx
+  if on_header and direction == 'next' then
+    target_idx = current_idx
+  else
+    local delta = direction == 'prev' and -1 or 1
+    target_idx = ((current_idx - 1 + delta) % #all_files) + 1
+  end
 
   -- Detect wrap-around
   local wrapped = (direction == 'next' and target_idx < current_idx)
