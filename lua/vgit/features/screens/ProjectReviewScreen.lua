@@ -220,17 +220,40 @@ function ProjectReviewScreen:scroll_list_to_bottom()
   end)
 end
 
--- Find current file index in all_files list. Also returns on_header=true
--- when the cursor is on a commit/section header rather than a file. Callers
--- use that to land on the first file (rather than +1 past it) when going next.
+-- Find first file id in a node's items subtree (depth-first, matching visual order)
+local function first_file_id_in_tree(items)
+  for _, item in ipairs(items or {}) do
+    if item.node_type == 'file' and item.id then return item.id end
+    if item.items then
+      local id = first_file_id_in_tree(item.items)
+      if id then return id end
+    end
+  end
+end
+
+-- Find current file index in all_files list. Returns on_header=true when the
+-- cursor is on a header (folder, commit, or section) rather than a file —
+-- callers use that to land on the first file under the header (rather than
+-- +1 past it) when going next.
 function ProjectReviewScreen:get_current_file_index(all_files)
   local current_item = self.list_view:get_current_list_item()
   if not current_item then return nil end
 
-  -- On a file: return its index directly
-  if current_item.entry and current_item.entry.id then
+  -- Resolve the cursor to a file id: the file itself, or the first descendant
+  -- if on a folder. Folder entries carry a spurious `entry.id` from
+  -- normalization (last file processed wins), so we MUST descend the subtree
+  -- rather than trust that id.
+  local file_id
+  if current_item.node_type == 'file' then
+    file_id = current_item.id
+  elseif current_item.node_type == 'folder' then
+    file_id = first_file_id_in_tree(current_item.items)
+  end
+  if file_id then
     for i, info in ipairs(all_files) do
-      if info.file.id == current_item.entry.id then return i, false end
+      if info.file.id == file_id then
+        return i, current_item.node_type ~= 'file'
+      end
     end
   end
 
@@ -274,9 +297,9 @@ function ProjectReviewScreen:navigate_commit_aware(direction)
   local current_idx, on_header = self:get_current_file_index(all_files)
   if not current_idx then return nil end
 
-  -- When on a header, current_idx is the first file of the enclosing commit:
+  -- When on a header, current_idx is the first file under the header:
   --   'next' lands there directly (skipping the +1 step would skip that file),
-  --   'prev' steps -1 to the previous commit's last file, which is correct.
+  --   'prev' steps -1 to the previous header's last file, which is correct.
   local target_idx
   if on_header and direction == 'next' then
     target_idx = current_idx
