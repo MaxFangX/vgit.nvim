@@ -473,6 +473,18 @@ function ProjectDiffScreen:move_to_prev_file()
   return nil
 end
 
+-- Move the list cursor to the adjacent file (wraps) and align the diff to its
+-- first hunk (next) or last hunk (prev).
+function ProjectDiffScreen:move_to_adjacent_file(direction)
+  local is_next = direction == 'next'
+  local list_item = is_next and self:move_to_next_file() or self:move_to_prev_file()
+  if not list_item then return end
+  self.model:set_entry_id(list_item.id)
+  self.diff_view:render()
+  local hunk_alignment = project_diff_preview_setting:get('hunk_alignment')
+  self.diff_view:move_to_hunk(is_next and 1 or 0, hunk_alignment)
+end
+
 function ProjectDiffScreen:jump_section(direction)
   loop.free_textlock()
   local component = self.status_list_view.scene:get('list')
@@ -647,24 +659,14 @@ function ProjectDiffScreen:setup_list_keymaps()
       mode = 'n',
       mapping = keymaps.next,
       handler = loop.debounce_coroutine(function()
-        local list_item = self:move_to_next_file()
-        if not list_item then return end
-        self.model:set_entry_id(list_item.id)
-        local hunk_alignment = project_diff_preview_setting:get('hunk_alignment')
-        self.diff_view:render()
-        self.diff_view:move_to_hunk(1, hunk_alignment)
+        self:move_to_adjacent_file('next')
       end, 15),
     },
     {
       mode = 'n',
       mapping = keymaps.previous,
       handler = loop.debounce_coroutine(function()
-        local list_item = self:move_to_prev_file()
-        if not list_item then return end
-        self.model:set_entry_id(list_item.id)
-        local hunk_alignment = project_diff_preview_setting:get('hunk_alignment')
-        self.diff_view:render()
-        self.diff_view:move_to_hunk(0, hunk_alignment)
+        self:move_to_adjacent_file('prev')
       end, 15),
     },
     {
@@ -728,11 +730,13 @@ function ProjectDiffScreen:setup_diff_keymaps()
     prev_hunk = loop.debounce_coroutine(function()
       self:prev_hunk()
     end, 15),
-    jump_section_next = loop.debounce_coroutine(function()
-      self:jump_section('next')
+    -- In the diff pane, J/K jump to the next/prev FILE (not the list's
+    -- section headers, which only make sense in the list pane). Wraps around.
+    jump_file_next = loop.debounce_coroutine(function()
+      self:move_to_adjacent_file('next')
     end, 15),
-    jump_section_prev = loop.debounce_coroutine(function()
-      self:jump_section('prev')
+    jump_file_prev = loop.debounce_coroutine(function()
+      self:move_to_adjacent_file('prev')
     end, 15),
   }
 
@@ -809,12 +813,12 @@ function ProjectDiffScreen:setup_diff_keymaps()
     {
       mode = 'n',
       mapping = keymaps.jump_section_next,
-      handler = handlers.jump_section_next,
+      handler = handlers.jump_file_next,
     },
     {
       mode = 'n',
       mapping = keymaps.jump_section_prev,
-      handler = handlers.jump_section_prev,
+      handler = handlers.jump_file_prev,
     },
     {
       mode = 'n',
