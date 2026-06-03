@@ -321,12 +321,12 @@ Detailed configuration example: >
             project_diff_preview = {
               keymaps = {
                 commit = 'C',
-                buffer_hunk_stage = 's',
-                buffer_hunk_unstage = 'u',
-                buffer_hunk_reset = 'r',
-                buffer_stage = 'S',
-                buffer_unstage = 'U',
-                buffer_reset = 'R',
+                stage_hunk = 's',
+                unstage_hunk = 'u',
+                reset_hunk = 'r',
+                stage_file = 'S',
+                unstage_file = 'U',
+                reset_file = 'R',
               },
             },
             project_stash_preview = {

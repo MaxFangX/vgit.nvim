@@ -37,12 +37,12 @@ function ProjectDiffScreen:constructor(opts)
       keymaps = function()
         local keymaps = project_diff_preview_setting:get('keymaps')
         return {
-          { 'Stage hunk',   keymaps['buffer_hunk_stage'] },
-          { 'Unstage hunk', keymaps['buffer_hunk_unstage'] },
-          { 'Reset hunk',   keymaps['buffer_hunk_reset'] },
-          { 'Stage file',   keymaps['buffer_stage'] },
-          { 'Unstage file', keymaps['buffer_unstage'] },
-          { 'Reset file',   keymaps['buffer_reset'] },
+          { 'Stage hunk',   keymaps['stage_hunk'] },
+          { 'Unstage hunk', keymaps['unstage_hunk'] },
+          { 'Reset hunk',   keymaps['reset_hunk'] },
+          { 'Stage file',   keymaps['stage_file'] },
+          { 'Unstage file', keymaps['unstage_file'] },
+          { 'Reset file',   keymaps['reset_file'] },
           { 'Next',         keymaps['next'] },
           { 'Previous',     keymaps['previous'] },
           { 'Jump section', keymaps['jump_section_next'] },
@@ -555,21 +555,21 @@ function ProjectDiffScreen:setup_list_keymaps()
     },
     {
       mode = 'n',
-      mapping = keymaps.buffer_reset,
+      mapping = keymaps.reset_file,
       handler = loop.coroutine(function()
         self:reset_file()
       end),
     },
     {
       mode = 'n',
-      mapping = keymaps.buffer_stage,
+      mapping = keymaps.stage_file,
       handler = loop.coroutine(function()
         self:stage_file()
       end),
     },
     {
       mode = 'n',
-      mapping = keymaps.buffer_unstage,
+      mapping = keymaps.unstage_file,
       handler = loop.coroutine(function()
         self:unstage_file()
       end),
@@ -662,32 +662,32 @@ function ProjectDiffScreen:setup_diff_keymaps()
   self.diff_view:set_keymap({
     {
       mode = 'n',
-      mapping = keymaps.buffer_hunk_stage,
+      mapping = keymaps.stage_hunk,
       handler = handlers.hunk_stage,
     },
     {
       mode = 'n',
-      mapping = keymaps.buffer_hunk_unstage,
+      mapping = keymaps.unstage_hunk,
       handler = handlers.hunk_unstage,
     },
     {
       mode = 'n',
-      mapping = keymaps.buffer_hunk_reset,
+      mapping = keymaps.reset_hunk,
       handler = handlers.hunk_reset,
     },
     {
       mode = 'n',
-      mapping = keymaps.buffer_reset,
+      mapping = keymaps.reset_file,
       handler = handlers.reset,
     },
     {
       mode = 'n',
-      mapping = keymaps.buffer_stage,
+      mapping = keymaps.stage_file,
       handler = handlers.stage,
     },
     {
       mode = 'n',
-      mapping = keymaps.buffer_unstage,
+      mapping = keymaps.unstage_file,
       handler = handlers.unstage,
     },
     {

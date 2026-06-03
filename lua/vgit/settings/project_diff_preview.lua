@@ -8,27 +8,27 @@ return Config({
       key = 'C',
       desc = 'Commit',
     },
-    buffer_hunk_stage = {
+    stage_hunk = {
       key = 's',
       desc = 'Stage hunk'
     },
-    buffer_hunk_unstage = {
+    unstage_hunk = {
       key = 'u',
       desc = 'Unstage hunk'
     },
-    buffer_hunk_reset = {
+    reset_hunk = {
       key = 'r',
       desc = 'Reset hunk'
     },
-    buffer_stage = {
+    stage_file = {
       key = 'S',
       desc = 'Stage file'
     },
-    buffer_unstage = {
+    unstage_file = {
       key = 'U',
       desc = 'Unstage file'
     },
-    buffer_reset = {
+    reset_file = {
       key = 'R',
       desc = 'Reset file'
     },
