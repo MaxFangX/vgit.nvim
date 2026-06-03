@@ -227,7 +227,7 @@ function Model:stage_hunk(filepath, hunk)
   local file, err = git_file:status()
   if err then return nil, err end
 
-  if file:has('D ') or file:has(' D') then return git_file:stage() end
+  if file and (file:has('D ') or file:has(' D')) then return git_file:stage() end
   return git_file:stage_hunk(hunk)
 end
 
@@ -240,7 +240,7 @@ function Model:unstage_hunk(filepath, hunk)
   local file, err = git_file:status()
   if err then return nil, err end
 
-  if file:has('D ') or file:has(' D') then return git_file:unstage() end
+  if file and (file:has('D ') or file:has(' D')) then return git_file:unstage() end
   return git_file:unstage_hunk(hunk)
 end
 
