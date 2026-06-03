@@ -60,6 +60,21 @@ function M.build_logical_file_list(entries)
   return files
 end
 
+-- Whether J/K should cross into the adjacent file rather than jump to the
+-- current file's far edge. direction: 'next' (J) or 'prev' (K). True with no
+-- hunks, or when the cursor is already at (or past) the relevant edge —
+-- mirroring the end/start detection in next_hunk/prev_hunk.
+function M.should_cross_file(direction, current_index, total_hunks, position)
+  if not current_index or total_hunks == 0 then return true end
+
+  if direction == 'next' then
+    return position == 'below'
+      or (position == 'inside' and current_index >= total_hunks)
+  end
+  return position == 'above'
+    or (position == 'inside' and current_index <= 1)
+end
+
 local function to_ref(info)
   return { filepath = info.file.status.filepath, commit_hash = info.commit_hash }
 end

@@ -214,6 +214,19 @@ function ProjectReviewScreen:move_to_adjacent_file(direction)
   self.diff_view:move_to_hunk(is_next and 1 or 0, 'smart')
 end
 
+-- J/K in the diff pane: jump to the last (next) / first (prev) hunk in the
+-- current file. If already at that edge, cross into the next / previous file's
+-- first / last hunk.
+function ProjectReviewScreen:jump_to_file_edge(direction)
+  local current_index, total_hunks, position = self:get_mark_at_cursor()
+  if file_navigation.should_cross_file(direction, current_index, total_hunks, position) then
+    return self:move_to_adjacent_file(direction)
+  end
+
+  -- Not at the edge yet: jump to this file's last (next, 0) / first (prev, 1) hunk.
+  self.diff_view:move_to_hunk(direction == 'next' and 0 or 1, 'smart')
+end
+
 function ProjectReviewScreen:scroll_list_to_top()
   local component = self.list_view.scene:get('list')
   component:call(function()
@@ -1245,13 +1258,14 @@ function ProjectReviewScreen:setup_diff_keymaps()
     enter = loop.coroutine(function()
       self:open_file()
     end),
-    -- In the diff pane, J/K jump to the next/prev FILE (not the list's
-    -- section headers, which only make sense in the list pane). Wraps around.
+    -- In the diff pane, J/K jump to the last/first hunk in the current file,
+    -- then cross into the next/prev FILE once already at that edge (not the
+    -- list's section headers, which only make sense in the list pane). Wraps.
     jump_file_next = loop.debounce_coroutine(function()
-      self:move_to_adjacent_file('next')
+      self:jump_to_file_edge('next')
     end, 15),
     jump_file_prev = loop.debounce_coroutine(function()
-      self:move_to_adjacent_file('prev')
+      self:jump_to_file_edge('prev')
     end, 15),
   }
 
