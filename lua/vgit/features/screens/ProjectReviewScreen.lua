@@ -1167,20 +1167,6 @@ function ProjectReviewScreen:setup_list_keymaps()
     },
     {
       mode = 'n',
-      mapping = keymaps.mark_hunk,
-      handler = loop.debounce_coroutine(function()
-        self:mark_hunk()
-      end, 15),
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.unmark_hunk,
-      handler = loop.debounce_coroutine(function()
-        self:unmark_hunk()
-      end, 15),
-    },
-    {
-      mode = 'n',
       mapping = keymaps.mark_file,
       handler = loop.debounce_coroutine(function()
         self:mark_file()

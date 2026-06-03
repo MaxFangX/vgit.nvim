@@ -265,20 +265,4 @@ function Model:reset_file(filepath)
   return git_repo.clean(reponame, filepath)
 end
 
-function Model:stage_all()
-  return git_stager.stage(self.state.reponame)
-end
-
-function Model:unstage_all()
-  return git_stager.unstage(self.state.reponame)
-end
-
-function Model:reset_all()
-  local reponame = self.state.reponame
-  local _, reset_err = git_repo.reset(reponame)
-  if reset_err then return nil, reset_err end
-
-  return git_repo.clean(reponame)
-end
-
 return Model

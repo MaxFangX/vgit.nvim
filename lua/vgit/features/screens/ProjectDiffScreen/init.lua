@@ -37,18 +37,15 @@ function ProjectDiffScreen:constructor(opts)
       keymaps = function()
         local keymaps = project_diff_preview_setting:get('keymaps')
         return {
-          { 'Stage',        keymaps['buffer_stage'] },
-          { 'Unstage',      keymaps['buffer_unstage'] },
-          { 'Reset',        keymaps['buffer_reset'] },
           { 'Stage hunk',   keymaps['buffer_hunk_stage'] },
           { 'Unstage hunk', keymaps['buffer_hunk_unstage'] },
           { 'Reset hunk',   keymaps['buffer_hunk_reset'] },
+          { 'Stage file',   keymaps['buffer_stage'] },
+          { 'Unstage file', keymaps['buffer_unstage'] },
+          { 'Reset file',   keymaps['buffer_reset'] },
           { 'Next',         keymaps['next'] },
           { 'Previous',     keymaps['previous'] },
           { 'Jump section', keymaps['jump_section_next'] },
-          { 'Stage all',    keymaps['stage_all'] },
-          { 'Unstage all',  keymaps['unstage_all'] },
-          { 'Reset all',    keymaps['reset_all'] },
           { 'Commit',       keymaps['commit'] },
         }
       end,
@@ -282,38 +279,6 @@ function ProjectDiffScreen:unstage_file()
   end)
 end
 
-function ProjectDiffScreen:stage_all()
-  local _, err = self.model:stage_all()
-  if err then
-    console.debug.error(err)
-    return
-  end
-
-  local entry = self.model:get_entry()
-  self:render(function()
-    if not entry then return end
-    self:move_to(function(status)
-      return status.filepath == entry.status.filepath
-    end)
-  end)
-end
-
-function ProjectDiffScreen:unstage_all()
-  local _, err = self.model:unstage_all()
-  if err then
-    console.debug.error(err)
-    return
-  end
-
-  local entry = self.model:get_entry()
-  self:render(function()
-    if not entry then return end
-    self:move_to(function(status)
-      return status.filepath == entry.status.filepath
-    end)
-  end)
-end
-
 function ProjectDiffScreen:commit()
   self:destroy()
   vim.cmd('VGit project_commit_preview')
@@ -331,24 +296,6 @@ function ProjectDiffScreen:reset_file()
 
   loop.free_textlock()
   local _, err = self.model:reset_file(filepath)
-  loop.free_textlock()
-
-  if err then
-    console.debug.error(err)
-    return
-  end
-
-  self:render()
-end
-
-function ProjectDiffScreen:reset_all()
-  loop.free_textlock()
-  local decision = console.input('Are you sure you want to discard all unstaged changes? (y/N) '):lower()
-
-  if decision ~= 'yes' and decision ~= 'y' then return end
-
-  loop.free_textlock()
-  local _, err = self.model:reset_all()
   loop.free_textlock()
 
   if err then
@@ -629,27 +576,6 @@ function ProjectDiffScreen:setup_list_keymaps()
     },
     {
       mode = 'n',
-      mapping = keymaps.stage_all,
-      handler = loop.coroutine(function()
-        self:stage_all()
-      end),
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.unstage_all,
-      handler = loop.coroutine(function()
-        self:unstage_all()
-      end),
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.reset_all,
-      handler = loop.coroutine(function()
-        self:reset_all()
-      end),
-    },
-    {
-      mode = 'n',
       mapping = keymaps.toggle_focus,
       handler = function()
         self:toggle_focus()
@@ -709,15 +635,6 @@ function ProjectDiffScreen:setup_diff_keymaps()
     unstage = loop.debounce_coroutine(function()
       self:unstage_file()
     end, 15),
-    stage_all = loop.debounce_coroutine(function()
-      self:stage_all()
-    end, 15),
-    unstage_all = loop.debounce_coroutine(function()
-      self:unstage_all()
-    end, 15),
-    reset_all = loop.debounce_coroutine(function()
-      self:reset_all()
-    end, 15),
     commit = loop.debounce_coroutine(function()
       self:commit()
     end, 15),
@@ -772,21 +689,6 @@ function ProjectDiffScreen:setup_diff_keymaps()
       mode = 'n',
       mapping = keymaps.buffer_unstage,
       handler = handlers.unstage,
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.stage_all,
-      handler = handlers.stage_all,
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.unstage_all,
-      handler = handlers.unstage_all,
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.reset_all,
-      handler = handlers.reset_all,
     },
     {
       mode = 'n',

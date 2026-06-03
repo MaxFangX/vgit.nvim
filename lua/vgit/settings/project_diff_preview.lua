@@ -8,41 +8,29 @@ return Config({
       key = 'C',
       desc = 'Commit',
     },
-    buffer_stage = {
-      key = 's',
-      desc = 'Stage'
-    },
-    buffer_unstage = {
-      key = 'u',
-      desc = 'Unstage'
-    },
-    buffer_reset = {
-      key = 'r',
-      desc = 'Reset'
-    },
     buffer_hunk_stage = {
-      key = 'gs',
+      key = 's',
       desc = 'Stage hunk'
     },
     buffer_hunk_unstage = {
-      key = 'gu',
+      key = 'u',
       desc = 'Unstage hunk'
     },
     buffer_hunk_reset = {
-      key = 'gr',
+      key = 'r',
       desc = 'Reset hunk'
     },
-    stage_all = {
+    buffer_stage = {
       key = 'S',
-      desc = 'Stage all'
+      desc = 'Stage file'
     },
-    unstage_all = {
+    buffer_unstage = {
       key = 'U',
-      desc = 'Unstage all'
+      desc = 'Unstage file'
     },
-    reset_all = {
+    buffer_reset = {
       key = 'R',
-      desc = 'Reset all'
+      desc = 'Reset file'
     },
     toggle_focus = {
       key = '<Tab>',

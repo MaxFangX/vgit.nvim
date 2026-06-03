@@ -289,14 +289,12 @@ require('vgit').setup({
     project_diff_preview = {
       keymaps = {
         commit = 'C',
-        buffer_stage = 's',
-        buffer_unstage = 'u',
-        buffer_hunk_stage = 'gs',
-        buffer_hunk_unstage = 'gu',
-        buffer_reset = 'r',
-        stage_all = 'S',
-        unstage_all = 'U',
-        reset_all = 'R',
+        buffer_hunk_stage = 's',
+        buffer_hunk_unstage = 'u',
+        buffer_hunk_reset = 'r',
+        buffer_stage = 'S',
+        buffer_unstage = 'U',
+        buffer_reset = 'R',
       },
     },
     project_stash_preview = {
