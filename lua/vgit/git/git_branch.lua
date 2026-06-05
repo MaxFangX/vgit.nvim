@@ -222,11 +222,27 @@ function git_branch.fetch_ref_if_stale(reponame, ref)
 end
 
 -- Try to detect the default branch (main/master)
--- Prefers origin/<branch> over local branch to avoid issues when local is out of date
+-- Prefers a local main/master branch over origin/<branch>. This makes it easy
+-- to review a PR *after* it has merged: just point local master at the PR's
+-- pre-merge base (`git branch -f master <sha>`) and reopen the review.
 function git_branch.detect_base(reponame)
   if not reponame then return nil, { 'reponame is required' } end
 
-  -- First try to detect from origin/HEAD (most reliable)
+  -- Prefer a local main/master branch (easy to point wherever you want)
+  local has_main = git_branch.exists(reponame, 'main')
+  local has_master = git_branch.exists(reponame, 'master')
+
+  if has_main and not has_master then
+    return 'main'
+  end
+  if has_master and not has_main then
+    return 'master'
+  end
+  if has_main then
+    return 'main'
+  end
+
+  -- Fall back to origin/HEAD (most reliable remote default)
   local result, _ = gitcli.run({
     '-C',
     reponame,
@@ -254,20 +270,6 @@ function git_branch.detect_base(reponame)
   end
   if has_origin_main then
     return 'origin/main'
-  end
-
-  -- Last resort: check local branches (for repos without remotes)
-  local has_main = git_branch.exists(reponame, 'main')
-  local has_master = git_branch.exists(reponame, 'master')
-
-  if has_main and not has_master then
-    return 'main'
-  end
-  if has_master and not has_main then
-    return 'master'
-  end
-  if has_main then
-    return 'main'
   end
 
   -- Could not detect (avoid network operations)
