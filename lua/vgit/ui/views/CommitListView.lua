@@ -68,6 +68,17 @@ function CommitListView:render()
   local open = self.config.open_folds
   if open == nil then open = true end
 
+  -- Commits carry a stable `index` (their position from the diff base to HEAD,
+  -- set by the model), so the same commit keeps one number across the
+  -- Seen/Unseen sections. Pad to the widest index (min 2 digits) for alignment.
+  local max_index = 0
+  for _, section in ipairs(entries) do
+    for _, commit_data in ipairs(section.commits or {}) do
+      max_index = math.max(max_index, commit_data.index or 0)
+    end
+  end
+  local index_format = string.format('%%0%dd', math.max(2, #tostring(max_index)))
+
   local folds = {}
   for _, section in ipairs(entries) do
     local commit_items = {}
@@ -77,12 +88,13 @@ function CommitListView:render()
       local file_items = StatusFolds():generate(commit_data.files)
       mark_items(file_items, section.title, commit.hash)
 
+      local index_label = string.format(index_format, commit_data.index)
       local is_active = self.active_commit
         and self.active_commit.hash == commit.hash
         and self.active_commit.section == section.title
       commit_items[#commit_items + 1] = {
         open = is_active,
-        value = string.format('%s - %s', commit.short_hash, commit.message),
+        value = string.format('%s - %s - %s', index_label, commit.short_hash, commit.message),
         items = file_items,
         section_type = section.title,
         commit_hash = commit.hash,

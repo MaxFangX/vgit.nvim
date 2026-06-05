@@ -322,7 +322,9 @@ function Model:rebuild_entries()
   local unseen_commits = {}
   local seen_commits = {}
 
-  for _, commit in ipairs(commits) do
+  -- `i` is the commit's position from the diff base to HEAD (commits are
+  -- `--reverse`-ordered), used as a stable index in the list view.
+  for i, commit in ipairs(commits) do
     local files = self.state.commit_files[commit.hash] or {}
 
     local unseen_files = {}
@@ -374,11 +376,11 @@ function Model:rebuild_entries()
     end
 
     if #unseen_files > 0 then
-      unseen_commits[#unseen_commits + 1] = { commit = commit, files = unseen_files }
+      unseen_commits[#unseen_commits + 1] = { commit = commit, files = unseen_files, index = i }
     end
 
     if #seen_files > 0 then
-      seen_commits[#seen_commits + 1] = { commit = commit, files = seen_files }
+      seen_commits[#seen_commits + 1] = { commit = commit, files = seen_files, index = i }
     end
   end
 
