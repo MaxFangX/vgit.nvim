@@ -203,15 +203,18 @@ function ProjectReviewScreen:move_to_prev_file()
   return nil
 end
 
+-- Point the diff pane at list_item and align to its first (next) / last (prev) hunk.
+function ProjectReviewScreen:focus_list_item_in_diff(list_item, direction)
+  self.model:set_entry_id(list_item.id)
+  self.diff_view:render()
+  self.diff_view:move_to_hunk(direction == 'next' and 1 or 0, 'smart')
+end
+
 -- Move the list cursor to the adjacent file (wraps) and align the diff to its
 -- first hunk (next) or last hunk (prev).
 function ProjectReviewScreen:move_to_adjacent_file(direction)
-  local is_next = direction == 'next'
-  local list_item = is_next and self:move_to_next_file() or self:move_to_prev_file()
-  if not list_item then return end
-  self.model:set_entry_id(list_item.id)
-  self.diff_view:render()
-  self.diff_view:move_to_hunk(is_next and 1 or 0, 'smart')
+  local list_item = direction == 'next' and self:move_to_next_file() or self:move_to_prev_file()
+  if list_item then self:focus_list_item_in_diff(list_item, direction) end
 end
 
 -- J/K in the diff pane: jump to the last (next) / first (prev) hunk in the
@@ -336,8 +339,13 @@ function ProjectReviewScreen:navigate_commit_aware(direction)
   local wrapped = (direction == 'next' and target_idx < current_idx)
     or (direction == 'prev' and target_idx > current_idx)
 
-  local target_info = all_files[target_idx]
+  local result = self:goto_logical_file(all_files[target_idx])
+  return result, wrapped
+end
 
+-- Switch to the commit owning target_info (if needed), expand its folders, and
+-- move the list cursor onto that file. Returns the list_item, or nil.
+function ProjectReviewScreen:goto_logical_file(target_info)
   self._navigating = true
 
   -- Change active commit if needed (by-commit mode only)
@@ -356,7 +364,7 @@ function ProjectReviewScreen:navigate_commit_aware(direction)
   -- Navigate to the specific target file, expanding folders if needed
   local result = self:navigate_to_file_by_id(target_info.file.id, target_info.commit_hash)
   self._navigating = false
-  return result, wrapped
+  return result
 end
 
 -- Navigate to a specific file by ID, expanding parent folders if needed
@@ -445,67 +453,61 @@ function ProjectReviewScreen:find_adjacent_files(target_section, current_filepat
   end)
 end
 
--- Jump to a section header in the given direction.
--- For by-commit: jumps to commit headers.
--- For by-file: jumps to crate-level folder headings (see
+-- J/K in the list pane. By-commit jumps between commit edge-files; by-file jumps
+-- between crate-level folder headings (see
 -- vgit.ui.views.StatusListView.section_headings for the rule).
 function ProjectReviewScreen:jump_section(direction)
+  if self.list_view.get_active_commit then
+    return self:jump_to_commit_edge(direction)
+  end
+
+  -- By-file: jump to the next/prev crate-level folder heading. Wraps around.
   local component = self.list_view.scene:get('list')
   local current_lnum = component:get_lnum()
   local count = component:get_line_count()
-
-  local is_by_commit = self.list_view.get_active_commit ~= nil
   local delta = direction == 'next' and 1 or -1
-  local headings = not is_by_commit and section_headings(self.list_view.state.folds) or nil
+  local headings = section_headings(self.list_view.state.folds)
 
   for offset = 1, count do
     local target_lnum = ((current_lnum - 1 + offset * delta) % count) + 1
     local item = self.list_view:get_list_item(target_lnum)
-
-    if item and self:is_section_header(item, is_by_commit, headings) then
-      return self:move_to_section_header(item, is_by_commit, target_lnum)
+    if item and headings[item] then
+      loop.free_textlock()
+      component:unlock():set_lnum(target_lnum):lock()
+      return item
     end
   end
   return nil
 end
 
--- Check if a list item is a section header
-function ProjectReviewScreen:is_section_header(item, is_by_commit, headings)
-  if is_by_commit then
-    return item.commit_hash and not item.node_type
-  end
-  return headings and headings[item] or false
-end
-
--- Move cursor to a section header. By-commit may need to re-render after
--- expanding a commit, so it relocates the header by matching commit_hash.
--- By-file targets a unique folder node, so it just sets the cursor lnum.
-function ProjectReviewScreen:move_to_section_header(item, is_by_commit, target_lnum)
-  local component = self.list_view.scene:get('list')
-
-  if not is_by_commit then
-    loop.free_textlock()
-    component:unlock():set_lnum(target_lnum):lock()
-    return item
-  end
-
-  if self.list_view:set_active_commit(item.commit_hash, item.section_type) then
-    self.list_view:render()
-    self:update_commit_message()
-  end
-
+-- J/K in the by-commit list pane: jump to the current commit's edge file (last
+-- for 'next', first for 'prev'); if already at that edge, cross into the
+-- adjacent commit's file. Wraps around. Mirrors the diff pane's
+-- jump_to_file_edge, one level up the hierarchy.
+function ProjectReviewScreen:jump_to_commit_edge(direction)
   loop.free_textlock()
 
-  self.list_view:find_list_item(function(list_item, lnum)
-    if list_item.commit_hash == item.commit_hash
-        and list_item.section_type == item.section_type
-        and not list_item.node_type then
-      component:unlock():set_lnum(lnum):lock()
-      return true
-    end
-  end)
+  local entries = self.list_view:get_entries()
+  if not entries then return end
 
-  return item
+  local all_files = file_navigation.build_logical_file_list(entries)
+  if #all_files == 0 then return end
+
+  local current_idx = self:get_current_file_index(all_files)
+  if not current_idx then return end
+
+  local target_idx = file_navigation.commit_edge_target(all_files, current_idx, direction)
+  local list_item = self:goto_logical_file(all_files[target_idx])
+  if not list_item then return end
+
+  -- Wrapped past the start/end of the list: keep the new file in view.
+  if direction == 'next' and target_idx < current_idx then
+    self:scroll_list_to_top()
+  elseif direction == 'prev' and target_idx > current_idx then
+    self:scroll_list_to_bottom()
+  end
+
+  self:focus_list_item_in_diff(list_item, direction)
 end
 
 -- Move cursor to first or last visible line in a commit

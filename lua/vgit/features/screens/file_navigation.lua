@@ -75,6 +75,33 @@ function M.should_cross_file(direction, current_index, total_hunks, position)
     or (position == 'inside' and current_index <= 1)
 end
 
+-- Whether two logical-file infos belong to the same commit. Compares section as
+-- well as hash, since a partially-seen commit appears under one hash in both the
+-- Unseen and Seen sections.
+local function same_commit(a, b)
+  return a.commit_hash == b.commit_hash and a.section == b.section
+end
+
+-- Target index for a J/K commit-edge jump in the by-commit list. Jumps to the
+-- current commit's far-edge file (last for 'next', first for 'prev'); if already
+-- at that edge, crosses into the adjacent commit's file, wrapping around.
+function M.commit_edge_target(all_files, current_index, direction)
+  local current = all_files[current_index]
+  local first, last = current_index, current_index
+  while first > 1 and same_commit(all_files[first - 1], current) do
+    first = first - 1
+  end
+  while last < #all_files and same_commit(all_files[last + 1], current) do
+    last = last + 1
+  end
+
+  local total = #all_files
+  if direction == 'next' then
+    return current_index < last and last or (last % total) + 1
+  end
+  return current_index > first and first or ((first - 2) % total) + 1
+end
+
 local function to_ref(info)
   return { filepath = info.file.status.filepath, commit_hash = info.commit_hash }
 end

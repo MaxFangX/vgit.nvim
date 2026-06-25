@@ -202,4 +202,74 @@ describe('file_navigation:', function()
       eq(fst, ref('shared.lua', 'abc'))
     end)
   end)
+
+  describe('commit_edge_target', function()
+    -- Build all_files from {commit, path, section?} specs.
+    local function make(specs)
+      local out = {}
+      for _, s in ipairs(specs) do
+        out[#out + 1] = {
+          section = s.section or 'Unseen',
+          commit_hash = s.commit,
+          file = f(s.path, 'unseen'),
+        }
+      end
+      return out
+    end
+
+    -- Three commits: abc=[1,2], def=[3], ghi=[4,5].
+    local files = make({
+      { commit = 'abc', path = 'a.lua' },
+      { commit = 'abc', path = 'b.lua' },
+      { commit = 'def', path = 'c.lua' },
+      { commit = 'ghi', path = 'd.lua' },
+      { commit = 'ghi', path = 'e.lua' },
+    })
+    local function target(idx, dir)
+      return file_navigation.commit_edge_target(files, idx, dir)
+    end
+
+    it("'next' from a non-edge file jumps to the commit's last file", function()
+      eq(target(4, 'next'), 5) -- ghi first file -> ghi last file
+    end)
+
+    it("'next' from the commit's last file crosses to the next commit", function()
+      eq(target(2, 'next'), 3) -- abc last file -> def first file
+    end)
+
+    it("'next' from a single-file commit crosses immediately", function()
+      eq(target(3, 'next'), 4) -- def (sole file) -> ghi first file
+    end)
+
+    it("'next' wraps from the last file to the first", function()
+      eq(target(5, 'next'), 1) -- ghi last file -> abc first file
+    end)
+
+    it("'prev' from a non-edge file jumps to the commit's first file", function()
+      eq(target(2, 'prev'), 1) -- abc last file -> abc first file
+    end)
+
+    it("'prev' from the commit's first file crosses to the previous commit", function()
+      eq(target(4, 'prev'), 3) -- ghi first file -> def last file
+    end)
+
+    it("'prev' from a single-file commit crosses immediately", function()
+      eq(target(3, 'prev'), 2) -- def (sole file) -> abc last file
+    end)
+
+    it("'prev' wraps from the first file to the last", function()
+      eq(target(1, 'prev'), 5) -- abc first file -> ghi last file
+    end)
+
+    it('section distinguishes a commit that spans Unseen and Seen', function()
+      -- The same hash appears in both sections as two separate ranges.
+      local split = make({
+        { section = 'Unseen', commit = 'abc', path = 'a.lua' },
+        { section = 'Seen',   commit = 'abc', path = 'b.lua' },
+      })
+      -- Each section's lone file is its own edge, so J/K cross between them.
+      eq(file_navigation.commit_edge_target(split, 1, 'next'), 2)
+      eq(file_navigation.commit_edge_target(split, 2, 'prev'), 1)
+    end)
+  end)
 end)
