@@ -11,7 +11,8 @@ local loop = require('vgit.core.loop')
   Branch names with / are encoded as -- (e.g., feature/foo -> feature--foo)
 
   Features:
-    - LRU eviction: max 16 states per repository
+    - LRU eviction: max 128 branches per repository (all review types for a
+      branch count as one)
     - Schema versioning: graceful migration with user prompts
     - Automatic lastUsed timestamp updates
 ]]
@@ -19,7 +20,7 @@ local loop = require('vgit.core.loop')
 local ReviewStatePersistence = {}
 
 local CURRENT_VERSION = 1
-local MAX_STATES = 16
+local MAX_BRANCHES = 128
 
 -- Get XDG data home directory
 local function get_data_home()
@@ -53,37 +54,38 @@ local function ensure_dir(dir)
   end
 end
 
--- List all state files with their lastUsed timestamps
-local function list_states(state_dir)
+-- List branches (one per directory) sorted by lastUsed, oldest first. A branch's
+-- lastUsed is the most recent across its review-type files (by_file/by_commit).
+local function list_branches(state_dir)
   if not fs.exists(state_dir) then return {} end
 
-  local states = {}
-  local files = vim.fn.glob(state_dir .. '/**/*.json', false, true)
-
-  for _, filepath in ipairs(files) do
+  -- Reduce each branch dir's state files to its most recent lastUsed.
+  local last_used = {}
+  for _, filepath in ipairs(vim.fn.glob(state_dir .. '/**/*.json', false, true)) do
     local content = fs.read_file(filepath)
     if content then
       local ok, data = pcall(vim.fn.json_decode, table.concat(content, '\n'))
       if ok and data and data.lastUsed then
-        states[#states + 1] = {
-          path = filepath,
-          lastUsed = data.lastUsed,
-        }
+        local dir = fs.dirname(filepath)
+        last_used[dir] = math.max(last_used[dir] or 0, data.lastUsed)
       end
     end
   end
 
-  -- Sort by lastUsed (oldest first)
-  table.sort(states, function(a, b) return a.lastUsed < b.lastUsed end)
-  return states
+  local branches = {}
+  for dir, lastUsed in pairs(last_used) do
+    branches[#branches + 1] = { dir = dir, lastUsed = lastUsed }
+  end
+  table.sort(branches, function(a, b) return a.lastUsed < b.lastUsed end)
+  return branches
 end
 
--- Evict oldest states if over capacity
+-- Evict least-recently-used branches until adding one more stays within capacity
 local function evict_if_needed(state_dir)
-  local states = list_states(state_dir)
-  while #states >= MAX_STATES do
-    local oldest = table.remove(states, 1)
-    fs.remove_file(oldest.path)
+  local branches = list_branches(state_dir)
+  while #branches >= MAX_BRANCHES do
+    local oldest = table.remove(branches, 1)
+    vim.fn.delete(oldest.dir, 'rf') -- Remove the branch dir and all its state files
   end
 end
 
@@ -117,15 +119,16 @@ end
 function ReviewStatePersistence.save(repo_name, branch_name, review_type, state_data)
   local path = ReviewStatePersistence.get_state_path(repo_name, branch_name, review_type)
   local state_dir = ReviewStatePersistence.get_state_dir(repo_name)
+  local branch_dir = fs.dirname(path)
 
-  -- Ensure full directory path exists (branch subdirs)
-  ensure_dir(fs.dirname(path))
-
-  -- Check if this is a new state file
-  local is_new = not fs.exists(path)
-  if is_new then
+  -- Evict LRU branches before adding a new one. Adding another review type to an
+  -- existing branch doesn't count, so only evict when the branch dir is new.
+  if not fs.exists(branch_dir) then
     evict_if_needed(state_dir)
   end
+
+  -- Ensure full directory path exists (branch subdirs)
+  ensure_dir(branch_dir)
 
   -- Add metadata
   state_data.version = CURRENT_VERSION
