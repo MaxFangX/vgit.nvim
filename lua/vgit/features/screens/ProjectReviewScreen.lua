@@ -1180,6 +1180,13 @@ function ProjectReviewScreen:setup_list_keymaps()
         self:toggle_focus()
       end,
     },
+    -- `mark_hunk` (`s`) has no target in the list pane, so bind it to an explicit
+    -- no-op to keep it from falling through to a global mapping.
+    {
+      mode = 'n',
+      mapping = { key = keymaps.mark_hunk.key, desc = 'No-op (mark hunk is diff-pane only)' },
+      handler = function() end,
+    },
     {
       mode = 'n',
       mapping = keymaps.mark_file,

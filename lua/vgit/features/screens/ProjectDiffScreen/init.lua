@@ -560,6 +560,13 @@ function ProjectDiffScreen:setup_list_keymaps()
   local keymaps = project_diff_preview_setting:get('keymaps')
 
   self.status_list_view:set_keymap({
+    -- `stage_hunk` (`s`) has no target in the list pane, so bind it to an explicit
+    -- no-op to keep it from falling through to a global mapping.
+    {
+      mode = 'n',
+      mapping = { key = keymaps.stage_hunk.key, desc = 'No-op (stage hunk is diff-pane only)' },
+      handler = function() end,
+    },
     {
       mode = 'n',
       mapping = keymaps.commit,
