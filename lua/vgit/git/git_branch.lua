@@ -1,23 +1,48 @@
-local fs = require('vgit.core.fs')
 local gitcli = require('vgit.git.gitcli')
 
 local git_branch = {}
 
+-- Read a file's first line, or nil. Uses io.open rather than fs.read_file
+-- (vim.fn.readfile) so it's safe in fast event contexts, where this may run.
+local function read_first_line(path)
+  local fd = io.open(path, 'r')
+  if not fd then return nil end
+  local line = fd:read('*l')
+  fd:close()
+  return line
+end
+
+-- Resolve a repo's git dir. For a normal repo this is `<reponame>/.git`; for a
+-- linked worktree `<reponame>/.git` is a file ("gitdir: <path>") pointing at the
+-- main repo's `.git/worktrees/<name>/`, where that worktree's state actually lives.
+local function resolve_git_dir(reponame)
+  local dotgit = reponame .. '/.git'
+
+  -- A regular file (not a dir) means a linked worktree; follow its gitdir pointer.
+  local stat = vim.loop.fs_stat(dotgit)
+  if stat and stat.type == 'file' then
+    local gitdir = (read_first_line(dotgit) or ''):match('^gitdir:%s*(.-)%s*$')
+    if gitdir and gitdir ~= '' then
+      if not gitdir:match('^/') then gitdir = reponame .. '/' .. gitdir end
+      return gitdir
+    end
+  end
+
+  return dotgit
+end
+
 -- Read the original branch name during a rebase.
 -- Interactive rebase stores in rebase-merge/, regular rebase in rebase-apply/.
+-- Resolving the git dir first (rather than hand-building `<reponame>/.git/...`)
+-- keeps this correct in linked worktrees, where that literal path doesn't exist
+-- and we'd otherwise fall back to a detached "HEAD" as the persistence key.
 local function read_rebase_head_name(reponame)
-  local paths = {
-    reponame .. '/.git/rebase-merge/head-name',
-    reponame .. '/.git/rebase-apply/head-name',
-  }
+  local git_dir = resolve_git_dir(reponame)
 
-  for _, path in ipairs(paths) do
-    local lines = fs.read_file(path)
-    if lines and lines[1] then
-      -- Content is like "refs/heads/feature/my-branch"
-      local branch = lines[1]:match('refs/heads/(.+)')
-      if branch then return branch end
-    end
+  for _, subpath in ipairs({ 'rebase-merge/head-name', 'rebase-apply/head-name' }) do
+    -- Content is like "refs/heads/feature/my-branch"
+    local branch = (read_first_line(git_dir .. '/' .. subpath) or ''):match('refs/heads/(.+)')
+    if branch then return branch end
   end
 
   return nil
