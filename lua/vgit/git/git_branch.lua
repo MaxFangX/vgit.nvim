@@ -1,4 +1,6 @@
+local jj = require('vgit.git.jj')
 local gitcli = require('vgit.git.gitcli')
+local utils = require('vgit.core.utils')
 
 local git_branch = {}
 
@@ -91,16 +93,156 @@ function git_branch.current(reponame)
   return result[1]
 end
 
--- Get the original branch name, even during a rebase.
--- Use this for persistence keys that should survive rebases.
-function git_branch.current_persistent(reponame)
+-- Local branches to ignore when inferring HEAD's branch: trunk (we want the
+-- feature branch, not the base) and `backup/*` snapshots (e.g. from a backup
+-- alias), which otherwise tie with and hijack the real branch.
+local function is_ignored_branch(name)
+  return name == 'master' or name == 'main' or name:match('^backup/') ~= nil
+end
+
+-- Symmetric distance (commits reachable from one side but not the other) ranks a
+-- branch whether it's ahead of, behind, or diverged from HEAD; runs in parallel.
+-- Assumes `candidates` is sorted, so ties break by name and the key stays stable.
+local function nearest_by_distance(reponame, candidates)
+  if #candidates == 1 then return candidates[1] end
+
+  local commands = {}
+  for _, name in ipairs(candidates) do
+    commands[#commands + 1] = { '-C', reponame, 'rev-list', '--count', name .. '...HEAD' }
+  end
+  local results = gitcli.run_parallel(commands)
+
+  local best, best_dist
+  for i, name in ipairs(candidates) do
+    local out = results[i] and results[i].result
+    local dist = out and tonumber(out[1]) or math.huge
+    if not best_dist or dist < best_dist then
+      best, best_dist = name, dist
+    end
+  end
+  return best
+end
+
+-- Resolve HEAD's branch from the live bookmarks. In a jj repo git HEAD
+-- is the working copy's parent, which roams as you rewrite history: it can sit
+-- behind the branch bookmark (which doesn't auto-advance with new work), ahead of
+-- it, or — right after a mid-stack amend, before jj re-exports the bookmark — on a
+-- sibling that has *diverged* from it. Geometry can't tell those apart from stale
+-- unrelated branches (or merged bookmarks parked on the trunk, which inherit the
+-- trunk's proximity), so candidates are ranked by stack identity instead: overlap
+-- of commit subjects past the trunk — the same rewrite-stable identity the review
+-- marks are keyed by. Zero overlap disqualifies; nil means no branch claims
+-- HEAD's stack. Ties (e.g. a stack and its pristine copy) break by symmetric
+-- distance, then by sorted name so the key stays stable.
+function git_branch.branch_for_head(reponame)
+  local refs = gitcli.run({
+    '-C', reponame, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/',
+  })
+
+  local candidates = {}
+  for _, name in ipairs(refs or {}) do
+    if name ~= '' and not is_ignored_branch(name) then
+      candidates[#candidates + 1] = name
+    end
+  end
+
+  if #candidates == 0 then return nil end
+  table.sort(candidates)
+
+  -- The trunk anchors stack identity (subjects past it); without one there is
+  -- no stack notion to compare, so fall back to pure distance.
+  local trunk = (git_branch.exists(reponame, 'main') and 'main')
+    or (git_branch.exists(reponame, 'master') and 'master')
+  if not trunk then return nearest_by_distance(reponame, candidates) end
+
+  local head_subjects = {}
+  local head_lines = gitcli.run({ '-C', reponame, '--no-pager', 'log', '--format=%s', trunk .. '..HEAD' })
+  for _, line in ipairs(head_lines or {}) do
+    if line ~= '' then head_subjects[line] = true end
+  end
+
+  local commands = {}
+  for _, name in ipairs(candidates) do
+    commands[#commands + 1] = { '-C', reponame, '--no-pager', 'log', '--format=%s', trunk .. '..' .. name }
+  end
+  local results = gitcli.run_parallel(commands)
+
+  local best, best_overlap = {}, 0
+  for i, name in ipairs(candidates) do
+    local overlap, counted = 0, {}
+    for _, line in ipairs((results[i] and results[i].result) or {}) do
+      if line ~= '' and head_subjects[line] and not counted[line] then
+        counted[line] = true
+        overlap = overlap + 1
+      end
+    end
+    if overlap > best_overlap then
+      best, best_overlap = { name }, overlap
+    elseif overlap == best_overlap and overlap > 0 then
+      best[#best + 1] = name
+    end
+  end
+
+  if best_overlap == 0 then return nil end
+  return nearest_by_distance(reponame, best)
+end
+
+-- Set of FNV-1a subject hashes for the commits in `base_ref..HEAD`. Subjects
+-- survive rebases (unlike commit hashes), and this hash matches the one review
+-- marks are keyed by — so callers can identify which stored review covers HEAD's
+-- current commits regardless of where any bookmark sits.
+function git_branch.head_subject_hashes(reponame, base_ref)
+  local subjects = {}
+  local commits = git_branch.commits_in_range(reponame, base_ref, 'HEAD')
+  for _, commit in ipairs(commits or {}) do
+    subjects[utils.str.fnv1a(vim.trim(commit.message))] = true
+  end
+  return subjects
+end
+
+-- Get the original branch name, even when HEAD isn't on a branch ref.
+-- Use this for persistence keys that should stay stable across rebases and in
+-- jj-colocated repos (where git HEAD sits detached within the branch's stack).
+-- `resolve_detached()` (optional) is consulted only for a detached jj HEAD; it
+-- returns a branch name (e.g. by matching HEAD's commits to a stored review) or
+-- nil to fall through to the topology-based `branch_for_head`.
+function git_branch.current_persistent(reponame, resolve_detached)
   if not reponame then return nil, { 'reponame is required' } end
 
   -- Check for rebase-in-progress first (HEAD is detached during rebases)
   local rebase_branch = read_rebase_head_name(reponame)
   if rebase_branch then return rebase_branch end
 
-  return git_branch.current(reponame)
+  local branch, err = git_branch.current(reponame)
+  if err then return nil, err end
+
+  -- Detached HEAD. In a jj-colocated repo this is the normal working state (git
+  -- HEAD sits at the working copy's parent), so recover the branch instead of
+  -- collapsing to the literal "HEAD" (a cross-branch dumping ground). Gated on jj
+  -- so a deliberate detached checkout in a plain-git repo still keys as "HEAD".
+  --
+  -- Live bookmarks (`branch_for_head`) outrank the stored-review resolver:
+  -- with stacked branches, a substack's reviewed subjects all sit inside the
+  -- superstack, so content overlap alone would key the superstack to the
+  -- substack's review — only topology can tell "this stack, rebased" from "a
+  -- superstack built on it". Both rank by the same subject identity, so a
+  -- lagging or diverged bookmark still wins whenever it claims HEAD's stack;
+  -- stored reviews remain the fallback for deleted or out-of-reach bookmarks.
+  if branch == 'HEAD' and jj.is_repo(reponame) then
+    local resolved = git_branch.branch_for_head(reponame)
+      or (resolve_detached and resolve_detached())
+    if resolved then return resolved end
+    -- HEAD at/behind the trunk means trunk work (reviewed against origin);
+    -- `branch_for_head` ignores trunk branches, so check here. HEAD *past*
+    -- the trunk with no feature branch in reach is trunk work too: jj
+    -- bookmarks don't auto-advance, so unpushed trunk commits leave the
+    -- bookmark behind HEAD.
+    return git_branch.trunk_containing_head(reponame)
+      or git_branch.trunk_behind_head(reponame)
+      or branch
+  end
+
+  return branch
 end
 
 -- Get HEAD commit hash
@@ -246,12 +388,77 @@ function git_branch.fetch_ref_if_stale(reponame, ref)
   end)
 end
 
+-- The local trunk branch (main/master) that HEAD sits on — i.e. HEAD is at or
+-- behind its tip. This identifies "working on the trunk itself", including in
+-- jj-colocated repos where HEAD is detached at the working-copy parent, as
+-- opposed to a feature branch with commits past the trunk (a descendant HEAD
+-- returns nil; see `trunk_behind_head` for the descendant case).
+function git_branch.trunk_containing_head(reponame)
+  local head = git_branch.head(reponame)
+  if not head then return nil end
+
+  for _, trunk in ipairs({ 'main', 'master' }) do
+    -- HEAD is ancestor-or-equal of the trunk iff merge-base(trunk, HEAD) == HEAD
+    if git_branch.exists(reponame, trunk) and git_branch.merge_base(reponame, trunk, 'HEAD') == head then
+      return trunk
+    end
+  end
+
+  return nil
+end
+
+-- Resolve a ref to its commit hash, or nil.
+local function rev_parse(reponame, ref)
+  local result, err = gitcli.run({ '-C', reponame, 'rev-parse', '--verify', ref })
+  if err then return nil end
+  return result[1]
+end
+
+-- The local trunk branch (main/master) sitting strictly behind HEAD, when the
+-- commits past it are unclaimed trunk work rather than a feature branch. This
+-- is the jj-colocated shape of "on the trunk with unpushed commits": bookmarks
+-- don't auto-advance, so committing on the trunk leaves HEAD ahead of the
+-- trunk bookmark, with no feature branch anywhere near HEAD. Guards:
+--   - jj repos only: in plain git a detached descendant HEAD is a deliberate
+--     checkout (e.g. reviewing a merged PR), not everyday trunk work.
+--   - origin/<trunk> must be at/behind <trunk>: a local trunk rewound behind
+--     its remote means a historical review, not trunk work.
+--   - no feature branch may claim HEAD's stack (`branch_for_head`, which
+--     matches by shared commit subjects — stale unrelated bookmarks don't
+--     block the trunk fallback).
+function git_branch.trunk_behind_head(reponame)
+  if not jj.is_repo(reponame) then return nil end
+
+  local head = git_branch.head(reponame)
+  if not head then return nil end
+
+  for _, trunk in ipairs({ 'main', 'master' }) do
+    local tip = rev_parse(reponame, 'refs/heads/' .. trunk)
+    local behind = tip and tip ~= head and git_branch.merge_base(reponame, trunk, 'HEAD') == tip
+    local origin_tip = behind and rev_parse(reponame, 'refs/remotes/origin/' .. trunk) or nil
+    if origin_tip and git_branch.merge_base(reponame, 'origin/' .. trunk, trunk) == origin_tip then
+      return git_branch.branch_for_head(reponame) == nil and trunk or nil
+    end
+  end
+
+  return nil
+end
+
 -- Try to detect the default branch (main/master)
 -- Prefers a local main/master branch over origin/<branch>. This makes it easy
 -- to review a PR *after* it has merged: just point local master at the PR's
 -- pre-merge base (`git branch -f master <sha>`) and reopen the review.
+-- Exception: when HEAD sits on the trunk itself — at/behind its tip (where
+-- the local trunk would diff as empty) or ahead of a lagging jj bookmark —
+-- the origin counterpart is used: reviewing unpushed trunk work.
 function git_branch.detect_base(reponame)
   if not reponame then return nil, { 'reponame is required' } end
+
+  -- On the trunk itself: review against origin so unpushed commits show up
+  local trunk = git_branch.trunk_containing_head(reponame) or git_branch.trunk_behind_head(reponame)
+  if trunk and git_branch.ref_exists(reponame, 'origin/' .. trunk) then
+    return 'origin/' .. trunk
+  end
 
   -- Prefer a local main/master branch (easy to point wherever you want)
   local has_main = git_branch.exists(reponame, 'main')
