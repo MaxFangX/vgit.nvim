@@ -55,7 +55,7 @@ function StatusFolds:derive_status_hl(status)
   end
 
   if status.is_unstaged and status:is_unstaged() then
-    if status:has('??') then return 'GitSignsAdd' end
+    if status:has('??') or status:has(' A') then return 'GitSignsAdd' end
     if status:has('*R') or status:has('*C') then return 'GitSignsAdd' end
     if status:has('*D') then return 'GitSignsDelete' end
     if status:has('*M') or status:has('*T') then return 'GitSignsChange' end

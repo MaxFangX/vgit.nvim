@@ -63,7 +63,9 @@ function GitStatus:is_staged()
 end
 
 function GitStatus:is_unstaged()
-  return utils.list.some({ '*M', '*T', '*D', '*R', '*C', '??' }, function(status)
+  -- ` A` is an intent-to-add file (`git add -N`): a new, unstaged file, so treat it
+  -- like untracked (`??`).
+  return utils.list.some({ '*M', '*T', '*D', '*R', '*C', '??', ' A' }, function(status)
     return self:has(status)
   end)
 end
