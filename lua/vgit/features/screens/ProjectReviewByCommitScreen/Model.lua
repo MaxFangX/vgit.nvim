@@ -7,6 +7,7 @@ local git_show = require('vgit.git.git_show')
 local git_hunks = require('vgit.git.git_hunks')
 local git_branch = require('vgit.git.git_branch')
 local git_setting = require('vgit.settings.git')
+local jj = require('vgit.git.jj')
 local ReviewState = require('vgit.features.screens.ReviewState')
 local BaseReviewModel = require('vgit.features.screens.BaseReviewModel')
 
@@ -158,15 +159,22 @@ function Model:fetch(base_branch_arg)
 
   self.state.commits = commits
 
-  -- Preload commit messages (avoids async issues during render)
-  for _, commit in ipairs(commits) do
-    self:get_commit_message(commit.hash)
+  -- Preload every commit's full message in one batched git call (avoids N
+  -- sequential `git show` calls and async issues during render).
+  local messages = git_branch.all_commit_messages(reponame, merge_base, 'HEAD') or {}
+  for hash, lines in pairs(messages) do
+    self.state.commit_messages[hash] = lines
   end
 
   -- Cache commit files in a single git command (batched for performance)
   local all_files, files_err = git_branch.all_commit_files(reponame, merge_base, 'HEAD')
   if files_err then return nil, files_err end
   self.state.commit_files = all_files or {}
+  -- Drop jj conflict-artifact sidecars (.jjconflict-*), which aren't reviewable
+  -- and can number in the thousands, dominating the preload below.
+  for hash, files in pairs(self.state.commit_files) do
+    self.state.commit_files[hash] = jj.filter_conflict_artifacts(files)
+  end
 
   -- Preload diffs in parallel for content_ids
   self:preload_diffs_parallel(commits)

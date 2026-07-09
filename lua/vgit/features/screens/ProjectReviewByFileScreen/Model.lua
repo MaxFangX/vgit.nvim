@@ -6,6 +6,7 @@ local git_show = require('vgit.git.git_show')
 local git_hunks = require('vgit.git.git_hunks')
 local git_branch = require('vgit.git.git_branch')
 local git_setting = require('vgit.settings.git')
+local jj = require('vgit.git.jj')
 local ReviewState = require('vgit.features.screens.ReviewState')
 local BaseReviewModel = require('vgit.features.screens.BaseReviewModel')
 
@@ -98,6 +99,10 @@ function Model:fetch(base_branch_arg)
   -- Get files changed between merge-base and HEAD
   local changed_files, files_err = git_branch.changed_files(reponame, merge_base, 'HEAD')
   if files_err then return nil, files_err end
+
+  -- Drop jj conflict-artifact sidecars (.jjconflict-*), which aren't reviewable
+  -- and can number in the thousands, dominating the preload below.
+  changed_files = jj.filter_conflict_artifacts(changed_files)
 
   if #changed_files == 0 then
     return nil, { string.format('Branch is the same as %s', base_branch) }

@@ -20,4 +20,25 @@ function jj.is_repo(reponame)
   return stat ~= nil and stat.type == 'directory'
 end
 
+-- jj stores an unresolved conflict in the git tree as sidecar paths
+-- (.jjconflict-base-N/…, .jjconflict-side-N/…) plus a JJ-CONFLICT-README. These
+-- are jj bookkeeping, not reviewable changes — and they can number in the
+-- thousands, dominating diff/review load time — so vgit filters them out. The
+-- names are jj-reserved, so the check is safe to run unconditionally.
+function jj.is_conflict_artifact(filepath)
+  if not filepath then return false end
+  return filepath:match('^%.jjconflict%-') ~= nil or filepath == 'JJ-CONFLICT-README'
+end
+
+-- Return a new list of `{ filepath = ... }` entries with conflict artifacts removed.
+function jj.filter_conflict_artifacts(files)
+  local out = {}
+  for _, file in ipairs(files) do
+    if not jj.is_conflict_artifact(file.filepath) then
+      out[#out + 1] = file
+    end
+  end
+  return out
+end
+
 return jj

@@ -543,6 +543,57 @@ function git_branch.commits_in_range(reponame, base_ref, head_ref)
   return commits
 end
 
+-- Get full commit messages for every commit in a range (batched into one git
+-- command instead of one `git show` per commit). Returns a table mapping
+-- commit_hash -> message lines (matching `git_show.commit_message`'s output).
+function git_branch.all_commit_messages(reponame, base_ref, head_ref)
+  if not reponame then return nil, { 'reponame is required' } end
+  if not base_ref then return nil, { 'base_ref is required' } end
+
+  head_ref = head_ref or 'HEAD'
+
+  -- Each commit is introduced by a sentinel line (`<sentinel><40-hex hash>`),
+  -- followed by its raw body (%B). Requiring an all-hex remainder makes a false
+  -- hit from a body line effectively impossible.
+  local sentinel = 'VGIT-COMMIT-MSG:'
+  local slen = #sentinel
+  local result, err = gitcli.run({
+    '-C',
+    reponame,
+    '--no-pager',
+    'log',
+    '--reverse',
+    '--format=' .. sentinel .. '%H%n%B',
+    base_ref .. '..' .. head_ref,
+  })
+  if err then return nil, err end
+
+  local messages = {}
+  local current_hash, current_lines
+  for _, line in ipairs(result) do
+    -- Plain prefix check (sentinel contains `-`/`:`, which are Lua-pattern magic).
+    local hash = line:sub(1, slen) == sentinel and line:sub(slen + 1) or nil
+    if hash and hash:match('^%x+$') then
+      if current_hash then messages[current_hash] = current_lines end
+      current_hash = hash
+      current_lines = {}
+    elseif current_hash then
+      current_lines[#current_lines + 1] = line
+    end
+  end
+  if current_hash then messages[current_hash] = current_lines end
+
+  -- Drop trailing blank lines (git separates commits with one, and %B ends in a
+  -- newline) so results match the per-commit `git show -s --format=%B`.
+  for _, lines in pairs(messages) do
+    while #lines > 0 and lines[#lines] == '' do
+      lines[#lines] = nil
+    end
+  end
+
+  return messages
+end
+
 -- Get files changed between two refs
 function git_branch.changed_files(reponame, base_ref, head_ref)
   if not reponame then return nil, { 'reponame is required' } end
