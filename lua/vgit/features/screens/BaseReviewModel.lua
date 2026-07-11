@@ -1,6 +1,9 @@
 local Diff = require('vgit.core.Diff')
 local loop = require('vgit.core.loop')
 local Object = require('vgit.core.Object')
+local git_repo = require('vgit.git.git_repo')
+local git_branch = require('vgit.git.git_branch')
+local persistence = require('vgit.features.screens.ReviewStatePersistence')
 
 --[[
   BaseReviewModel contains shared logic for review models.
@@ -46,6 +49,26 @@ end
 
 function BaseReviewModel:get_review_state()
   return self.review_state
+end
+
+-- Resolve the persistence keys for HEAD: the branch name marks are stored under,
+-- plus the repo name. For a detached jj HEAD, the branch is resolved by which
+-- stored review covers HEAD's commits (rebase-stable) before falling back to
+-- topology, so the review follows the stack across rebases.
+-- Returns branch_name, repo_name, err.
+function BaseReviewModel:resolve_branch_name(reponame, base_branch)
+  local repo_name = git_repo.get_name(reponame)
+  local branch_name, err = git_branch.current_persistent(reponame, function()
+    return persistence.branch_by_subjects(repo_name, git_branch.head_subject_hashes(reponame, base_branch))
+  end)
+  return branch_name, repo_name, err
+end
+
+-- Header for the review list: the branch key marks persist under, plus the base
+-- it's diffed against. Surfaces which review is loaded, since the resolved branch
+-- can shift under a detached HEAD.
+function BaseReviewModel:get_list_title()
+  return string.format('%s (vs %s)', self.state.branch_name, self.state.base_branch)
 end
 
 function BaseReviewModel:set_entry_id(id)

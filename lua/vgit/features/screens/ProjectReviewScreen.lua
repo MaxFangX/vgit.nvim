@@ -1444,6 +1444,8 @@ function ProjectReviewScreen:create(args)
     self.commit_message_view:mount()
   end
 
+  self.list_view:set_title(self.model:get_list_title())
+
   self.diff_view:render()
   self.app_bar_view:render()
   self.list_view:render()

@@ -23,7 +23,7 @@ function ProjectReviewByFileScreen:constructor(opts)
     end,
   }, list_plot, {
     elements = {
-      header = false,
+      header = true,
       footer = false,
     },
   })

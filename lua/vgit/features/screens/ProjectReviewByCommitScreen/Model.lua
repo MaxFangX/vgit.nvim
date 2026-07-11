@@ -9,7 +9,6 @@ local git_branch = require('vgit.git.git_branch')
 local git_setting = require('vgit.settings.git')
 local jj = require('vgit.git.jj')
 local ReviewState = require('vgit.features.screens.ReviewState')
-local persistence = require('vgit.features.screens.ReviewStatePersistence')
 local BaseReviewModel = require('vgit.features.screens.BaseReviewModel')
 
 local Model = BaseReviewModel:extend()
@@ -121,16 +120,8 @@ function Model:fetch(base_branch_arg)
   end
   self.state.base_branch = base_branch
 
-  -- Repo name for persistence (from origin URL or directory name). Resolved before
-  -- the branch so the detached-HEAD resolver can match HEAD against stored reviews.
-  local repo_name = git_repo.get_name(reponame)
-
-  -- Get current branch name for state keying. For a detached jj HEAD, resolve by
-  -- which stored review covers HEAD's commits (rebase-stable) before falling back
-  -- to topology — so the review follows the stack across rebases.
-  local branch_name, branch_err = git_branch.current_persistent(reponame, function()
-    return persistence.branch_by_subjects(repo_name, git_branch.head_subject_hashes(reponame, base_branch))
-  end)
+  -- Resolve the branch key and repo name for persistence.
+  local branch_name, repo_name, branch_err = self:resolve_branch_name(reponame, base_branch)
   if branch_err then return nil, branch_err end
   self.state.branch_name = branch_name
 
@@ -167,10 +158,7 @@ function Model:fetch(base_branch_arg)
 
   -- Preload every commit's full message in one batched git call (avoids N
   -- sequential `git show` calls and async issues during render).
-  local messages = git_branch.all_commit_messages(reponame, merge_base, 'HEAD') or {}
-  for hash, lines in pairs(messages) do
-    self.state.commit_messages[hash] = lines
-  end
+  self.state.commit_messages = git_branch.all_commit_messages(reponame, merge_base, 'HEAD') or {}
 
   -- Cache commit files in a single git command (batched for performance)
   local all_files, files_err = git_branch.all_commit_files(reponame, merge_base, 'HEAD')
