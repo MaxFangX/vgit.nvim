@@ -202,6 +202,13 @@ function CommitMessageView:render()
     local lines = self:prepend_padding(body)
     lines[#lines + 1] = ''
     component:unlock():set_lines(lines):lock()
+
+    -- `set_lines` leaves the reused, wrapped buffer scrolled wherever the previous
+    -- (longer) message left it, hiding the first lines until the user interacts.
+    -- Pin the view to the top so the box always renders from the start.
+    if component.window and component.window:is_valid() then
+      component.window:set_cursor({ 1, 0 })
+    end
   end
 end
 
