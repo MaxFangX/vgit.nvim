@@ -22,11 +22,16 @@ local ReviewStatePersistence = {}
 local CURRENT_VERSION = 1
 local MAX_BRANCHES = 128
 
--- Get XDG data home directory
+-- Get XDG data home directory. Prefers env vars (safe in fast event contexts)
+-- over vim.fn.expand, since `branch_by_subjects` below may run from the branch resolver.
 local function get_data_home()
   local xdg = os.getenv('XDG_DATA_HOME')
   if xdg and xdg ~= '' then
     return xdg
+  end
+  local home = os.getenv('HOME')
+  if home and home ~= '' then
+    return home .. '/.local/share'
   end
   return vim.fn.expand('~/.local/share')
 end
@@ -45,6 +50,78 @@ end
 function ReviewStatePersistence.get_state_path(repo_name, branch_name, review_type)
   local dir = ReviewStatePersistence.get_state_dir(repo_name)
   return dir .. '/' .. encode_branch(branch_name) .. '/' .. review_type .. '.json'
+end
+
+-- Minimum shared commit-subjects for a stored review to be considered "the review
+-- for HEAD" — guards against a coincidental one-commit overlap between branches.
+local MIN_SUBJECT_OVERLAP = 2
+
+-- Read a by_commit review file and count how many of its marked hunks' commit
+-- subjects (the `subject_hash` prefix of each mark key) appear in `head_subjects`.
+local function subject_overlap(path, head_subjects)
+  local fd = io.open(path, 'r')
+  if not fd then return 0, nil, 0 end
+  local content = fd:read('*a')
+  fd:close()
+
+  local ok, data = pcall(vim.json.decode, content)
+  if not ok or type(data) ~= 'table' or type(data.marks) ~= 'table' or not data.branchName then
+    return 0, nil, 0, 0
+  end
+
+  -- Also count the review's distinct stored subjects, so the caller can scale
+  -- its overlap threshold to reviews smaller than the absolute minimum.
+  local overlap, stored, counted = 0, 0, {}
+  for key, seen in pairs(data.marks) do
+    if seen == true then
+      local subject = key:match('^([^:]+)')
+      if subject and not counted[subject] then
+        counted[subject] = true
+        stored = stored + 1
+        if head_subjects[subject] then overlap = overlap + 1 end
+      end
+    end
+  end
+  return overlap, data.branchName, data.lastUsed or 0, stored
+end
+
+-- Resolve which stored review (branch) best covers HEAD's current commits, keyed on
+-- commit subjects (rebase-stable, like the marks) so a review is followed across
+-- rebases regardless of where the branch bookmark sits. A review qualifies with
+-- `MIN_SUBJECT_OVERLAP` matching subjects; below that (a single-commit stack can
+-- otherwise never match) it qualifies only if *all* its stored subjects match AND
+-- they cover at least half of HEAD's stack — one stray subject (e.g. marks saved
+-- under a misresolved key) must not claim a larger stack away from its bookmark.
+-- Returns the qualifying branch with the most overlap (ties break toward the most
+-- recently used), or nil. Uses libuv/io/vim.json so it's safe in the fast event
+-- contexts where the branch resolver runs.
+function ReviewStatePersistence.branch_by_subjects(repo_name, head_subjects)
+  local head_count = 0
+  for _ in pairs(head_subjects) do
+    head_count = head_count + 1
+  end
+  if head_count == 0 then return nil end
+
+  local state_dir = ReviewStatePersistence.get_state_dir(repo_name)
+  local handle = vim.loop.fs_scandir(state_dir)
+  if not handle then return nil end
+
+  local best_name, best_overlap, best_used = nil, 0, 0
+  while true do
+    local entry, entry_type = vim.loop.fs_scandir_next(handle)
+    if not entry then break end
+    if entry_type == 'directory' then
+      local path = state_dir .. '/' .. entry .. '/by_commit.json'
+      local overlap, branch_name, last_used, stored = subject_overlap(path, head_subjects)
+      local qualifies = overlap >= MIN_SUBJECT_OVERLAP
+        or (overlap > 0 and overlap == stored and 2 * overlap >= head_count)
+      if qualifies and (overlap > best_overlap or (overlap == best_overlap and last_used > best_used)) then
+        best_name, best_overlap, best_used = branch_name, overlap, last_used
+      end
+    end
+  end
+
+  return best_name
 end
 
 -- Ensure state directory exists

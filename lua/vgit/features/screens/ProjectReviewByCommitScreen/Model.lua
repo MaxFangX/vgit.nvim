@@ -9,6 +9,7 @@ local git_branch = require('vgit.git.git_branch')
 local git_setting = require('vgit.settings.git')
 local jj = require('vgit.git.jj')
 local ReviewState = require('vgit.features.screens.ReviewState')
+local persistence = require('vgit.features.screens.ReviewStatePersistence')
 local BaseReviewModel = require('vgit.features.screens.BaseReviewModel')
 
 local Model = BaseReviewModel:extend()
@@ -120,8 +121,16 @@ function Model:fetch(base_branch_arg)
   end
   self.state.base_branch = base_branch
 
-  -- Get current branch name for state keying (survives rebases)
-  local branch_name, branch_err = git_branch.current_persistent(reponame)
+  -- Repo name for persistence (from origin URL or directory name). Resolved before
+  -- the branch so the detached-HEAD resolver can match HEAD against stored reviews.
+  local repo_name = git_repo.get_name(reponame)
+
+  -- Get current branch name for state keying. For a detached jj HEAD, resolve by
+  -- which stored review covers HEAD's commits (rebase-stable) before falling back
+  -- to topology — so the review follows the stack across rebases.
+  local branch_name, branch_err = git_branch.current_persistent(reponame, function()
+    return persistence.branch_by_subjects(repo_name, git_branch.head_subject_hashes(reponame, base_branch))
+  end)
   if branch_err then return nil, branch_err end
   self.state.branch_name = branch_name
 
@@ -132,9 +141,6 @@ function Model:fetch(base_branch_arg)
   local merge_base, mb_err = git_branch.merge_base(reponame, base_branch, 'HEAD')
   if mb_err then return nil, mb_err end
   self.state.merge_base = merge_base
-
-  -- Get repo name for persistence (from origin URL or directory name)
-  local repo_name = git_repo.get_name(reponame)
 
   -- Initialize or restore review state
   self.review_state = ReviewState({
