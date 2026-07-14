@@ -58,7 +58,8 @@ local MIN_SUBJECT_OVERLAP = 2
 
 -- Read a by_commit review file and count how many of its marked hunks' commit
 -- subjects (the `subject_hash` prefix of each mark key) appear in `head_subjects`.
-local function subject_overlap(path, head_subjects)
+-- Exported for IndexedReviewPersistence, which folds it into its own resolver.
+function ReviewStatePersistence.subject_overlap(path, head_subjects)
   local fd = io.open(path, 'r')
   if not fd then return 0, nil, 0 end
   local content = fd:read('*a')
@@ -112,7 +113,7 @@ function ReviewStatePersistence.branch_by_subjects(repo_name, head_subjects)
     if not entry then break end
     if entry_type == 'directory' then
       local path = state_dir .. '/' .. entry .. '/by_commit.json'
-      local overlap, branch_name, last_used, stored = subject_overlap(path, head_subjects)
+      local overlap, branch_name, last_used, stored = ReviewStatePersistence.subject_overlap(path, head_subjects)
       local qualifies = overlap >= MIN_SUBJECT_OVERLAP
         or (overlap > 0 and overlap == stored and 2 * overlap >= head_count)
       if qualifies and (overlap > best_overlap or (overlap == best_overlap and last_used > best_used)) then
