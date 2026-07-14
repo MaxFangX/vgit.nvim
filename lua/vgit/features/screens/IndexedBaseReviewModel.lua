@@ -25,6 +25,11 @@ local persistence = require('vgit.features.screens.IndexedReviewPersistence')
   (in-process xdiff, git CLI only for very large files), so after the initial
   fetch marking rarely shells out.
 
+  Records also store the base they were approved against. When the live base
+  differs (commits inserted/reordered below), the approved delta is rebased
+  onto the new base hunk by hunk before use (get_reconciled_record) —
+  otherwise ancestor drift would pollute both views with phantom hunks.
+
   Subclasses must implement:
     - get_entry_key(entry) - key for content/diff caching
     - get_review_type() - 'by_file_indexed' or 'by_commit_indexed'
@@ -153,6 +158,33 @@ local function track_mark_key(self, mark_key, entry_key)
   entries[entry_key] = true
 end
 
+-- Fetch the approved record for mark_key, reconciled against the entry's
+-- live base. If the base changed since approval (e.g. commits inserted or
+-- reordered below this one), re-play the approved delta onto the new base
+-- hunk by hunk via hunk_apply.rebase; hunks that no longer apply are dropped
+-- individually, reverting just their delta to unseen. The reconciled record
+-- replaces the stored one, so this runs once per base change. Records
+-- without base_lines (written before bases were stored) can't be rebased
+-- and are returned as-is.
+function IndexedBaseReviewModel:get_reconciled_record(mark_key, contents)
+  local record = self.review_state and self.review_state:get_approved(mark_key)
+  if not record or not contents then return record end
+  if not record.base_lines then return record end
+  if hunk_apply.lines_equal(record.base_lines, contents.base) then return record end
+
+  local hunks = git_hunks.live(self.state.reponame, record.base_lines, record.lines) or {}
+  local new_lines = hunk_apply.rebase(hunks, record.base_lines, contents.base)
+
+  if hunk_apply.lines_equal(new_lines, contents.base) then
+    self.review_state:remove_approved(mark_key)
+    return nil
+  end
+
+  local deleted = record.deleted == true and #new_lines == 0
+  self.review_state:set_approved(mark_key, new_lines, deleted, contents.base)
+  return self.review_state:get_approved(mark_key)
+end
+
 -- Compare an approved record against fetched contents. Content-only:
 -- presence flags (deleted/missing) could differ only for empty contents,
 -- where every reachable pairing (rolled-back add vs absent base, approved
@@ -173,7 +205,7 @@ function IndexedBaseReviewModel:get_seen_flags(entry_key, mark_key)
   track_mark_key(self, mark_key, entry_key)
 
   local contents = self.state.contents[entry_key]
-  local record = self.review_state and self.review_state:get_approved(mark_key)
+  local record = self:get_reconciled_record(mark_key, contents)
 
   local flags
   if not record or not contents then
@@ -204,7 +236,7 @@ function IndexedBaseReviewModel:get_diff_for(entry)
 
   local mark_key = self:get_mark_key(entry)
   track_mark_key(self, mark_key, entry_key)
-  local record = self.review_state and self.review_state:get_approved(mark_key)
+  local record = self:get_reconciled_record(mark_key, contents)
 
   local old_lines, new_lines, new_deleted
   if entry.type == 'unseen' then
@@ -265,6 +297,17 @@ local function to_hunk_selections(diff, selections)
   return result
 end
 
+-- Base to store on a record derived from an existing one. A legacy record
+-- (no base_lines) may embody an older base, so stamping the current base
+-- onto content derived from it would freeze that drift as approved-forever.
+-- Keep derived records base-less — unless the result exactly equals the
+-- current content, which is consistent by construction and heals the record.
+local function derived_base(record, contents, new_lines)
+  if not record or record.base_lines then return contents.base end
+  if hunk_apply.lines_equal(new_lines, contents.current) then return contents.base end
+  return nil
+end
+
 -- Mark hunks (or selected rows) of the current unseen diff as seen: apply
 -- them onto the approved snapshot. selections: array of
 -- { index = hunk index, rows = set of row indices or nil for the whole hunk }.
@@ -279,7 +322,7 @@ function IndexedBaseReviewModel:mark_selections(entry, selections)
 
   local contents = self:get_contents(entry)
   local mark_key = self:get_mark_key(entry)
-  local record = self.review_state:get_approved(mark_key)
+  local record = self:get_reconciled_record(mark_key, contents)
   local old_lines = record and record.lines or contents.base
 
   local new_lines = hunk_apply.apply_selections(old_lines, hunk_selections, 'apply')
@@ -287,7 +330,7 @@ function IndexedBaseReviewModel:mark_selections(entry, selections)
   -- The snapshot represents "file deleted" only once it fully matches a
   -- deleted current side.
   local deleted = contents.current_deleted == true and hunk_apply.lines_equal(new_lines, contents.current)
-  self.review_state:set_approved(mark_key, new_lines, deleted)
+  self.review_state:set_approved(mark_key, new_lines, deleted, derived_base(record, contents, new_lines))
 
   self:invalidate_mark_key(mark_key)
   self:rebuild_entries()
@@ -299,7 +342,7 @@ function IndexedBaseReviewModel:unmark_selections(entry, selections)
   if not self.review_state or entry.type ~= 'seen' then return end
 
   local mark_key = self:get_mark_key(entry)
-  local record = self.review_state:get_approved(mark_key)
+  local record = self:get_reconciled_record(mark_key, self:get_contents(entry))
   if not record then return end
 
   local diff = self:get_diff_for(entry)
@@ -315,7 +358,7 @@ function IndexedBaseReviewModel:unmark_selections(entry, selections)
   if hunk_apply.lines_equal(new_lines, contents.base) then
     self.review_state:remove_approved(mark_key)
   else
-    self.review_state:set_approved(mark_key, new_lines, deleted)
+    self.review_state:set_approved(mark_key, new_lines, deleted, derived_base(record, contents, new_lines))
   end
 
   self:invalidate_mark_key(mark_key)
@@ -330,7 +373,7 @@ function IndexedBaseReviewModel:mark_file(entry)
   if not contents then return end
 
   local mark_key = self:get_mark_key(entry)
-  self.review_state:set_approved(mark_key, contents.current, contents.current_deleted)
+  self.review_state:set_approved(mark_key, contents.current, contents.current_deleted, contents.base)
 
   self:invalidate_mark_key(mark_key)
   self:rebuild_entries()

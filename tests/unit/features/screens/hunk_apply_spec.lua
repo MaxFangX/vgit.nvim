@@ -139,4 +139,143 @@ describe('hunk_apply:', function()
       eq(approved, current)
     end)
   end)
+
+  describe('rebase', function()
+    -- Rebase diff(old_base -> approved) onto new_base
+    local function rebase(old_base, approved, new_base)
+      return hunk_apply.rebase(live(old_base, approved), old_base, new_base)
+    end
+
+    it('reproduces approved when the base is unchanged', function()
+      local old_base = { 'a', 'b', 'c', 'd' }
+      local approved = { 'a', 'B', 'c', 'd', 'x' }
+
+      local out, dropped = rebase(old_base, approved, old_base)
+      eq(out, approved)
+      eq(dropped, 0)
+    end)
+
+    it('carries the approved delta across unrelated insertions above', function()
+      local old_base = { 'fn one', 'fn two', 'fn three' }
+      local approved = { 'fn one', 'fn TWO', 'fn three' }
+      local new_base = { 'header', 'import', 'fn one', 'fn two', 'fn three' }
+
+      local out, dropped = rebase(old_base, approved, new_base)
+      eq(out, { 'header', 'import', 'fn one', 'fn TWO', 'fn three' })
+      eq(dropped, 0)
+    end)
+
+    it('survives rename-style drift on unrelated lines', function()
+      -- An ancestor commit renamed get_address; the approved delta elsewhere
+      -- must survive without showing the rename as seen/unseen drift.
+      local old_base = { 'fn get_address', 'call get_address', 'fn other', 'unrelated' }
+      local approved = { 'fn get_address', 'call get_address', 'fn other_v2', 'unrelated' }
+      local new_base = { 'fn get_next_unused_address', 'call get_next_unused_address', 'fn other', 'unrelated' }
+
+      local out, dropped = rebase(old_base, approved, new_base)
+      eq(out, { 'fn get_next_unused_address', 'call get_next_unused_address', 'fn other_v2', 'unrelated' })
+      eq(dropped, 0)
+    end)
+
+    it('drops only the conflicted hunk, keeping the rest approved', function()
+      local old_base = { 'top', 'x1', 'mid1', 'mid2', 'mid3', 'bottom', 'y1' }
+      -- Two approved hunks: change x1 -> X1 and y1 -> Y1
+      local approved = { 'top', 'X1', 'mid1', 'mid2', 'mid3', 'bottom', 'Y1' }
+      -- New base rewrote y1's region; x1's region is intact
+      local new_base = { 'top', 'x1', 'mid1', 'mid2', 'mid3', 'bottom', 'y1-rewritten' }
+
+      local out, dropped = rebase(old_base, approved, new_base)
+      eq(out, { 'top', 'X1', 'mid1', 'mid2', 'mid3', 'bottom', 'y1-rewritten' })
+      eq(dropped, 1)
+    end)
+
+    it('relocates a pure insertion by its context', function()
+      local old_base = { 'a', 'b', 'c' }
+      local approved = { 'a', 'b', 'inserted', 'c' }
+      local new_base = { 'pre1', 'pre2', 'a', 'b', 'c', 'post' }
+
+      local out, dropped = rebase(old_base, approved, new_base)
+      eq(out, { 'pre1', 'pre2', 'a', 'b', 'inserted', 'c', 'post' })
+      eq(dropped, 0)
+    end)
+
+    it('drops a pure insertion whose context vanished', function()
+      local old_base = { 'a', 'b', 'c' }
+      local approved = { 'a', 'b', 'inserted', 'c' }
+      local new_base = { 'x', 'y', 'z' }
+
+      local out, dropped = rebase(old_base, approved, new_base)
+      eq(out, new_base)
+      eq(dropped, 1)
+    end)
+
+    it('disambiguates repeated content by context', function()
+      local old_base = { 'ctxA', 'dup', 'ctxB', 'dup', 'ctxC' }
+      -- Approve a change to the second dup (between ctxB and ctxC)
+      local approved = { 'ctxA', 'dup', 'ctxB', 'DUP', 'ctxC' }
+      local new_base = { 'new-top', 'ctxA', 'dup', 'ctxB', 'dup', 'ctxC' }
+
+      local out, dropped = rebase(old_base, approved, new_base)
+      eq(out, { 'new-top', 'ctxA', 'dup', 'ctxB', 'DUP', 'ctxC' })
+      eq(dropped, 0)
+    end)
+
+    it('keeps an approved deletion whose region is intact in the new base', function()
+      local old_base = { 'a', 'b' }
+      local approved = {}
+      local new_base = { 'a', 'b', 'c' }
+
+      -- a,b stay deleted (approved); the appended c reverts to unseen
+      local out, dropped = rebase(old_base, approved, new_base)
+      eq(out, { 'c' })
+      eq(dropped, 0)
+    end)
+
+    it('drops an approved deletion whose region changed', function()
+      local old_base = { 'a', 'b' }
+      local approved = {}
+      local new_base = { 'a', 'B-changed', 'c' }
+
+      local out, dropped = rebase(old_base, approved, new_base)
+      eq(out, new_base)
+      eq(dropped, 1)
+    end)
+
+    it('drops an approved whole-file addition onto a diverged base', function()
+      local old_base = {}
+      local approved = { 'mine1', 'mine2' }
+      local new_base = { 'theirs' }
+
+      local out, dropped = rebase(old_base, approved, new_base)
+      eq(out, new_base)
+      eq(dropped, 1)
+    end)
+
+    it('keeps an approved whole-file addition on a still-empty base', function()
+      local old_base = {}
+      local approved = { 'mine1', 'mine2' }
+
+      local out, dropped = rebase(old_base, approved, {})
+      eq(out, approved)
+      eq(dropped, 0)
+    end)
+
+    it('reproduces approved for randomized diffs on an unchanged base', function()
+      local seed = 1337
+      local function rand(n)
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        return (seed % n) + 1
+      end
+
+      for _ = 1, 100 do
+        local a, b = {}, {}
+        for _ = 1, rand(30) do a[#a + 1] = 'line' .. rand(10) end
+        for _ = 1, rand(30) do b[#b + 1] = 'line' .. rand(10) end
+
+        local out, dropped = rebase(a, b, a)
+        eq(out, b)
+        eq(dropped, 0)
+      end
+    end)
+  end)
 end)
