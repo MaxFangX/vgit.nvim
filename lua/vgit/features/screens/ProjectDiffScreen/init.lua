@@ -15,6 +15,7 @@ local Model = require('vgit.features.screens.ProjectDiffScreen.Model')
 local section_headings = require('vgit.ui.views.StatusListView.section_headings')
 local project_diff_preview_setting = require('vgit.settings.project_diff_preview')
 local file_navigation = require('vgit.features.screens.file_navigation')
+local visual_selection = require('vgit.features.screens.visual_selection')
 
 local ProjectDiffScreen = Object:extend()
 
@@ -212,6 +213,50 @@ function ProjectDiffScreen:unstage_hunk()
   self:render_stable(function()
     self:navigate_after_op(filepath, is_staged, next_file, prev_file, first_file)
   end, filepath, 'staged', hunk_index)
+end
+
+-- Visual s/u: stage (unstage) only the selected lines. Each intersecting
+-- hunk contributes a sub-hunk of its selected pair rows (whole hunks pass
+-- through unchanged) that flows through the normal patch pipeline. Applied
+-- bottom-up so earlier hunks' index line numbers stay valid.
+function ProjectDiffScreen:apply_visual_stage_change(stage, top, bot)
+  local entry = self.model:get_entry()
+  if not entry then return end
+
+  -- s only acts on unstaged entries, u only on staged entries (matching
+  -- which diffs their hunks come from); elsewhere they're no-ops.
+  local expected_type = stage and 'unstaged' or 'staged'
+  if entry.type ~= expected_type then return end
+
+  loop.free_textlock()
+  local diff = self.model:get_diff()
+  local selections = visual_selection.for_range(diff, self.model:get_layout_type(), top, bot)
+  if not selections then
+    self.diff_view:notify('No hunks in selection')
+    return
+  end
+
+  local filepath = entry.status.filepath
+  local predicate = stage and is_unstaged or is_staged
+  local next_file, prev_file, first_file = self:find_adjacent_files(filepath, predicate)
+
+  local op = stage and self.model.stage_hunk or self.model.unstage_hunk
+  for i = #selections, 1, -1 do
+    local selection = selections[i]
+    local hunk = diff.hunks[selection.index]
+    local sub = selection.rows and hunk:select_rows(selection.rows) or hunk
+    if sub then
+      local _, err = op(self.model, filepath, sub)
+      if err then
+        console.debug.error(err)
+        break
+      end
+    end
+  end
+
+  self:render_stable(function()
+    self:navigate_after_op(filepath, predicate, next_file, prev_file, first_file)
+  end, filepath, expected_type, selections[1].index)
 end
 
 function ProjectDiffScreen:reset_hunk()
@@ -756,6 +801,51 @@ function ProjectDiffScreen:setup_diff_keymaps()
       handler = handlers.enter,
     },
   })
+
+  self:setup_visual_keymaps(keymaps)
+end
+
+-- Visual-mode s/u: line-level staging. The selection endpoints are captured
+-- while still in visual mode (visual_selection.make_handler) before deferring
+-- to a coroutine. In split layout only the current (right) pane accepts
+-- selections; the previous pane notifies instead (its rows show old content,
+-- and every change is addressable from the current pane).
+function ProjectDiffScreen:setup_visual_keymaps(keymaps)
+  local current_component = self.scene:get('current')
+
+  -- Keep the debounced coroutines (not the wrappers) so destroy can close them
+  self.visual_keymaps = {
+    stage_lines = loop.debounce_coroutine(function(top, bot)
+      self:apply_visual_stage_change(true, top, bot)
+    end, 15),
+    unstage_lines = loop.debounce_coroutine(function(top, bot)
+      self:apply_visual_stage_change(false, top, bot)
+    end, 15),
+  }
+
+  current_component:set_keymap({
+    mode = 'x',
+    mapping = { key = keymaps.stage_hunk.key, desc = 'Stage selected lines' },
+  }, visual_selection.make_handler(self.visual_keymaps.stage_lines))
+  current_component:set_keymap({
+    mode = 'x',
+    mapping = { key = keymaps.unstage_hunk.key, desc = 'Unstage selected lines' },
+  }, visual_selection.make_handler(self.visual_keymaps.unstage_lines))
+
+  if self.model:get_layout_type() == 'split' then
+    local previous_component = self.scene:get('previous')
+    local function notify_wrong_pane()
+      self.diff_view:notify('Select lines in the right pane to stage them')
+    end
+    previous_component:set_keymap({
+      mode = 'x',
+      mapping = { key = keymaps.stage_hunk.key, desc = 'No-op (select in current pane)' },
+    }, notify_wrong_pane)
+    previous_component:set_keymap({
+      mode = 'x',
+      mapping = { key = keymaps.unstage_hunk.key, desc = 'No-op (select in current pane)' },
+    }, notify_wrong_pane)
+  end
 end
 
 function ProjectDiffScreen:setup_keymaps()
@@ -877,6 +967,10 @@ function ProjectDiffScreen:destroy()
   -- Clean up timer handles from debounced keymap handlers
   loop.close_debounced_handlers(self.diff_keymaps)
   self.diff_keymaps = {}
+  if self.visual_keymaps then
+    loop.close_debounced_handlers(self.visual_keymaps)
+    self.visual_keymaps = nil
+  end
 
   self.scene:destroy()
 end

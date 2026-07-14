@@ -13,6 +13,7 @@ local drag_resize = require('vgit.ui.drag_resize')
 local KeyHelpBarView = require('vgit.ui.views.KeyHelpBarView')
 local section_headings = require('vgit.ui.views.StatusListView.section_headings')
 local file_navigation = require('vgit.features.screens.file_navigation')
+local visual_selection = require('vgit.features.screens.visual_selection')
 
 --[[
   IndexedReviewScreen is the base class for the indexed review screens
@@ -750,46 +751,11 @@ function IndexedReviewScreen:unmark_hunk()
   self:apply_seen_change(false, self:selection_at_cursor())
 end
 
--- Map a visual line range in the diff buffer to per-hunk row selections.
--- Rows pair removed/added lines the way both layouts render them side by
--- side / stacked; a selected row takes the new side of its pair.
+-- Map a visual line range in the diff buffer to per-hunk row selections;
+-- a selected row takes the new side of its pair.
 function IndexedReviewScreen:selections_for_range(top, bot)
   loop.free_textlock()
-  local diff = self.model:get_diff()
-  if not diff or not diff.marks or #diff.marks == 0 then return nil end
-
-  local layout_type = self.model:get_layout_type()
-  local selections = {}
-
-  for i, mark in ipairs(diff.marks) do
-    local lo = math.max(mark.top, top)
-    local hi = math.min(mark.bot, bot)
-    if lo <= hi then
-      if lo == mark.top and hi == mark.bot then
-        -- Whole hunk covered
-        selections[#selections + 1] = { index = i, rows = nil }
-      else
-        local hunk = diff.hunks[i]
-        local removed = hunk and select(1, hunk:parse_diff()) or {}
-        local rows = {}
-        for lnum = lo, hi do
-          local r = lnum - mark.top + 1
-          -- Unified renders a change hunk as all removed lines then all added
-          -- lines; both halves collapse onto the same pair row. Split renders
-          -- pair rows directly.
-          if layout_type == 'unified' and r > #removed then
-            rows[r - #removed] = true
-          else
-            rows[r] = true
-          end
-        end
-        selections[#selections + 1] = { index = i, rows = rows }
-      end
-    end
-  end
-
-  if #selections == 0 then return nil end
-  return selections
+  return visual_selection.for_range(self.model:get_diff(), self.model:get_layout_type(), top, bot)
 end
 
 -- Unified mark/unmark file operation
@@ -1264,22 +1230,8 @@ function IndexedReviewScreen:setup_visual_keymaps(keymaps)
     end, 15),
   }
 
-  local function make_visual_handler(run)
-    return function()
-      local top = vim.fn.line('v')
-      local bot = vim.fn.line('.')
-      if top > bot then top, bot = bot, top end
-
-      -- Leave visual mode before mutating state and re-rendering
-      local esc = vim.api.nvim_replace_termcodes('<Esc>', true, false, true)
-      vim.api.nvim_feedkeys(esc, 'nx', false)
-
-      run(top, bot)
-    end
-  end
-
-  local mark_lines_handler = make_visual_handler(self.visual_keymaps.mark_lines)
-  local unmark_lines_handler = make_visual_handler(self.visual_keymaps.unmark_lines)
+  local mark_lines_handler = visual_selection.make_handler(self.visual_keymaps.mark_lines)
+  local unmark_lines_handler = visual_selection.make_handler(self.visual_keymaps.unmark_lines)
 
   current_component:set_keymap({
     mode = 'x',

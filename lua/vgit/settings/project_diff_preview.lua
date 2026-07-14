@@ -12,11 +12,11 @@ return Config({
     },
     stage_hunk = {
       key = 's',
-      desc = 'Stage hunk'
+      desc = 'Stage hunk (visual: stage selected lines)'
     },
     unstage_hunk = {
       key = 'u',
-      desc = 'Unstage hunk'
+      desc = 'Unstage hunk (visual: unstage selected lines)'
     },
     reset_hunk = {
       key = 'r',

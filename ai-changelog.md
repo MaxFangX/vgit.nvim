@@ -3,6 +3,38 @@
 Summaries of substantial AI-assisted changes: what was built, why, and the
 design decisions behind it. Newest entries first.
 
+## 2026-07-14 — Visual line-level staging in ProjectDiffScreen
+
+Visual-select lines in the diff pane and press `s`/`u` to stage/unstage just
+those lines (the `git add -p` edit-hunk workflow, without the editing) —
+the same interaction the indexed review screens ship for marking lines seen.
+
+Mechanics: the shared range→per-hunk-rows mapping moved to
+`features/screens/visual_selection.lua` (extracted from IndexedReviewScreen,
+which now delegates). `GitHunk:select_rows(rows)` slices a hunk to the
+selected pair rows and renumbers the header (partial selections of uneven
+hunks degrade correctly to pure insertions/removals anchored by git's
+"zero-count side numbers the line before" convention); the sub-hunk then
+flows through the existing GitPatch → `git apply --cached --unidiff-zero`
+pipeline. Multi-hunk selections apply bottom-up so earlier hunks' index
+numbering stays valid. Split layout: selections in the current (right) pane
+only, matching the indexed screens.
+
+Fixed a pre-existing unstage bug this exposed: `git apply` positions a patch
+by its old-side line numbers *even under `--reverse`*, so reverse-applying a
+HEAD→index hunk mislocated the change in the index whenever earlier staged
+hunks had shifted line counts — a staged deletion below staged additions was
+silently restored in the wrong place (probed empirically with git's own
+unmodified hunk). `Model:unstage_hunk` now forward-applies the inverse hunk
+(`GitHunk:invert()`), which is numbered by the index side and lets git
+validate the content it touches.
+
+Verified: GitHunk unit specs (slice/invert/round-trip, anchor conventions);
+integration against real repos — staging row subsets of change/add/remove
+hunks yields byte-exact index content, inverse-unstage round trips, and the
+misplacement regression; pty tests driving real visual-mode keypresses in
+the screen for both partial stage and normal-mode unstage.
+
 ## 2026-07-13 — Rebase approved snapshots when the base changes
 
 The indexed model's "after an absorb, diff(approved, new current) is exactly
