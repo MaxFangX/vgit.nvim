@@ -25,6 +25,8 @@ local project_stash_preview_setting = require('vgit.settings.project_stash_previ
 local project_commit_preview_setting = require('vgit.settings.project_commit_preview')
 local project_review_by_file_setting = require('vgit.settings.project_review_by_file')
 local project_review_by_commit_setting = require('vgit.settings.project_review_by_commit')
+local indexed_file_review_setting = require('vgit.settings.indexed_file_review')
+local indexed_commit_review_setting = require('vgit.settings.indexed_commit_review')
 
 local hunks = Hunks()
 local conflicts = Conflicts()
@@ -106,6 +108,12 @@ local project = {
   review_by_commit = loop.coroutine(function(...)
     screen_manager.create('project_review_by_commit_screen', ...)
   end),
+  indexed_file_review = loop.coroutine(function(...)
+    screen_manager.create('indexed_file_review_screen', ...)
+  end),
+  indexed_commit_review = loop.coroutine(function(...)
+    screen_manager.create('indexed_commit_review_screen', ...)
+  end),
 }
 
 local toggle_diff_preference = loop.coroutine(function()
@@ -171,6 +179,8 @@ local function configure_settings(config)
   project_commit_preview_setting:assign(config_settings.project_commit_preview)
   project_review_by_file_setting:assign(config_settings.project_review_by_file)
   project_review_by_commit_setting:assign(config_settings.project_review_by_commit)
+  indexed_file_review_setting:assign(config_settings.indexed_file_review)
+  indexed_commit_review_setting:assign(config_settings.indexed_commit_review)
 end
 
 local controller = {}
@@ -217,6 +227,8 @@ function controller.commands()
     project_commits_preview = project.commits_preview,
     project_review_by_file = project.review_by_file,
     project_review_by_commit = project.review_by_commit,
+    indexed_file_review = project.indexed_file_review,
+    indexed_commit_review = project.indexed_commit_review,
   }
 end
 
