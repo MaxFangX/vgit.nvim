@@ -11,8 +11,10 @@ local persistence = require('vgit.features.screens.IndexedReviewPersistence')
   State is keyed by (base_branch, branch_name, review_type) where review_type
   is 'by_file_indexed' or 'by_commit_indexed'.
 
-  An approved record is { lines = {...}, deleted = bool }. No record means
-  approved == base (nothing seen). Records persist to disk as content-
+  An approved record is { lines = {...}, deleted = bool, base_lines = {...} }
+  where base_lines is the base the approval was made against (used to rebase
+  the snapshot when the base changes; absent on legacy records). No record
+  means approved == base (nothing seen). Records persist to disk as content-
   addressed objects referenced from the review-type JSON file.
 ]]
 
@@ -70,12 +72,14 @@ function IndexedReviewState:load_from_disk()
 
   -- Materialize approved snapshots from the object store. A missing object
   -- means the snapshot was lost; drop the entry (file reverts to unseen).
+  -- A missing base object only loses the ability to rebase the snapshot.
   local approved, missing = {}, 0
   for mark_key, entry in pairs(data.entries) do
     if type(entry) == 'table' and entry.approved then
       local lines = persistence.read_object(self.repo_name, self.branch_name, entry.approved)
       if lines then
-        approved[mark_key] = { lines = lines, deleted = entry.deleted == true }
+        local base_lines = entry.base and persistence.read_object(self.repo_name, self.branch_name, entry.base)
+        approved[mark_key] = { lines = lines, deleted = entry.deleted == true, base_lines = base_lines }
       else
         missing = missing + 1
       end
@@ -93,14 +97,16 @@ function IndexedReviewState:load_from_disk()
   }
 end
 
--- Get the approved snapshot for a mark_key: { lines, deleted } or nil
--- (nil means approved == base, i.e. nothing seen)
+-- Get the approved snapshot for a mark_key: { lines, deleted, base_lines }
+-- or nil (nil means approved == base, i.e. nothing seen)
 function IndexedReviewState:get_approved(mark_key)
   return get_state(self).approved[mark_key]
 end
 
-function IndexedReviewState:set_approved(mark_key, lines, deleted)
-  get_state(self).approved[mark_key] = { lines = lines, deleted = deleted == true }
+-- base_lines: the base content the approval was made against; lets the model
+-- rebase the snapshot when the base later changes (stack restructuring).
+function IndexedReviewState:set_approved(mark_key, lines, deleted, base_lines)
+  get_state(self).approved[mark_key] = { lines = lines, deleted = deleted == true, base_lines = base_lines }
 end
 
 function IndexedReviewState:remove_approved(mark_key)
@@ -143,7 +149,12 @@ function IndexedReviewState:save()
   local entries, objects = {}, {}
   for mark_key, record in pairs(state.approved) do
     local hash = persistence.hash_lines(record.lines)
-    entries[mark_key] = { approved = hash, deleted = record.deleted or nil }
+    local base_hash
+    if record.base_lines then
+      base_hash = persistence.hash_lines(record.base_lines)
+      objects[base_hash] = record.base_lines
+    end
+    entries[mark_key] = { approved = hash, deleted = record.deleted or nil, base = base_hash }
     objects[hash] = record.lines
   end
 

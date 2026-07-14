@@ -89,6 +89,7 @@ local function referenced_hashes(repo_name, branch_name)
       for _, entry in pairs(data.entries) do
         if type(entry) == 'table' and entry.approved then
           referenced[entry.approved] = true
+          if entry.base then referenced[entry.base] = true end
         end
       end
     end

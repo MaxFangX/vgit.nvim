@@ -3,6 +3,40 @@
 Summaries of substantial AI-assisted changes: what was built, why, and the
 design decisions behind it. Newest entries first.
 
+## 2026-07-13 — Rebase approved snapshots when the base changes
+
+The indexed model's "after an absorb, diff(approved, new current) is exactly
+the fixup's delta" property silently assumed a fixed parent chain. Inserting
+or reordering a commit below an already-reviewed one shifts both base and
+current of every descendant by that commit's delta while the approved
+snapshots stay put — so each descendant's Unseen view showed the ancestor's
+changes as new work, and its Seen view showed them *reversed*
+(diff(new base → stale approved) un-does them). Observed in the wild as a
+phantom `get_next_unused_address -> get_address` hunk after a rename commit
+was added to the bottom of a stack.
+
+Fix: records now store the base content they were approved against
+(`{ approved, base }` object refs in the JSON, both content-addressed and
+swept together). On first access with a mismatched live base, the model
+rebases the index: `hunk_apply.rebase` re-plays diff(stored base → approved)
+onto the new base, locating each hunk by exact content plus up to 3 context
+lines (ties broken by proximity to the original position, matches kept in
+order). Hunks that no longer apply are dropped *individually* — a conflicted
+hunk reverts to unseen for re-review while the file's other approvals
+survive. If everything drops, the record is removed. Legacy records without
+a stored base keep the old behavior — and partial marks/unmarks on them stay
+base-less: stamping the live base onto content derived from a stale snapshot
+would freeze its base drift as approved forever (observed in the wild as
+approved "reversions" of a base commit's endpoint-versioning changes). A
+mark that lands exactly on the current content, like `mark_file`, heals the
+record with a consistent base.
+
+Tests: rebase cases in `hunk_apply_spec.lua` (drift, per-hunk conflict,
+insertion relocation by context, repeated-content disambiguation, randomized
+identity) and reconcile-level cases in `IndexedBaseReviewModel_spec.lua`
+against a stub model, including the exact restack scenario above and the
+legacy-record laundering cases.
+
 ## 2026-07-13 — Fixed 80-column file list, mouse-draggable boundary
 
 The list/diff split was 25vw/75vw, so the file-list column width varied with
