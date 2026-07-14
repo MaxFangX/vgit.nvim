@@ -36,7 +36,8 @@ function RowLayout:build()
   local global_height = dimensions.global_height()
 
   if last_plot.win_plot.row + last_plot.win_plot.height > global_height then
-    row = dimensions.global_height() - last_plot.win_plot.height + 1
+    -- Rows are 0-based: a window of height h fits at rows [H - h, H - 1]
+    row = dimensions.global_height() - last_plot.win_plot.height
 
     if last_plot.header_win_plot then row = row - last_plot.header_win_plot.height end
     if last_plot.footer_win_plot then row = row - last_plot.footer_win_plot.height end

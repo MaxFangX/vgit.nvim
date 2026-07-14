@@ -61,24 +61,6 @@ function CommitMessageView:get_wrapped_height(lines)
   return height
 end
 
--- Padding for header element (which floats over content)
-function CommitMessageView:get_padding()
-  if vim.o.showtabline > 0 then return 1 end
-  return 0
-end
-
-function CommitMessageView:prepend_padding(lines)
-  local padding = self:get_padding()
-  local padded = {}
-  for _ = 1, padding do
-    padded[#padded + 1] = ''
-  end
-  for _, line in ipairs(lines) do
-    padded[#padded + 1] = line
-  end
-  return padded
-end
-
 function CommitMessageView:resize(body_line_count)
   local total_height = dimensions.convert('100vh')
   local max_height = math.floor(total_height * 0.5)
@@ -89,9 +71,7 @@ function CommitMessageView:resize(body_line_count)
     target_height = self.min_height
   else
     -- Has description: expand to fit content
-    local padding = self:get_padding()
-    local needed = padding + body_line_count
-    target_height = math.max(self.min_height, math.min(needed, max_height))
+    target_height = math.max(self.min_height, math.min(body_line_count, max_height))
   end
 
   if self.current_height == target_height then return end
@@ -121,28 +101,37 @@ function CommitMessageView:resize(body_line_count)
     end
   end
 
-  -- Resize and reposition main window (below header)
+  -- Resize and reposition main window (below header). A float must be at
+  -- least 1 row, which would overflow the usable area when the message has no
+  -- body (target_height == 1, header only) - hide it instead.
   if component.window and component.window.win_id then
     local win_id = component.window.win_id
     if vim.api.nvim_win_is_valid(win_id) then
-      vim.api.nvim_win_set_config(win_id, {
-        relative = 'editor',
-        row = msg_row + 1,
-        col = msg_col,
-        width = msg_width,
-        height = math.max(1, target_height - 1),
-      })
+      if target_height <= 1 then
+        vim.api.nvim_win_set_config(win_id, { hide = true })
+      else
+        vim.api.nvim_win_set_config(win_id, {
+          relative = 'editor',
+          row = msg_row + 1,
+          col = msg_col,
+          width = msg_width,
+          height = target_height - 1,
+          hide = false,
+        })
+      end
     end
   end
 
-  -- Resize list window
+  -- Resize list window: its body starts a few rows down (app bar + header),
+  -- so it may span at most from its own row to just above the message box
   local list_view = self.props.list_view and self.props.list_view()
   if list_view then
     local list_component = list_view.scene:get('list')
     if list_component and list_component.window and list_component.window.win_id then
       local win_id = list_component.window.win_id
       if vim.api.nvim_win_is_valid(win_id) then
-        vim.api.nvim_win_set_height(win_id, list_height)
+        local list_row = vim.api.nvim_win_get_config(win_id).row
+        vim.api.nvim_win_set_height(win_id, math.max(1, list_height - list_row))
       end
     end
   end
@@ -199,9 +188,8 @@ function CommitMessageView:render()
     -- +1 for bottom padding (keeps last line above command line)
     self:resize(self:get_wrapped_height(display_lines) + 1)
 
-    local lines = self:prepend_padding(body)
-    lines[#lines + 1] = ''
-    component:unlock():set_lines(lines):lock()
+    body[#body + 1] = ''
+    component:unlock():set_lines(body):lock()
 
     -- `set_lines` leaves the reused, wrapped buffer scrolled wherever the previous
     -- (longer) message left it, hiding the first lines until the user interacts.
