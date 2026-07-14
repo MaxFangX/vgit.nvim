@@ -3,6 +3,32 @@
 Summaries of substantial AI-assisted changes: what was built, why, and the
 design decisions behind it. Newest entries first.
 
+## 2026-07-13 — Fixed 80-column file list, mouse-draggable boundary
+
+The list/diff split was 25vw/75vw, so the file-list column width varied with
+the terminal and commit messages rarely wrapped at their natural width. Now
+every list+diff screen (classic + indexed reviews, project diff, stash) plots
+the list at a fixed `list_width` columns — default 80, except 72 on the
+by-commit screens so convention-wrapped commit message bodies fit the box
+exactly.
+
+The plot system is percentage-string based (and its relative math assumes
+`col + width = 100vw`), so `dimensions.fixed_split(cols)` converts the fixed
+width into vw strings nudged by -0.1 so `convert()`'s `math.ceil` lands
+exactly on `cols` / `total - cols` — no horizontal overflow, hence no
+compositor shift (the horizontal twin of the float bug fixed earlier).
+
+On the indexed screens (left-list layout) the boundary is mouse-draggable:
+`ui/drag_resize.lua` installs screen-lifetime `<LeftMouse>/<LeftDrag>/
+<LeftRelease>` expr mappings; a press on the 2-column grab zone arms a drag
+(clicks elsewhere fall through), drag events re-plot the seven affected
+windows (list, message header/body, panes + headers) via `vim.schedule`, and
+release re-renders width-dependent content (void filler, message wrap
+height) and remembers the width in the setting for the session. Verified via
+pty tests driving `nvim_input_mouse`: default geometry, drag 80→100 in split
+and unified layouts, setting persistence, click fall-through, mapping
+removal on quit, and an exhaustive `fixed_split` rounding sweep.
+
 ## 2026-07-13 — Indexed review screens (IndexedFileReviewScreen / IndexedCommitReviewScreen)
 
 ### The problem

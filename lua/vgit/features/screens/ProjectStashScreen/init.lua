@@ -4,6 +4,7 @@ local utils = require('vgit.core.utils')
 local Object = require('vgit.core.Object')
 local console = require('vgit.core.console')
 local DiffView = require('vgit.ui.views.DiffView')
+local dimensions = require('vgit.ui.dimensions')
 local StatusListView = require('vgit.ui.views.StatusListView')
 local KeyHelpBarView = require('vgit.ui.views.KeyHelpBarView')
 local Model = require('vgit.features.screens.ProjectStashScreen.Model')
@@ -16,6 +17,8 @@ function ProjectStashScreen:constructor(opts)
 
   local scene = Scene()
   local model = Model(opts)
+  -- List column is a fixed list_width characters wide
+  local list_pct, diff_pct = dimensions.fixed_split(project_stash_preview_setting:get('list_width'))
 
   return {
     name = 'Stash Screen',
@@ -39,7 +42,7 @@ function ProjectStashScreen:constructor(opts)
       end,
     }, {
       row = 1,
-      width = '25vw',
+      width = list_pct,
     }, {
       elements = {
         header = false,
@@ -62,8 +65,8 @@ function ProjectStashScreen:constructor(opts)
       end,
     }, {
       row = 1,
-      col = '25vw',
-      width = '75vw',
+      col = list_pct,
+      width = diff_pct,
     }, {
       elements = {
         header = true,

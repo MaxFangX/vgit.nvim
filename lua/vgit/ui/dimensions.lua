@@ -18,6 +18,21 @@ function dimensions.global_height()
   return vim.o.lines - vim.o.cmdheight - tabline_height
 end
 
+-- Express a fixed `cols`-wide list column as vw percentage strings
+-- (list_pct, rest_pct) so fixed widths can flow through the relative plot
+-- math, which assumes col + width add up to 100vw. The 0.1 nudge makes
+-- convert()'s math.ceil land exactly on cols (and total - cols) instead of
+-- one column past. Also returns the clamped column count.
+function dimensions.fixed_split(cols)
+  local total = dimensions.global_width()
+  cols = math.max(20, math.min(cols, math.max(20, total - 40)))
+
+  local list_pct = (cols - 0.1) * 100 / total
+  local rest_pct = (total - cols - 0.1) * 100 / total
+
+  return list_pct .. 'vw', rest_pct .. 'vw', cols
+end
+
 function dimensions.vh(value)
   return string.format('%svh', value)
 end

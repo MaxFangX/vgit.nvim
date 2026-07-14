@@ -1,6 +1,8 @@
 local Config = require('vgit.core.Config')
 
 return Config({
+  -- Width of the stash list column in columns
+  list_width = 80,
   keymaps = {
     add = {
       key = 'A',
