@@ -6,8 +6,16 @@ function dimensions.global_width()
   return vim.o.columns
 end
 
+-- Height usable by floating windows: floats may cover the statusline but are
+-- shifted up (hiding their first rows under other floats) if they extend into
+-- the command line or the tabline row. Only count the tabline when it's
+-- actually drawn (showtabline=1 draws it only with multiple tab pages).
 function dimensions.global_height()
-  return vim.o.lines
+  local tabline_height = 0
+  if vim.o.showtabline == 2 or (vim.o.showtabline == 1 and #vim.api.nvim_list_tabpages() > 1) then
+    tabline_height = 1
+  end
+  return vim.o.lines - vim.o.cmdheight - tabline_height
 end
 
 function dimensions.vh(value)
