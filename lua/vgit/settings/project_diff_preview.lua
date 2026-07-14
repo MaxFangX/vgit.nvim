@@ -3,6 +3,8 @@ local Config = require('vgit.core.Config')
 return Config({
   -- Alignment when jumping to a hunk: 'top', 'center', or 'bottom'
   hunk_alignment = 'center',
+  -- Width of the file list column in columns
+  list_width = 80,
   keymaps = {
     commit = {
       key = 'C',

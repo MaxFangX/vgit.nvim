@@ -2,6 +2,9 @@ local Config = require('vgit.core.Config')
 
 return Config({
   list_position = 'left',
+  -- Width of the file list column in columns (left/right layouts). 72 fits
+  -- convention-wrapped commit message bodies exactly.
+  list_width = 72,
   keymaps = {
     toggle_focus = {
       key = '<Tab>',

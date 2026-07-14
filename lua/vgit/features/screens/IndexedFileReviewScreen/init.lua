@@ -1,3 +1,4 @@
+local dimensions = require('vgit.ui.dimensions')
 local StatusListView = require('vgit.ui.views.StatusListView')
 local IndexedReviewScreen = require('vgit.features.screens.IndexedReviewScreen')
 local Model = require('vgit.features.screens.IndexedFileReviewScreen.Model')
@@ -13,9 +14,12 @@ function IndexedFileReviewScreen:constructor(opts)
   base.model = Model(opts)
   base.setting = setting
 
-  -- Fixed layout: list on left, diff on right
-  local list_plot = { row = 1, width = '25vw' }
-  local diff_plot = { row = 1, col = '25vw', width = '75vw' }
+  -- Fixed layout: list on left, diff on right. The list column is a fixed
+  -- character width (drag the boundary or set list_width to change it).
+  local list_pct, diff_pct, list_cols = dimensions.fixed_split(setting:get('list_width'))
+  local list_plot = { row = 1, width = list_pct }
+  local diff_plot = { row = 1, col = list_pct, width = diff_pct }
+  base.list_cols = list_cols
 
   base.list_view = StatusListView(base.scene, {
     entries = function()

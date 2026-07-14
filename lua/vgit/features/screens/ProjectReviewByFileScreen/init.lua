@@ -1,3 +1,4 @@
+local dimensions = require('vgit.ui.dimensions')
 local StatusListView = require('vgit.ui.views.StatusListView')
 local ProjectReviewScreen = require('vgit.features.screens.ProjectReviewScreen')
 local Model = require('vgit.features.screens.ProjectReviewByFileScreen.Model')
@@ -13,9 +14,10 @@ function ProjectReviewByFileScreen:constructor(opts)
   base.model = Model(opts)
   base.setting = setting
 
-  -- Fixed layout: list on left, diff on right
-  local list_plot = { row = 1, width = '25vw' }
-  local diff_plot = { row = 1, col = '25vw', width = '75vw' }
+  -- Fixed layout: list on left (fixed list_width columns), diff on right
+  local list_pct, diff_pct = dimensions.fixed_split(setting:get('list_width'))
+  local list_plot = { row = 1, width = list_pct }
+  local diff_plot = { row = 1, col = list_pct, width = diff_pct }
 
   base.list_view = StatusListView(base.scene, {
     entries = function()

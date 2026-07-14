@@ -8,6 +8,8 @@ local Object = require('vgit.core.Object')
 local Window = require('vgit.core.Window')
 local console = require('vgit.core.console')
 local DiffView = require('vgit.ui.views.DiffView')
+local dimensions = require('vgit.ui.dimensions')
+local drag_resize = require('vgit.ui.drag_resize')
 local KeyHelpBarView = require('vgit.ui.views.KeyHelpBarView')
 local section_headings = require('vgit.ui.views.StatusListView.section_headings')
 local file_navigation = require('vgit.features.screens.file_navigation')
@@ -37,6 +39,7 @@ function IndexedReviewScreen:constructor(opts)
     model = nil,      -- Set by subclass
     setting = nil,    -- Set by subclass
     list_view = nil,  -- Set by subclass
+    list_cols = nil,  -- Set by subclass when the list/diff boundary is draggable
     diff_keymaps = {},
     app_bar_view = nil,
     diff_view = nil,
@@ -1383,6 +1386,83 @@ function IndexedReviewScreen:setup_keymaps()
   self:setup_diff_keymaps()
 end
 
+-- Reconfigure all width-dependent windows for a new list column width
+-- (mouse drag on the list/diff boundary, left-list layout only). Cheap:
+-- window re-plots only; content re-renders once on release.
+function IndexedReviewScreen:apply_list_width(cols)
+  local total = dimensions.global_width()
+  cols = math.max(20, math.min(cols, total - 40))
+  if cols == self.list_cols then return end
+  self.list_cols = cols
+
+  local function replot(window, col, width)
+    local win_id = window and window.win_id
+    if not win_id or not vim.api.nvim_win_is_valid(win_id) then return end
+    local row = vim.api.nvim_win_get_config(win_id).row
+    vim.api.nvim_win_set_config(win_id, { relative = 'editor', row = row, col = col, width = width })
+  end
+
+  local function replot_component(component, col, width)
+    if not component then return end
+    replot(component.window, col, width)
+    local header = component.elements and component.elements.header
+    if header then replot(header.window, col, width) end
+  end
+
+  replot_component(self.scene:get('list'), 0, cols)
+
+  if self.commit_message_view then
+    -- Future CommitMessageView:resize() calls re-derive geometry from the plot
+    self.commit_message_view.plot.width = cols
+    replot_component(self.scene:get('commit_message'), 0, cols)
+  end
+
+  local rest = total - cols
+  if self.model:get_layout_type() == 'split' then
+    local half = math.ceil(rest / 2)
+    replot_component(self.scene:get('previous'), cols, half)
+    replot_component(self.scene:get('current'), cols + half, rest - half)
+  else
+    replot_component(self.scene:get('current'), cols, rest)
+  end
+end
+
+-- Re-render width-dependent content (void filler, message wrap height) after
+-- a drag completes, and remember the width for screens opened later this
+-- session.
+function IndexedReviewScreen:finish_list_resize()
+  self.setting:set('list_width', self.list_cols)
+
+  self.diff_view:save_viewport()
+  self.diff_view:render()
+
+  if self.commit_message_view then
+    self.commit_message_view.current_height = nil
+    self.commit_message_view:render()
+  end
+end
+
+-- Make the list/diff boundary mouse-draggable. Only active when the subclass
+-- plotted a left-side list (list_cols set).
+function IndexedReviewScreen:setup_drag_resize()
+  if not self.list_cols then return end
+
+  -- The handlers arrive via vim.schedule and can race destroy(); _drag_detach
+  -- is non-nil exactly while the screen is alive, so gate on it.
+  self._drag_detach = drag_resize.attach({
+    boundary = function()
+      -- First screen column of the diff pane (screen columns are 1-based)
+      return self.list_cols + 1
+    end,
+    on_drag = function(boundary)
+      if self._drag_detach then self:apply_list_width(boundary - 1) end
+    end,
+    on_release = loop.coroutine(function()
+      if self._drag_detach then self:finish_list_resize() end
+    end),
+  })
+end
+
 -- Returns true if current buffer is in the review (triggers source line positioning)
 function IndexedReviewScreen:focus_relative_buffer_entry(buffer)
   local review_state = self.model:get_review_state()
@@ -1488,6 +1568,7 @@ function IndexedReviewScreen:create(args)
   end
 
   self:setup_keymaps()
+  self:setup_drag_resize()
   self:ensure_visible_file()
   local found_current_buffer = self:focus_relative_buffer_entry(buffer)
   self:handle_list_move()
@@ -1596,6 +1677,10 @@ function IndexedReviewScreen:destroy()
   if self.visual_keymaps then
     loop.close_debounced_handlers(self.visual_keymaps)
     self.visual_keymaps = nil
+  end
+  if self._drag_detach then
+    self._drag_detach()
+    self._drag_detach = nil
   end
   self.scene:destroy()
 end
