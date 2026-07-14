@@ -132,4 +132,80 @@ function GitHunk:get_content_id(file_lines, context_size)
   return fnv1a(table.concat(self.diff, '\n'))
 end
 
+-- Return the inverse hunk: sides swapped, removed and added lines flipped.
+-- Forward-applying the inverse undoes the hunk. This positions better than
+-- `git apply --reverse`: git locates a patch by its old-side line numbers
+-- even when reversing, and only the inverse hunk is numbered by the side
+-- the undo actually targets (e.g. the index, for a HEAD->index hunk).
+function GitHunk:invert()
+  local previous, current = self:parse_header()
+  local removed, added = self:parse_diff()
+
+  local inverted = GitHunk({ current, previous })
+  for _, line in ipairs(added) do
+    inverted:push('-' .. line)
+  end
+  for _, line in ipairs(removed) do
+    inverted:push('+' .. line)
+  end
+
+  return inverted
+end
+
+-- Build a sub-hunk containing only the selected pair rows (row r pairs
+-- removed[r]/added[r], the pairing the diff layouts render). The selection
+-- must be contiguous (it comes from a visual range); the sub-hunk gets a
+-- renumbered header so it can be applied on its own. Returns self when the
+-- selection covers the whole hunk, nil when it selects nothing.
+function GitHunk:select_rows(rows)
+  local lo, hi
+  for r in pairs(rows) do
+    if not lo or r < lo then lo = r end
+    if not hi or r > hi then hi = r end
+  end
+  if not lo then return nil end
+
+  local removed, added = self:parse_diff()
+  if lo <= 1 and hi >= math.max(#removed, #added) then return self end
+
+  local diff = {}
+  local removed_count, added_count = 0, 0
+  for r = lo, math.min(hi, #removed) do
+    diff[#diff + 1] = '-' .. removed[r]
+    removed_count = removed_count + 1
+  end
+  for r = lo, math.min(hi, #added) do
+    diff[#diff + 1] = '+' .. added[r]
+    added_count = added_count + 1
+  end
+  if #diff == 0 then return nil end
+
+  local previous, current = self:parse_header()
+
+  -- A selected span starts at its row offset into the hunk's span. When the
+  -- selection leaves a side empty, git numbers that zero-count side by the
+  -- line BEFORE the change: the last unselected line of the hunk preceding
+  -- the selection (or the original anchor if that side was already empty).
+  local old_start
+  if removed_count > 0 then
+    old_start = previous[1] + lo - 1
+  else
+    old_start = previous[2] == 0 and previous[1] or previous[1] + math.min(lo - 1, #removed) - 1
+  end
+
+  local new_start
+  if added_count > 0 then
+    new_start = current[1] + lo - 1
+  else
+    new_start = current[2] == 0 and current[1] or current[1] + math.min(lo - 1, #added) - 1
+  end
+
+  local sub = GitHunk({ { old_start, removed_count }, { new_start, added_count } })
+  for _, line in ipairs(diff) do
+    sub:push(line)
+  end
+
+  return sub
+end
+
 return GitHunk
