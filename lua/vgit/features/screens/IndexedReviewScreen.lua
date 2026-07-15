@@ -490,28 +490,6 @@ function IndexedReviewScreen:jump_to_commit_edge(direction)
   self:focus_list_item_in_diff(list_item, direction)
 end
 
--- Move cursor to first or last visible line in a commit
-function IndexedReviewScreen:move_to_commit_line(commit_hash, section, position)
-  local component = self.list_view.scene:get('list')
-  local found_item, found_lnum = nil, nil
-
-  self.list_view:each_list_item(function(item, lnum)
-    if item.commit_hash == commit_hash and item.section_type == section then
-      if position == 'first' and not found_item then
-        found_item, found_lnum = item, lnum
-      elseif position == 'last' then
-        found_item, found_lnum = item, lnum
-      end
-    end
-  end)
-
-  if found_item then
-    loop.free_textlock()
-    component:unlock():set_lnum(found_lnum):lock()
-  end
-  return found_item
-end
-
 -- Move to an entry, expanding its commit if needed
 -- commit_message: match by commit message (stable across rebases) instead of hash
 function IndexedReviewScreen:move_to_entry_expanding_commit(filepath, commit_hash, entry_type, commit_message)
@@ -937,16 +915,15 @@ function IndexedReviewScreen:handle_list_move()
   -- Skip if we're in the middle of a mark operation
   if self._marking then return end
 
-  -- Check if this was keyboard navigation (flag set by keymap handlers)
-  local keyboard_direction = self._keyboard_nav_direction
-  self._keyboard_nav_direction = nil
-
   local list_item = self.list_view:move()
   if not list_item then return end
 
-  -- Handle commit expansion (only for CommitListView)
-  -- keyboard_direction is nil for mouse clicks, so "move to last line" won't trigger
-  list_item = self:update_commit_expansion(list_item, keyboard_direction) or list_item
+  -- Plain list movement (arrows, mouse clicks) never changes which commit is
+  -- expanded — only deliberate navigation does (J/K commit jumps, j/k
+  -- adjacent-file moves, mark/unmark), via goto_logical_file /
+  -- move_to_entry_expanding_commit. Landing on a header row (commit or
+  -- section, no entry id) leaves the diff pane untouched too.
+  if not list_item.id then return end
 
   -- Skip re-render when the selected entry hasn't changed (e.g. spurious
   -- CursorMoved on window-focus transitions). Re-rendering would reset the
@@ -959,60 +936,41 @@ function IndexedReviewScreen:handle_list_move()
   self.diff_view:move_to_hunk(nil, hunk_alignment)
 end
 
--- Update which commit is expanded based on cursor position
--- Returns the new list_item if cursor was moved, nil otherwise
-function IndexedReviewScreen:update_commit_expansion(list_item, direction)
-  if self._navigating then return nil end
-  if not self.list_view.set_active_commit then return nil end
+-- Enter opens the file under the cursor. On a commit title it instead
+-- toggles that commit's expansion (BaseListView's raw fold flip is
+-- reconciled by the active-commit render); section headers and folders keep
+-- the plain fold toggle BaseListView already applied.
+function IndexedReviewScreen:handle_list_enter(item)
+  if item.id then return self:open_file() end
 
-  local target_hash = list_item.commit_hash
-  local target_section = list_item.section_type
+  local is_commit_header = item.commit_hash ~= nil and item.node_type == nil
+  if not is_commit_header or not self.list_view.set_active_commit then return end
 
-  -- Skip if on section header (no commit to expand)
-  if not target_hash then return nil end
-
-  if self.list_view:set_active_commit(target_hash, target_section) then
-    self._navigating = true
-    self:rerender_list_preserving_cursor(list_item)
-    self:update_commit_message()
-
-    -- If on a commit header after expansion and going UP, move to last line
-    -- (For DOWN, stay on header so next down goes to first line naturally)
-    local is_commit_header = not list_item.node_type and list_item.commit_hash
-    if is_commit_header and direction == 'up' then
-      local new_item = self:move_to_commit_line(target_hash, list_item.section_type, 'last')
-      self._navigating = false
-      return new_item
-    end
-
-    self._navigating = false
+  local active = self.list_view:get_active_commit()
+  local is_expanded = active ~= nil
+    and active.hash == item.commit_hash
+    and active.section == item.section_type
+  if is_expanded then
+    self.list_view:set_active_commit(nil)
+  else
+    self.list_view:set_active_commit(item.commit_hash, item.section_type)
   end
-  return nil
-end
-
--- Re-render list while preserving cursor on the same item
-function IndexedReviewScreen:rerender_list_preserving_cursor(target_item)
-  local component = self.list_view.scene:get('list')
-  local target_entry_id = target_item.entry and target_item.entry.id
-
   self.list_view:render()
+  self:update_commit_message()
 
-  self.list_view:find_list_item(function(item, lnum)
-    local matched
-    if target_entry_id then
-      matched = item.entry and item.entry.id == target_entry_id
-    else
-      matched = item.commit_hash == target_item.commit_hash
-        and item.section_type == target_item.section_type
-        and item.value == target_item.value
+  -- Collapsing the previously expanded commit shifts fold lines; keep the
+  -- cursor on the toggled commit's title.
+  local lnum
+  self.list_view:each_list_item(function(node, node_lnum)
+    if node.commit_hash == item.commit_hash and node.node_type == nil and node.section_type == item.section_type then
+      lnum = node_lnum
+      return true
     end
-
-    if matched then
-      loop.free_textlock()
-      component:unlock():set_lnum(lnum):lock()
-    end
-    return matched
   end)
+  if lnum then
+    loop.free_textlock()
+    self.list_view.scene:get('list'):unlock():set_lnum(lnum):lock()
+  end
 end
 
 -- Ensure at least one file is visible (expand first commit if needed)
@@ -1113,28 +1071,6 @@ end
 
 function IndexedReviewScreen:setup_list_keymaps()
   local keymaps = self.setting:get('keymaps')
-
-  -- Navigation key handlers that set direction flag before native movement
-  -- This allows us to distinguish keyboard nav from mouse clicks
-  local nav_keys = {
-    { key = 'k', direction = 'up' },
-    { key = '<Up>', direction = 'up' },
-    { key = 'j', direction = 'down' },
-    { key = '<Down>', direction = 'down' },
-  }
-  for _, nav in ipairs(nav_keys) do
-    self.list_view:set_keymap({
-      {
-        mode = 'n',
-        key = nav.key,
-        handler = function()
-          self._keyboard_nav_direction = nav.direction
-          -- Execute native movement (will trigger CursorMoved -> handle_list_move)
-          vim.cmd('normal! ' .. vim.api.nvim_replace_termcodes(nav.key, true, false, true))
-        end,
-      },
-    })
-  end
 
   self.list_view:set_keymap({
     {
@@ -1546,8 +1482,8 @@ function IndexedReviewScreen:create(args)
   self.app_bar_view:mount()
   self.list_view:mount({
     event_handlers = {
-      on_enter = function()
-        self:open_file()
+      on_enter = function(item)
+        self:handle_list_enter(item)
       end,
       on_move = function()
         self:handle_list_move()
