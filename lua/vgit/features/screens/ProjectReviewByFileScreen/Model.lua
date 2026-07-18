@@ -71,6 +71,7 @@ function Model:fetch(base_branch_arg)
   local branch_name, repo_name, branch_err = self:resolve_branch_name(reponame, base_branch)
   if branch_err then return nil, branch_err end
   self.state.branch_name = branch_name
+  self:resolve_unpushed_count(reponame)
 
   -- Async fetch if stale — notifies user to reopen if base was updated
   git_branch.fetch_ref_if_stale(reponame, base_branch)
