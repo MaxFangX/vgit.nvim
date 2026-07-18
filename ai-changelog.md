@@ -3,6 +3,63 @@
 Summaries of substantial AI-assisted changes: what was built, why, and the
 design decisions behind it. Newest entries first.
 
+## 2026-07-19 — NUL-safe snapshot hashing and object reads
+
+Quitting an indexed commit review crashed with `E976: Using a Blob as a
+String` when the stack contained a binary file (seen with an .age secret):
+nvim converts a Lua string containing NUL bytes to a Blob at the vim.fn
+boundary, and `sha256()` rejects Blobs. `hash_lines` now escapes NULs
+injectively (`\1 -> \1\1`, `\0 -> \1\2`) before hashing — text content
+hashes unchanged, so existing objects stay addressable.
+
+`read_object` also switched from `vim.fn.readfile` (which silently rewrites
+NUL bytes, corrupting binary snapshots on the round-trip — and whose NUL→NL
+strings `nvim_buf_set_lines` would reject) to raw io mirroring
+`fs.write_file`'s format, so binary snapshots round-trip byte-exact.
+
+## 2026-07-18 — Bookmark resolution by subject overlap, not distance
+
+The detached-HEAD branch resolver ranked local branches by symmetric commit
+distance to HEAD. Geometry can't distinguish "an older rewrite of this stack"
+(the real bookmark, diverged after amends) from a stale unrelated branch or a
+merged bookmark parked on master — the latter inherits master's proximity and
+hijacks the key. Observed in the wild: a workspace resolving to a branch merged
+weeks earlier whose bookmark sat exactly on the trunk tip.
+
+Fix: `branch_for_head` now ranks candidates by stack identity — overlap of
+commit subjects past the trunk (`master..branch` vs `master..HEAD`), the same
+rewrite-stable identity the review marks are keyed by. Zero overlap
+disqualifies (merged/stale bookmarks fall out naturally, since a bookmark on
+the trunk has no commits past it); ties break by symmetric distance, then
+name. Nil now means "no branch claims this stack", which also strengthens
+`trunk_behind_head`'s no-feature-branch guard: stale bookmarks no longer block
+the trunk fallback. The `backup/*` name ignore stays — backups share subjects
+by construction, so overlap ranking makes it more load-bearing, not less.
+
+Ranking by subject identity also made it safe to run `branch_for_head`
+*before* the stored-review resolver in `current_persistent`'s detached-HEAD
+ladder, which fixes stacked branches: a substack's reviewed subjects all sit
+inside the superstack's `master..HEAD`, so the substack's (often larger)
+stored review out-overlaps the superstack's own and would claim the key —
+even with the superstack's bookmark parked exactly at HEAD. Subject overlap
+fundamentally can't tell "this stack, rebased" from "a superstack built on
+it"; only topology can. A lagging or diverged bookmark still wins whenever
+it claims HEAD's stack; stored reviews remain the fallback for deleted or
+out-of-reach bookmarks.
+
+Also relaxed the stored-review matcher's `MIN_SUBJECT_OVERLAP = 2` for tiny
+reviews (a single-commit stack could never content-match): below the minimum,
+a review qualifies only if all its stored subjects match AND cover ≥ half of
+HEAD's stack. The coverage requirement matters: marks saved under a
+misresolved key (residue of the old bug) form single-subject reviews that
+would otherwise claim whole stacks away from their true bookmark.
+
+Tests: temp-repo cases in `git_branch_spec.lua` (diverged-sibling rewrite wins
+over a nearer unrelated branch, merged-bookmark hijack, nil on zero overlap,
+trunk keying despite stale branches, stacked bookmark outranking the stored
+review); verified live against the misresolving workspaces and the dotfiles
+trunk-work repo.
+
 ## 2026-07-14 — Visual line-level staging in ProjectDiffScreen
 
 Visual-select lines in the diff pane and press `s`/`u` to stage/unstage just
