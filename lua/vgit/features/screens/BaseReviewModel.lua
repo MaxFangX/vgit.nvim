@@ -64,10 +64,27 @@ function BaseReviewModel:resolve_branch_name(reponame, base_branch)
   return branch_name, repo_name, err
 end
 
+-- A trunk review (base = origin/<branch key>) covers exactly the unpushed
+-- trunk commits; count them so the title can say so. No-op for other reviews.
+function BaseReviewModel:resolve_unpushed_count(reponame)
+  self.state.unpushed_count = nil
+  if self.state.base_branch ~= 'origin/' .. (self.state.branch_name or '') then return end
+
+  local commits = git_branch.commits_in_range(reponame, self.state.base_branch, 'HEAD')
+  if commits and #commits > 0 then self.state.unpushed_count = #commits end
+end
+
 -- Header for the review list: the branch key marks persist under, plus the base
 -- it's diffed against. Surfaces which review is loaded, since the resolved branch
--- can shift under a detached HEAD.
+-- can shift under a detached HEAD. A trunk review also shows how many unpushed
+-- commits it covers — the branch key names the trunk there, not the ref diffed
+-- (the diff runs to HEAD, past the lagging trunk ref).
 function BaseReviewModel:get_list_title()
+  local count = self.state.unpushed_count
+  if count then
+    local plural = count == 1 and '' or 's'
+    return string.format('%s (+%d unpushed commit%s) vs %s', self.state.branch_name, count, plural, self.state.base_branch)
+  end
   return string.format('%s (vs %s)', self.state.branch_name, self.state.base_branch)
 end
 
