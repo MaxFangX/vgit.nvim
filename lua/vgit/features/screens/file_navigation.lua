@@ -82,24 +82,24 @@ local function same_commit(a, b)
   return a.commit_hash == b.commit_hash and a.section == b.section
 end
 
--- Target index for a J/K commit-edge jump in the by-commit list. Jumps to the
--- current commit's far-edge file (last for 'next', first for 'prev'); if already
--- at that edge, crosses into the adjacent commit's file, wrapping around.
-function M.commit_edge_target(all_files, current_index, direction)
+-- Target index for a J/K commit jump in the by-commit list: always leave the
+-- current commit, landing on the next commit's first file ('next') or the
+-- previous commit's last file ('prev'). Both are simply the file just past the
+-- current commit's boundary, so one step off that edge lands correctly. Wraps
+-- around. Files within a commit stay j/k's job.
+function M.adjacent_commit_target(all_files, current_index, direction)
   local current = all_files[current_index]
-  local first, last = current_index, current_index
-  while first > 1 and same_commit(all_files[first - 1], current) do
-    first = first - 1
-  end
-  while last < #all_files and same_commit(all_files[last + 1], current) do
-    last = last + 1
+  local total = #all_files
+  local step = direction == 'next' and 1 or -1
+
+  -- Walk to the commit's boundary in the direction of travel, then step past it.
+  local edge = current_index
+  while edge + step >= 1 and edge + step <= total and same_commit(all_files[edge + step], current) do
+    edge = edge + step
   end
 
-  local total = #all_files
-  if direction == 'next' then
-    return current_index < last and last or (last % total) + 1
-  end
-  return current_index > first and first or ((first - 2) % total) + 1
+  return ((edge + step - 1) % total) + 1
+end
 end
 
 local function to_ref(info)

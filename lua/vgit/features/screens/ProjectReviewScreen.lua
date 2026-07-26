@@ -453,12 +453,12 @@ function ProjectReviewScreen:find_adjacent_files(target_section, current_filepat
   end)
 end
 
--- J/K in the list pane. By-commit jumps between commit edge-files; by-file jumps
+-- J/K in the list pane. By-commit jumps to the adjacent commit; by-file jumps
 -- between crate-level folder headings (see
 -- vgit.ui.views.StatusListView.section_headings for the rule).
 function ProjectReviewScreen:jump_section(direction)
   if self.list_view.get_active_commit then
-    return self:jump_to_commit_edge(direction)
+    return self:jump_to_adjacent_commit(direction)
   end
 
   -- By-file: jump to the next/prev crate-level folder heading. Wraps around.
@@ -480,11 +480,10 @@ function ProjectReviewScreen:jump_section(direction)
   return nil
 end
 
--- J/K in the by-commit list pane: jump to the current commit's edge file (last
--- for 'next', first for 'prev'); if already at that edge, cross into the
--- adjacent commit's file. Wraps around. Mirrors the diff pane's
--- jump_to_file_edge, one level up the hierarchy.
-function ProjectReviewScreen:jump_to_commit_edge(direction)
+-- J/K in the by-commit list pane: jump to the next commit's first file ('next')
+-- or the previous commit's last file ('prev'), regardless of where in the
+-- current commit the cursor sits. Wraps around.
+function ProjectReviewScreen:jump_to_adjacent_commit(direction)
   loop.free_textlock()
 
   local entries = self.list_view:get_entries()
@@ -496,7 +495,7 @@ function ProjectReviewScreen:jump_to_commit_edge(direction)
   local current_idx = self:get_current_file_index(all_files)
   if not current_idx then return end
 
-  local target_idx = file_navigation.commit_edge_target(all_files, current_idx, direction)
+  local target_idx = file_navigation.adjacent_commit_target(all_files, current_idx, direction)
   local list_item = self:goto_logical_file(all_files[target_idx])
   if not list_item then return end
 

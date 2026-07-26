@@ -203,7 +203,7 @@ describe('file_navigation:', function()
     end)
   end)
 
-  describe('commit_edge_target', function()
+  describe('adjacent_commit_target', function()
     -- Build all_files from {commit, path, section?} specs.
     local function make(specs)
       local out = {}
@@ -226,38 +226,38 @@ describe('file_navigation:', function()
       { commit = 'ghi', path = 'e.lua' },
     })
     local function target(idx, dir)
-      return file_navigation.commit_edge_target(files, idx, dir)
+      return file_navigation.adjacent_commit_target(files, idx, dir)
     end
 
-    it("'next' from a non-edge file jumps to the commit's last file", function()
-      eq(target(4, 'next'), 5) -- ghi first file -> ghi last file
+    it("'next' from a commit's first file lands on the next commit's first file", function()
+      eq(target(1, 'next'), 3) -- abc first file -> def first file
     end)
 
-    it("'next' from the commit's last file crosses to the next commit", function()
+    it("'next' from a commit's last file lands on the next commit's first file", function()
       eq(target(2, 'next'), 3) -- abc last file -> def first file
     end)
 
-    it("'next' from a single-file commit crosses immediately", function()
+    it("'next' from a single-file commit crosses to the next commit", function()
       eq(target(3, 'next'), 4) -- def (sole file) -> ghi first file
     end)
 
-    it("'next' wraps from the last file to the first", function()
+    it("'next' wraps from the last commit to the first", function()
       eq(target(5, 'next'), 1) -- ghi last file -> abc first file
     end)
 
-    it("'prev' from a non-edge file jumps to the commit's first file", function()
-      eq(target(2, 'prev'), 1) -- abc last file -> abc first file
+    it("'prev' from a commit's last file lands on the previous commit's last file", function()
+      eq(target(5, 'prev'), 3) -- ghi last file -> def last file
     end)
 
-    it("'prev' from the commit's first file crosses to the previous commit", function()
+    it("'prev' from a commit's first file lands on the previous commit's last file", function()
       eq(target(4, 'prev'), 3) -- ghi first file -> def last file
     end)
 
-    it("'prev' from a single-file commit crosses immediately", function()
+    it("'prev' from a single-file commit crosses to the previous commit", function()
       eq(target(3, 'prev'), 2) -- def (sole file) -> abc last file
     end)
 
-    it("'prev' wraps from the first file to the last", function()
+    it("'prev' wraps from the first commit to the last", function()
       eq(target(1, 'prev'), 5) -- abc first file -> ghi last file
     end)
 
@@ -267,9 +267,9 @@ describe('file_navigation:', function()
         { section = 'Unseen', commit = 'abc', path = 'a.lua' },
         { section = 'Seen',   commit = 'abc', path = 'b.lua' },
       })
-      -- Each section's lone file is its own edge, so J/K cross between them.
-      eq(file_navigation.commit_edge_target(split, 1, 'next'), 2)
-      eq(file_navigation.commit_edge_target(split, 2, 'prev'), 1)
+      -- Each section's range counts as its own commit, so J/K cross between them.
+      eq(file_navigation.adjacent_commit_target(split, 1, 'next'), 2)
+      eq(file_navigation.adjacent_commit_target(split, 2, 'prev'), 1)
     end)
   end)
 end)
