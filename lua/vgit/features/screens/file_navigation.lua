@@ -100,6 +100,19 @@ function M.adjacent_commit_target(all_files, current_index, direction)
 
   return ((edge + step - 1) % total) + 1
 end
+
+-- After a mark/unmark rewrites a diff, pick the hunk to land on: the first
+-- mark starting past where the marked region began (`from_top_relative`, in
+-- new-side line numbers). Strict comparison matters: a partially marked hunk
+-- splits, and the remainder above the marked rows keeps the original start
+-- line — skipping it lands on the remainder (or next hunk) below the marked
+-- lines instead of pulling the cursor back up. Returns nil when nothing
+-- starts past the marked region (review moves on to the next file).
+function M.hunk_past_position(marks, from_top_relative)
+  for i, mark in ipairs(marks) do
+    if mark.top_relative > from_top_relative then return i end
+  end
+  return nil
 end
 
 local function to_ref(info)

@@ -272,4 +272,30 @@ describe('file_navigation:', function()
       eq(file_navigation.adjacent_commit_target(split, 2, 'prev'), 1)
     end)
   end)
+
+  describe('hunk_past_position', function()
+    local function marks(tops)
+      local out = {}
+      for _, top in ipairs(tops) do
+        out[#out + 1] = { top_relative = top }
+      end
+      return out
+    end
+
+    it('skips the leading remainder of a partially marked hunk', function()
+      -- A hunk at lines 2-9 with 4-6 marked splits into remainders at 2-3 and
+      -- 7-9: the leading remainder keeps start line 2, so land on 7-9.
+      eq(file_navigation.hunk_past_position(marks({ 2, 7 }), 2), 2)
+    end)
+
+    it('lands on the hunk that slid into a fully marked slot', function()
+      eq(file_navigation.hunk_past_position(marks({ 1, 20 }), 10), 2)
+    end)
+
+    it('returns nil when nothing starts past the mark', function()
+      -- Marked the file's last hunk: review moves on to the next file even
+      -- though an earlier hunk remains.
+      eq(file_navigation.hunk_past_position(marks({ 2, 10 }), 10), nil)
+    end)
+  end)
 end)

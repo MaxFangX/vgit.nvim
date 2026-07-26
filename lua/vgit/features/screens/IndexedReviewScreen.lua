@@ -610,30 +610,33 @@ function IndexedReviewScreen:move_list_cursor_to_file(filepath, commit_hash, ent
   end)
 end
 
--- Navigate after a mark/unmark. Marking rewrites the section's diff (hunks
--- shift down into the marked hunk's slot), so the next target is simply the
--- same index clamped to the new hunk count.
+-- Navigate after a mark/unmark. Marking rewrites the section's diff — hunk
+-- indices shift, and a partially marked hunk splits into remainders — so the
+-- next target is found by position: the first remaining hunk starting past
+-- where the marked region began (from_top, new-side line number).
 --
 -- Navigation order (section is a cohesive loop):
---   1. Same file if it still has hunks in the target section
+--   1. Same file if it still has hunks past the marked region
 --   2. Next file in section (first hunk)
 --   3. Wrap to first file in section
 --   4. Section complete - stay on current file (now in opposite section)
-function IndexedReviewScreen:move_to_next_target(target_entry_type, filepath, commit_hash, from_hunk, next_file, first_file)
+function IndexedReviewScreen:move_to_next_target(target_entry_type, filepath, commit_hash, from_top, next_file, first_file)
   local hunk_alignment = 'smart'
 
-  -- 1. Same file, same section: go to the hunk that slid into this slot
+  -- 1. Same file, same section: go to the first hunk past the marked region.
+  -- No such hunk (the marked region was the file's last) falls through to the
+  -- next file even though earlier hunks remain — they're revisited on wrap.
   local found_entry = self:move_to_entry_expanding_commit(filepath, commit_hash, target_entry_type)
   if found_entry then
     self.model:set_entry_id(found_entry.id)
     local diff = self.model:get_diff()
     loop.free_textlock()
-    local total = diff and diff.marks and #diff.marks or 0
-    if total > 0 then
+    local target = diff and diff.marks and file_navigation.hunk_past_position(diff.marks, from_top)
+    if target then
       self.diff_view:save_viewport()  -- Preserve viewport for same-file navigation
       self.diff_view:render()
       loop.free_textlock()
-      self.diff_view:move_to_hunk(math.min(from_hunk, total), hunk_alignment)
+      self.diff_view:move_to_hunk(target, hunk_alignment)
       return
     end
   end
@@ -702,7 +705,18 @@ function IndexedReviewScreen:apply_seen_change(mark_as_seen, selections)
     -- Save context before marking (entry may be removed after render)
     local current_filepath = entry.filepath
     local current_commit = entry.commit_hash
-    local from_hunk = (selections and selections[1] and selections[1].index) or 1
+
+    -- New-side line where the marked region begins (from the last selection,
+    -- the bottom of a visual range). Navigation lands on the first hunk past
+    -- this position after the rebuild; index arithmetic alone would land back
+    -- on the leading remainder of a partially marked hunk.
+    local from_top = 0
+    local last_selection = selections and selections[#selections]
+    if last_selection then
+      local diff = self.model:get_diff_for(entry)
+      local mark = diff and diff.marks and diff.marks[last_selection.index]
+      if mark then from_top = mark.top_relative end
+    end
 
     -- Find adjacent files in this section BEFORE rebuilding (includes files in
     -- collapsed commits)
@@ -731,7 +745,7 @@ function IndexedReviewScreen:apply_seen_change(mark_as_seen, selections)
     end
     self.list_view:render()
 
-    self:move_to_next_target(expected_type, current_filepath, current_commit, from_hunk, next_file, first_file)
+    self:move_to_next_target(expected_type, current_filepath, current_commit, from_top, next_file, first_file)
   end)
 end
 
