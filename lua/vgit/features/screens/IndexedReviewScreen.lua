@@ -1502,19 +1502,9 @@ function IndexedReviewScreen:create(args)
 end
 
 function IndexedReviewScreen:on_quit()
-  local focus = self._current_focus or 'diff'
-  local is_diff_focused = focus == 'diff'
+  local is_diff_focused = (self._current_focus or 'diff') == 'diff'
 
-  -- Always save state, regardless of which component is focused
-  local entry = self.model:get_entry()
-  local review_state = self.model:get_review_state()
-  if review_state and entry then
-    local commit_message = entry.commit and entry.commit.message or nil
-    review_state:save_position(entry.type, entry.filepath, commit_message, focus)
-  end
-  if review_state then
-    review_state:save()
-  end
+  -- State is saved by destroy() below
 
   local filepath = self.model:get_abs_filepath()
 
@@ -1557,6 +1547,11 @@ function IndexedReviewScreen:on_quit()
 end
 
 function IndexedReviewScreen:destroy()
+  -- Quit paths can trigger destroy several times (on_quit, BufWinLeave,
+  -- QuitPre); save and tear down only once.
+  if self._destroyed then return end
+  self._destroyed = true
+
   -- Save review state before destroying (handles :q, window close, etc.)
   -- Use pcall since destroy may be called from various contexts
   local current_focus = self._current_focus

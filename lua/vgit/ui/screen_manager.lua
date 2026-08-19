@@ -118,8 +118,10 @@ function screen_manager.destroy_active_screen()
   local screen = screen_manager.active_screen
   if not screen then return screen_manager end
 
-  screen:destroy()
+  -- Clear before destroying: destroy() can yield (free_textlock), letting
+  -- queued BufWinLeave/QuitPre handlers re-enter and destroy again.
   screen_manager.active_screen = nil
+  screen:destroy()
 
   return screen_manager
 end
@@ -145,7 +147,12 @@ function screen_manager.create(screen_name, ...)
         mode = 'n',
         key = scene_setting:get('keymaps').quit,
         handler = loop.coroutine(function()
-          if screen.on_quit and screen:on_quit() then return end
+          if screen.on_quit and screen:on_quit() then
+            -- on_quit destroyed the screen itself; clear it so window-close
+            -- autocmds don't destroy (and re-save) again.
+            if screen_manager.active_screen == screen then screen_manager.active_screen = nil end
+            return
+          end
           screen_manager.destroy_active_screen()
         end)
       }

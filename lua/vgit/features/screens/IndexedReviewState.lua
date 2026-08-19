@@ -79,7 +79,14 @@ function IndexedReviewState:load_from_disk()
       local lines = persistence.read_object(self.repo_name, self.branch_name, entry.approved)
       if lines then
         local base_lines = entry.base and persistence.read_object(self.repo_name, self.branch_name, entry.base)
-        approved[mark_key] = { lines = lines, deleted = entry.deleted == true, base_lines = base_lines }
+        approved[mark_key] = {
+          lines = lines,
+          deleted = entry.deleted == true,
+          base_lines = base_lines,
+          -- Cache content hashes so save() doesn't re-hash unchanged records
+          hash = entry.approved,
+          base_hash = base_lines and entry.base or nil,
+        }
       else
         missing = missing + 1
       end
@@ -105,6 +112,7 @@ end
 
 -- base_lines: the base content the approval was made against; lets the model
 -- rebase the snapshot when the base later changes (stack restructuring).
+-- Content hashes are computed lazily on save() and cached on the record.
 function IndexedReviewState:set_approved(mark_key, lines, deleted, base_lines)
   get_state(self).approved[mark_key] = { lines = lines, deleted = deleted == true, base_lines = base_lines }
 end
@@ -146,16 +154,17 @@ function IndexedReviewState:save()
   loop.free_textlock()
   local state = get_state(self)
 
+  -- Records are immutable once set (set_approved replaces them wholesale),
+  -- so cached hashes stay valid; only records new this session get hashed.
   local entries, objects = {}, {}
   for mark_key, record in pairs(state.approved) do
-    local hash = persistence.hash_lines(record.lines)
-    local base_hash
+    record.hash = record.hash or persistence.hash_lines(record.lines)
     if record.base_lines then
-      base_hash = persistence.hash_lines(record.base_lines)
-      objects[base_hash] = record.base_lines
+      record.base_hash = record.base_hash or persistence.hash_lines(record.base_lines)
+      objects[record.base_hash] = record.base_lines
     end
-    entries[mark_key] = { approved = hash, deleted = record.deleted or nil, base = base_hash }
-    objects[hash] = record.lines
+    entries[mark_key] = { approved = record.hash, deleted = record.deleted or nil, base = record.base_hash }
+    objects[record.hash] = record.lines
   end
 
   persistence.write_objects(self.repo_name, self.branch_name, objects)
