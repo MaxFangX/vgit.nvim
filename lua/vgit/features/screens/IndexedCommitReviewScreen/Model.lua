@@ -43,6 +43,12 @@ local function make_mark_key(commit_subject, filepath)
   return string.format('%s:%s', subject_hash, filepath)
 end
 
+-- Session-wide contents cache, reused across screen instances so re-entering
+-- a review skips the preload. Entry keys embed the commit hash, so cached
+-- contents never go stale. Scoped to one review (repo + branch) at a time
+-- to bound memory.
+local session_contents = { id = nil, contents = {} }
+
 local Model = IndexedBaseReviewModel:extend()
 
 function Model:constructor(opts)
@@ -116,6 +122,12 @@ function Model:fetch(base_branch_arg)
   if branch_err then return nil, branch_err end
   self.state.branch_name = branch_name
   self:resolve_unpushed_count(reponame)
+
+  local cache_id = string.format('%s|%s', reponame, branch_name or '')
+  if session_contents.id ~= cache_id then
+    session_contents = { id = cache_id, contents = {} }
+  end
+  self.state.contents = session_contents.contents
 
   -- Async fetch if stale — notifies user to reopen if base was updated
   git_branch.fetch_ref_if_stale(reponame, base_branch)

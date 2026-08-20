@@ -15,6 +15,11 @@ local IndexedBaseReviewModel = require('vgit.features.screens.IndexedBaseReviewM
   mark_key = entry_key = filepath.
 ]]
 
+-- Session-wide contents cache, reused across screen instances so re-entering
+-- a review skips the preload. Contents are keyed to the exact (merge_base,
+-- HEAD) pair, so a move of either starts a fresh cache.
+local session_contents = { id = nil, contents = {} }
+
 local Model = IndexedBaseReviewModel:extend()
 
 function Model:constructor(opts)
@@ -82,6 +87,15 @@ function Model:fetch(base_branch_arg)
   local merge_base, mb_err = git_branch.merge_base(reponame, base_branch, 'HEAD')
   if mb_err then return nil, mb_err end
   self.state.merge_base = merge_base
+
+  local head_hash = git_branch.head(reponame)
+  if head_hash then
+    local cache_id = string.format('%s|%s|%s', reponame, merge_base, head_hash)
+    if session_contents.id ~= cache_id then
+      session_contents = { id = cache_id, contents = {} }
+    end
+    self.state.contents = session_contents.contents
+  end
 
   -- Initialize or restore the index
   self.review_state = IndexedReviewState({

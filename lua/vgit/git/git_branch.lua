@@ -1,6 +1,7 @@
 local jj = require('vgit.git.jj')
 local gitcli = require('vgit.git.gitcli')
 local utils = require('vgit.core.utils')
+local event = require('vgit.core.event')
 
 local git_branch = {}
 
@@ -451,9 +452,7 @@ end
 -- Exception: when HEAD sits on the trunk itself — at/behind its tip (where
 -- the local trunk would diff as empty) or ahead of a lagging jj bookmark —
 -- the origin counterpart is used: reviewing unpushed trunk work.
-function git_branch.detect_base(reponame)
-  if not reponame then return nil, { 'reponame is required' } end
-
+local function detect_base_uncached(reponame)
   -- On the trunk itself: review against origin so unpushed commits show up
   local trunk = git_branch.trunk_containing_head(reponame) or git_branch.trunk_behind_head(reponame)
   if trunk and git_branch.ref_exists(reponame, 'origin/' .. trunk) then
@@ -506,6 +505,28 @@ function git_branch.detect_base(reponame)
 
   -- Could not detect (avoid network operations)
   return nil, { 'Could not detect base branch. Please specify it as an argument.' }
+end
+
+-- Detection runs several git calls (~200ms in a large repo), yet its
+-- answer, a ref name, changes only when refs move, so it is cached per
+-- (reponame, HEAD). Ref moves that don't move HEAD (fetch, `git branch -f`,
+-- jj bookmark ops) all write the git dir, so the git-dir fs-watcher's
+-- VGitSync (the emit carrying data) clears the cache.
+local detect_base_cache = {}
+event.custom_on('VGitSync', function(args)
+  if args and args.data then detect_base_cache = {} end
+end)
+
+function git_branch.detect_base(reponame)
+  if not reponame then return nil, { 'reponame is required' } end
+
+  local head = git_branch.head(reponame)
+  local key = head and string.format('%s|%s', reponame, head)
+  if key and detect_base_cache[key] then return detect_base_cache[key] end
+
+  local base, err = detect_base_uncached(reponame)
+  if key and base then detect_base_cache[key] = base end
+  return base, err
 end
 
 -- Get commits between merge-base and HEAD (the PR commits)

@@ -48,10 +48,26 @@ local function get_state(self)
   return state_store[key]
 end
 
--- Load state from disk (call explicitly from coroutine context)
+-- Mtime of the on-disk state file, or nil if absent. Used to detect writes
+-- by other sessions.
+local function state_file_mtime(self)
+  local path = persistence.get_state_path(self.repo_name, self.branch_name, self.review_type)
+  local stat = vim.loop.fs_stat(path)
+  return stat and string.format('%d.%d', stat.mtime.sec, stat.mtime.nsec) or nil
+end
+
+-- Load state from disk (call explicitly from coroutine context). Every save
+-- goes through the in-session store, so it is the source of truth within a
+-- session, and re-entering a review skips re-reading the object store,
+-- unless the state file's mtime shows another session wrote it since we
+-- last touched it.
 function IndexedReviewState:load_from_disk()
   if not self.repo_name or self._loaded then return end
   self._loaded = true
+
+  local state = get_state(self)
+  local mtime = state_file_mtime(self)
+  if state.loaded and state.disk_mtime == mtime then return end
 
   -- Escape luv callback context to main Vim loop (required for vim.fn calls)
   loop.free_textlock()
@@ -68,7 +84,11 @@ function IndexedReviewState:load_from_disk()
     return
   end
 
-  if not data or type(data.entries) ~= 'table' then return end
+  if not data or type(data.entries) ~= 'table' then
+    state.loaded = true
+    state.disk_mtime = mtime
+    return
+  end
 
   -- Materialize approved snapshots from the object store. A missing object
   -- means the snapshot was lost; drop the entry (file reverts to unseen).
@@ -101,6 +121,8 @@ function IndexedReviewState:load_from_disk()
   state_store[key] = {
     approved = approved,
     position = existing and existing.position or { section = 'unseen' },
+    loaded = true,
+    disk_mtime = mtime,
   }
 end
 
@@ -170,6 +192,10 @@ function IndexedReviewState:save()
   persistence.write_objects(self.repo_name, self.branch_name, objects)
   persistence.save(self.repo_name, self.branch_name, self.review_type, { entries = entries })
   persistence.sweep_objects(self.repo_name, self.branch_name)
+
+  -- Our own write shouldn't trigger a reload on the next entry
+  state.loaded = true
+  state.disk_mtime = state_file_mtime(self)
 end
 
 return IndexedReviewState
