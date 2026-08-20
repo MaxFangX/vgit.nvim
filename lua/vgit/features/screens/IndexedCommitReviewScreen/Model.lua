@@ -1,6 +1,5 @@
 local loop = require('vgit.core.loop')
 local utils = require('vgit.core.utils')
-local gitcli = require('vgit.git.gitcli')
 local git_repo = require('vgit.git.git_repo')
 local git_show = require('vgit.git.git_show')
 local git_branch = require('vgit.git.git_branch')
@@ -11,8 +10,9 @@ local IndexedBaseReviewModel = require('vgit.features.screens.IndexedBaseReviewM
 
 --[[
   Indexed by-commit review model. Each entry is a (commit, file) pair diffed
-  against the commit's parent. Contents are preloaded with two `git show`s per
-  pair (parent and commit versions); all diffs derive from those in-process.
+  against the commit's parent. Contents (parent and commit versions per pair)
+  are preloaded via one batched `git cat-file`; all diffs derive from those
+  in-process.
 
   KEYING (mirrors ProjectReviewByCommitScreen)
 
@@ -166,27 +166,11 @@ function Model:fetch(base_branch_arg)
   return self.state.entries
 end
 
--- Build git show args for a file's content at a revision
-local function build_show_args(reponame, revision, filepath)
-  return {
-    '-C', reponame,
-    'show',
-    string.format('%s:%s', revision, filepath),
-  }
-end
-
--- Interpret a `git show` result: (lines, missing). A failed show means the
--- file doesn't exist at that revision (added / deleted side of the diff, or
--- the parent of a root commit).
-local function show_lines(result)
-  if not result or result.err or not result.result then return {}, true end
-  return result.result, false
-end
-
--- Preload all contents in parallel (2 shows per commit-file: parent + commit)
+-- Preload all contents in one `git cat-file --batch` process (2 objects per
+-- commit-file: parent + commit). A missing object means the file doesn't
+-- exist at that revision (added / deleted side, or the parent of a root
+-- commit).
 function Model:preload_contents_parallel(commits)
-  local reponame = self.state.reponame
-
   local jobs = {}
   for _, commit in ipairs(commits) do
     local files = self.state.commit_files[commit.hash] or {}
@@ -204,22 +188,22 @@ function Model:preload_contents_parallel(commits)
   end
   if #jobs == 0 then return end
 
-  local commands = {}
+  local specs = {}
   for _, job in ipairs(jobs) do
-    commands[#commands + 1] = build_show_args(reponame, job.commit_hash .. '^', job.old_filepath or job.filepath)
-    commands[#commands + 1] = build_show_args(reponame, job.commit_hash, job.filepath)
+    specs[#specs + 1] = string.format('%s^:%s', job.commit_hash, job.old_filepath or job.filepath)
+    specs[#specs + 1] = make_key(job.commit_hash, job.filepath)
   end
 
-  local results = gitcli.run_parallel(commands)
+  local results = git_show.lines_batch(self.state.reponame, specs)
 
   for i, job in ipairs(jobs) do
-    local base_lines = show_lines(results[(i - 1) * 2 + 1])
-    local current_lines, current_deleted = show_lines(results[(i - 1) * 2 + 2])
+    local base = results[(i - 1) * 2 + 1]
+    local current = results[(i - 1) * 2 + 2]
 
     self:set_contents(job.cache_key, {
-      base = base_lines,
-      current = current_lines,
-      current_deleted = current_deleted,
+      base = base.lines or {},
+      current = current.lines or {},
+      current_deleted = current.missing == true,
     })
   end
 end

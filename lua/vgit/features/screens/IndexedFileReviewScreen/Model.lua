@@ -1,5 +1,4 @@
 local loop = require('vgit.core.loop')
-local gitcli = require('vgit.git.gitcli')
 local git_repo = require('vgit.git.git_repo')
 local git_show = require('vgit.git.git_show')
 local git_branch = require('vgit.git.git_branch')
@@ -10,8 +9,9 @@ local IndexedBaseReviewModel = require('vgit.features.screens.IndexedBaseReviewM
 
 --[[
   Indexed by-file review model. Each entry is a file diffed cumulatively from
-  the merge-base to HEAD. Contents are preloaded with two `git show`s per file
-  (merge-base and HEAD versions); all diffs derive from those in-process.
+  the merge-base to HEAD. Contents (merge-base and HEAD versions per file)
+  are preloaded via one batched `git cat-file`; all diffs derive from those
+  in-process.
   mark_key = entry_key = filepath.
 ]]
 
@@ -114,25 +114,10 @@ function Model:fetch(base_branch_arg)
   return self.state.entries
 end
 
--- Build git show args for a file's content at a revision
-local function build_show_args(reponame, revision, filepath)
-  return {
-    '-C', reponame,
-    'show',
-    string.format('%s:%s', revision, filepath),
-  }
-end
-
--- Interpret a `git show` result: (lines, missing). A failed show means the
--- file doesn't exist at that revision (added / deleted side of the diff).
-local function show_lines(result)
-  if not result or result.err or not result.result then return {}, true end
-  return result.result, false
-end
-
--- Preload all contents in parallel (2 shows per file: merge-base + HEAD)
+-- Preload all contents in one `git cat-file --batch` process (2 objects per
+-- file: merge-base + HEAD). A missing object means the file doesn't exist at
+-- that revision (added / deleted side of the diff).
 function Model:preload_contents_parallel(changed_files)
-  local reponame = self.state.reponame
   local merge_base = self.state.merge_base
 
   local jobs = {}
@@ -143,22 +128,22 @@ function Model:preload_contents_parallel(changed_files)
   end
   if #jobs == 0 then return end
 
-  local commands = {}
+  local specs = {}
   for _, file in ipairs(jobs) do
-    commands[#commands + 1] = build_show_args(reponame, merge_base, file.old_filepath or file.filepath)
-    commands[#commands + 1] = build_show_args(reponame, 'HEAD', file.filepath)
+    specs[#specs + 1] = string.format('%s:%s', merge_base, file.old_filepath or file.filepath)
+    specs[#specs + 1] = string.format('HEAD:%s', file.filepath)
   end
 
-  local results = gitcli.run_parallel(commands)
+  local results = git_show.lines_batch(self.state.reponame, specs)
 
   for i, file in ipairs(jobs) do
-    local base_lines = show_lines(results[(i - 1) * 2 + 1])
-    local current_lines, current_deleted = show_lines(results[(i - 1) * 2 + 2])
+    local base = results[(i - 1) * 2 + 1]
+    local current = results[(i - 1) * 2 + 2]
 
     self:set_contents(file.filepath, {
-      base = base_lines,
-      current = current_lines,
-      current_deleted = current_deleted,
+      base = base.lines or {},
+      current = current.lines or {},
+      current_deleted = current.missing == true,
     })
   end
 end
