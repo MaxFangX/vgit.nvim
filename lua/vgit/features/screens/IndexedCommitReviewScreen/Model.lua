@@ -157,6 +157,10 @@ function Model:fetch(base_branch_arg)
 
   self.state.commits = commits
 
+  -- In a jj repo, the list shows jj change ids instead of git short hashes.
+  -- Display-only: hashes remain the keys everywhere.
+  jj.attach_change_ids(reponame, commits)
+
   -- Preload every commit's full message in one batched git call (avoids N
   -- sequential `git show` calls and async issues during render).
   self.state.commit_messages = git_branch.all_commit_messages(reponame, merge_base, 'HEAD') or {}

@@ -71,13 +71,19 @@ function CommitListView:render()
   -- Commits carry a stable `index` (their position from the diff base to HEAD,
   -- set by the model), so the same commit keeps one number across the
   -- Seen/Unseen sections. Pad to the widest index (min 2 digits) for alignment.
+  -- The displayed id is the jj change id in jj repos (git short hash
+  -- otherwise); either can vary in length, so pad to the widest one too.
   local max_index = 0
+  local id_width = 0
   for _, section in ipairs(entries) do
     for _, commit_data in ipairs(section.commits or {}) do
       max_index = math.max(max_index, commit_data.index or 0)
+      local commit = commit_data.commit
+      id_width = math.max(id_width, #(commit.change_id or commit.short_hash))
     end
   end
   local index_format = string.format('%%0%dd', math.max(2, #tostring(max_index)))
+  local row_format = string.format('%%s - %%-%ds - %%s', id_width)
 
   local folds = {}
   for _, section in ipairs(entries) do
@@ -94,7 +100,7 @@ function CommitListView:render()
         and self.active_commit.section == section.title
       commit_items[#commit_items + 1] = {
         open = is_active,
-        value = string.format('%s - %s - %s', index_label, commit.short_hash, commit.message),
+        value = string.format(row_format, index_label, commit.change_id or commit.short_hash, commit.message),
         items = file_items,
         section_type = section.title,
         commit_hash = commit.hash,
