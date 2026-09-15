@@ -122,6 +122,9 @@ function IndexedReviewScreen:get_current_mark_index()
 end
 
 function IndexedReviewScreen:move_to_next_file()
+  -- Drop keypresses while a navigation is mid-flight (see jump_section) —
+  -- falling through to lnum-based navigation would read a stale cursor.
+  if self._navigating then return nil end
   loop.free_textlock()
 
   -- Try commit-aware navigation first (handles cross-commit navigation)
@@ -152,6 +155,7 @@ function IndexedReviewScreen:move_to_next_file()
 end
 
 function IndexedReviewScreen:move_to_prev_file()
+  if self._navigating then return nil end
   loop.free_textlock()
 
   -- Try commit-aware navigation first (handles cross-commit navigation)
@@ -293,7 +297,6 @@ end
 -- direction: 'prev' or 'next'
 -- Returns (item, wrapped) if handled, (nil, nil) if should fall back to standard navigation
 function IndexedReviewScreen:navigate_commit_aware(direction)
-  if self._navigating then return nil end
   if not self.list_view.get_entries then return nil end
 
   local entries = self.list_view:get_entries()
@@ -438,6 +441,11 @@ end
 -- between crate-level folder headings (see
 -- vgit.ui.views.StatusListView.section_headings for the rule).
 function IndexedReviewScreen:jump_section(direction)
+  -- Drop keypresses while a navigation or mark is mid-flight: its commit
+  -- expand/collapse has re-rendered the list but not yet repositioned the
+  -- cursor, so reading the cursor now resolves to the wrong file.
+  if self._navigating or self._marking then return end
+
   if self.list_view.get_active_commit then
     return self:jump_to_adjacent_commit(direction)
   end
