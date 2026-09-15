@@ -1436,6 +1436,9 @@ function IndexedReviewScreen:create(args)
     return false
   end
 
+  -- By-commit subclasses size the list column to fit the fetched commits
+  if self.resolve_list_width then self:resolve_list_width() end
+
   self.app_bar_view:define()
   self.diff_view:define()
   self.list_view:define()

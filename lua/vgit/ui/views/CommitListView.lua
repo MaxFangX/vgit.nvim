@@ -63,16 +63,11 @@ local function mark_items(items, section_type, commit_hash)
   end
 end
 
-function CommitListView:render()
-  local entries = self.props.entries()
-  local open = self.config.open_folds
-  if open == nil then open = true end
-
-  -- Commits carry a stable `index` (their position from the diff base to HEAD,
-  -- set by the model), so the same commit keeps one number across the
-  -- Seen/Unseen sections. Pad to the widest index (min 2 digits) for alignment.
-  -- The displayed id is the jj change id in jj repos (git short hash
-  -- otherwise); either can vary in length, so pad to the widest one too.
+-- Column widths shared by every commit row, so the same commit aligns across
+-- the Seen/Unseen sections: the widest stable `index` (set by the model, min
+-- 2 digits) and the widest displayed id (jj change id in jj repos, git short
+-- hash otherwise; either can vary in length).
+local function column_widths(entries)
   local max_index = 0
   local id_width = 0
   for _, section in ipairs(entries) do
@@ -82,7 +77,36 @@ function CommitListView:render()
       id_width = math.max(id_width, #(commit.change_id or commit.short_hash))
     end
   end
-  local index_format = string.format('%%0%dd', math.max(2, #tostring(max_index)))
+  return math.max(2, #tostring(max_index)), id_width
+end
+
+-- Cells rendered before a commit row's text: indent + fold symbol + space +
+-- expansion icon + space (see FoldableListComponent fold headers).
+local ROW_DECORATION_WIDTH = 6
+
+-- Width in cells of the widest commit row as rendered ('NN - id - message'
+-- plus fold decoration), for auto-sizing the list column.
+function CommitListView:max_row_width()
+  local entries = self.props.entries()
+  local index_width, id_width = column_widths(entries)
+
+  local message_width = 0
+  for _, section in ipairs(entries) do
+    for _, commit_data in ipairs(section.commits or {}) do
+      message_width = math.max(message_width, #commit_data.commit.message)
+    end
+  end
+
+  return ROW_DECORATION_WIDTH + index_width + 3 + id_width + 3 + message_width
+end
+
+function CommitListView:render()
+  local entries = self.props.entries()
+  local open = self.config.open_folds
+  if open == nil then open = true end
+
+  local index_width, id_width = column_widths(entries)
+  local index_format = string.format('%%0%dd', index_width)
   local row_format = string.format('%%s - %%-%ds - %%s', id_width)
 
   local folds = {}
