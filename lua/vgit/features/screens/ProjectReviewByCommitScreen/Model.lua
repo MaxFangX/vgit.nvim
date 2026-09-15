@@ -129,8 +129,11 @@ function Model:fetch(base_branch_arg)
   -- Async fetch if stale — notifies user to reopen if base was updated
   git_branch.fetch_ref_if_stale(reponame, base_branch)
 
+  -- Parked mid-stack (jj), the review runs to the stack tip, not HEAD
+  local head_ref = git_branch.review_head(reponame)
+
   -- Get merge-base
-  local merge_base, mb_err = git_branch.merge_base(reponame, base_branch, 'HEAD')
+  local merge_base, mb_err = git_branch.merge_base(reponame, base_branch, head_ref)
   if mb_err then return nil, mb_err end
   self.state.merge_base = merge_base
 
@@ -148,7 +151,7 @@ function Model:fetch(base_branch_arg)
   self.review_state:clear_content_ids()
 
   -- Get commits in the PR range
-  local commits, commits_err = git_branch.commits_in_range(reponame, merge_base, 'HEAD')
+  local commits, commits_err = git_branch.commits_in_range(reponame, merge_base, head_ref)
   if commits_err then return nil, commits_err end
 
   if #commits == 0 then
@@ -163,10 +166,10 @@ function Model:fetch(base_branch_arg)
 
   -- Preload every commit's full message in one batched git call (avoids N
   -- sequential `git show` calls and async issues during render).
-  self.state.commit_messages = git_branch.all_commit_messages(reponame, merge_base, 'HEAD') or {}
+  self.state.commit_messages = git_branch.all_commit_messages(reponame, merge_base, head_ref) or {}
 
   -- Cache commit files in a single git command (batched for performance)
-  local all_files, files_err = git_branch.all_commit_files(reponame, merge_base, 'HEAD')
+  local all_files, files_err = git_branch.all_commit_files(reponame, merge_base, head_ref)
   if files_err then return nil, files_err end
   self.state.commit_files = all_files or {}
   -- Drop jj conflict-artifact sidecars (.jjconflict-*), which aren't reviewable

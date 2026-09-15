@@ -76,8 +76,12 @@ function Model:fetch(base_branch_arg)
   -- Async fetch if stale — notifies user to reopen if base was updated
   git_branch.fetch_ref_if_stale(reponame, base_branch)
 
+  -- Parked mid-stack (jj), the review runs to the stack tip, not HEAD
+  local head_ref = git_branch.review_head(reponame)
+  self.state.head_ref = head_ref
+
   -- Get merge-base
-  local merge_base, mb_err = git_branch.merge_base(reponame, base_branch, 'HEAD')
+  local merge_base, mb_err = git_branch.merge_base(reponame, base_branch, head_ref)
   if mb_err then return nil, mb_err end
   self.state.merge_base = merge_base
 
@@ -94,8 +98,8 @@ function Model:fetch(base_branch_arg)
   -- Marks persist, content_ids will be recomputed from fresh diffs
   self.review_state:clear_content_ids()
 
-  -- Get files changed between merge-base and HEAD
-  local changed_files, files_err = git_branch.changed_files(reponame, merge_base, 'HEAD')
+  -- Get files changed between merge-base and the review head
+  local changed_files, files_err = git_branch.changed_files(reponame, merge_base, head_ref)
   if files_err then return nil, files_err end
 
   -- Drop jj conflict-artifact sidecars (.jjconflict-*), which aren't reviewable
@@ -116,7 +120,7 @@ function Model:fetch(base_branch_arg)
 end
 
 -- Build git diff args for a single file
-local function build_diff_args(reponame, merge_base, filepath, old_filepath)
+local function build_diff_args(reponame, merge_base, head_ref, filepath, old_filepath)
   local args = {
     '-C', reponame,
     '--no-pager',
@@ -129,12 +133,12 @@ local function build_diff_args(reponame, merge_base, filepath, old_filepath)
   }
 
   if old_filepath then
-    -- Renamed file: diff merge_base:old_filepath against HEAD:filepath
+    -- Renamed file: diff merge_base:old_filepath against head_ref:filepath
     args[#args + 1] = string.format('%s:%s', merge_base, old_filepath)
-    args[#args + 1] = string.format('%s:%s', 'HEAD', filepath)
+    args[#args + 1] = string.format('%s:%s', head_ref, filepath)
   else
     args[#args + 1] = merge_base
-    args[#args + 1] = 'HEAD'
+    args[#args + 1] = head_ref
     args[#args + 1] = '--'
     args[#args + 1] = filepath
   end
@@ -143,11 +147,11 @@ local function build_diff_args(reponame, merge_base, filepath, old_filepath)
 end
 
 -- Build git show args for file content
-local function build_show_args(reponame, filepath)
+local function build_show_args(reponame, head_ref, filepath)
   return {
     '-C', reponame,
     'show',
-    string.format('%s:%s', 'HEAD', filepath),
+    string.format('%s:%s', head_ref, filepath),
   }
 end
 
@@ -173,8 +177,8 @@ function Model:preload_diffs_parallel(changed_files)
   -- Build all git commands (2 per file: diff + show)
   local commands = {}
   for _, job in ipairs(jobs) do
-    commands[#commands + 1] = build_diff_args(reponame, merge_base, job.filepath, job.old_filepath)
-    commands[#commands + 1] = build_show_args(reponame, job.filepath)
+    commands[#commands + 1] = build_diff_args(reponame, merge_base, self.state.head_ref, job.filepath, job.old_filepath)
+    commands[#commands + 1] = build_show_args(reponame, self.state.head_ref, job.filepath)
   end
 
   -- Run all commands in parallel
@@ -220,7 +224,7 @@ function Model:preload_diff(filepath, old_filepath)
 
   local hunks = git_hunks.list(reponame, {
     parent = merge_base,
-    current = 'HEAD',
+    current = self.state.head_ref,
     filepath = filepath,
     old_filepath = old_filepath,
   })
@@ -230,7 +234,7 @@ function Model:preload_diff(filepath, old_filepath)
   self:set_hunk_count(filepath, count)
 
   -- Fetch file content for context
-  local lines = git_show.lines(reponame, filepath, 'HEAD') or {}
+  local lines = git_show.lines(reponame, filepath, self.state.head_ref) or {}
 
   -- Compute and persist content_ids (5-line context disambiguates identical hunks in same file)
   local content_ids = {}
@@ -314,14 +318,14 @@ function Model:get_full_diff(filepath)
   -- Get hunks for this file between merge-base and HEAD
   local hunks, hunks_err = git_hunks.list(reponame, {
     parent = merge_base,
-    current = 'HEAD',
+    current = self.state.head_ref,
     filepath = filepath,
     old_filepath = entry.old_filepath,
   })
   if hunks_err then return nil, hunks_err end
 
   -- Get file content at HEAD
-  local lines, lines_err = git_show.lines(reponame, filepath, 'HEAD')
+  local lines, lines_err = git_show.lines(reponame, filepath, self.state.head_ref)
   if lines_err then
     -- File might be deleted
     lines = {}

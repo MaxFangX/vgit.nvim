@@ -70,7 +70,7 @@ function BaseReviewModel:resolve_unpushed_count(reponame)
   self.state.unpushed_count = nil
   if self.state.base_branch ~= 'origin/' .. (self.state.branch_name or '') then return end
 
-  local commits = git_branch.commits_in_range(reponame, self.state.base_branch, 'HEAD')
+  local commits = git_branch.commits_in_range(reponame, self.state.base_branch, git_branch.review_head(reponame))
   if commits and #commits > 0 then self.state.unpushed_count = #commits end
 end
 

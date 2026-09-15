@@ -84,11 +84,15 @@ function Model:fetch(base_branch_arg)
   git_branch.fetch_ref_if_stale(reponame, base_branch)
 
   -- Get merge-base
-  local merge_base, mb_err = git_branch.merge_base(reponame, base_branch, 'HEAD')
+  -- Parked mid-stack (jj), the review runs to the stack tip, not HEAD
+  local head_ref = git_branch.review_head(reponame)
+  self.state.head_ref = head_ref
+
+  local merge_base, mb_err = git_branch.merge_base(reponame, base_branch, head_ref)
   if mb_err then return nil, mb_err end
   self.state.merge_base = merge_base
 
-  local head_hash = git_branch.head(reponame)
+  local head_hash = git_branch.head(reponame, head_ref)
   if head_hash then
     local cache_id = string.format('%s|%s|%s', reponame, merge_base, head_hash)
     if session_contents.id ~= cache_id then
@@ -107,8 +111,8 @@ function Model:fetch(base_branch_arg)
   -- Load persisted state from disk (must be called from coroutine context)
   self.review_state:load_from_disk()
 
-  -- Get files changed between merge-base and HEAD
-  local changed_files, files_err = git_branch.changed_files(reponame, merge_base, 'HEAD')
+  -- Get files changed between merge-base and the review head
+  local changed_files, files_err = git_branch.changed_files(reponame, merge_base, head_ref)
   if files_err then return nil, files_err end
 
   -- Drop jj conflict-artifact sidecars (.jjconflict-*), which aren't reviewable
@@ -129,7 +133,7 @@ function Model:fetch(base_branch_arg)
 end
 
 -- Preload all contents in one `git cat-file --batch` process (2 objects per
--- file: merge-base + HEAD). A missing object means the file doesn't exist at
+-- file: merge-base + review head). A missing object means the file doesn't exist at
 -- that revision (added / deleted side of the diff).
 function Model:preload_contents_parallel(changed_files)
   local merge_base = self.state.merge_base
@@ -145,7 +149,7 @@ function Model:preload_contents_parallel(changed_files)
   local specs = {}
   for _, file in ipairs(jobs) do
     specs[#specs + 1] = string.format('%s:%s', merge_base, file.old_filepath or file.filepath)
-    specs[#specs + 1] = string.format('HEAD:%s', file.filepath)
+    specs[#specs + 1] = string.format('%s:%s', self.state.head_ref, file.filepath)
   end
 
   local results = git_show.lines_batch(self.state.reponame, specs)
@@ -168,7 +172,7 @@ function Model:load_contents(entry)
   local merge_base = self.state.merge_base
 
   local base_lines = git_show.lines(reponame, entry.old_filepath or entry.filepath, merge_base)
-  local current_lines, current_err = git_show.lines(reponame, entry.filepath, 'HEAD')
+  local current_lines, current_err = git_show.lines(reponame, entry.filepath, self.state.head_ref)
 
   self:set_contents(entry.filepath, {
     base = base_lines or {},

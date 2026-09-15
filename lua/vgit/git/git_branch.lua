@@ -135,7 +135,7 @@ end
 -- marks are keyed by. Zero overlap disqualifies; nil means no branch claims
 -- HEAD's stack. Ties (e.g. a stack and its pristine copy) break by symmetric
 -- distance, then by sorted name so the key stays stable.
-function git_branch.branch_for_head(reponame)
+local function branch_for_head_uncached(reponame)
   local refs = gitcli.run({
     '-C', reponame, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/',
   })
@@ -186,6 +186,27 @@ function git_branch.branch_for_head(reponame)
 
   if best_overlap == 0 then return nil end
   return nearest_by_distance(reponame, best)
+end
+
+-- Resolution runs one log per local branch, yet its answer changes only when
+-- refs move, so cache per (reponame, HEAD) — cleared by the git-dir
+-- fs-watcher's VGitSync (the emit carrying data), like `detect_base`'s cache.
+-- `false` caches a nil resolution.
+local branch_for_head_cache = {}
+event.custom_on('VGitSync', function(args)
+  if args and args.data then branch_for_head_cache = {} end
+end)
+
+function git_branch.branch_for_head(reponame)
+  local head = git_branch.head(reponame)
+  local key = head and string.format('%s|%s', reponame, head)
+
+  local cached = key and branch_for_head_cache[key]
+  if cached ~= nil then return cached or nil end
+
+  local result = branch_for_head_uncached(reponame)
+  if key then branch_for_head_cache[key] = result or false end
+  return result
 end
 
 -- Set of FNV-1a subject hashes for the commits in `base_ref..HEAD`. Subjects
@@ -246,15 +267,15 @@ function git_branch.current_persistent(reponame, resolve_detached)
   return branch
 end
 
--- Get HEAD commit hash
-function git_branch.head(reponame)
+-- Get a ref's commit hash (HEAD by default)
+function git_branch.head(reponame, ref)
   if not reponame then return nil, { 'reponame is required' } end
 
   local result, err = gitcli.run({
     '-C',
     reponame,
     'rev-parse',
-    'HEAD',
+    ref or 'HEAD',
   })
   if err then return nil, err end
   if not result[1] or result[1] == '' then return nil, { 'Could not determine HEAD' } end
@@ -443,6 +464,30 @@ function git_branch.trunk_behind_head(reponame)
   end
 
   return nil
+end
+
+-- The ref review diffs run to. Normally HEAD, but in a jj-colocated repo the
+-- working copy is routinely parked mid-stack (git HEAD sits at the working
+-- copy's parent), and reviewing to HEAD would silently truncate the review
+-- to the commits below the parking spot. So for a detached jj HEAD, when the
+-- branch claiming HEAD's stack (or the trunk containing HEAD) has its tip
+-- strictly ahead of HEAD, the review runs to that tip instead. A bookmark
+-- that has diverged from HEAD (mid-rewrite, before jj re-exports) is not
+-- ahead of it, so it falls through to HEAD rather than dropping HEAD's
+-- commits from the range.
+function git_branch.review_head(reponame)
+  if not reponame or not jj.is_repo(reponame) then return 'HEAD' end
+  if git_branch.current(reponame) ~= 'HEAD' then return 'HEAD' end
+
+  local head = git_branch.head(reponame)
+  if not head then return 'HEAD' end
+
+  local candidate = git_branch.branch_for_head(reponame) or git_branch.trunk_containing_head(reponame)
+  if not candidate then return 'HEAD' end
+
+  local tip = rev_parse(reponame, 'refs/heads/' .. candidate)
+  local ahead = tip and tip ~= head and git_branch.merge_base(reponame, candidate, 'HEAD') == head
+  return ahead and candidate or 'HEAD'
 end
 
 -- Try to detect the default branch (main/master)
