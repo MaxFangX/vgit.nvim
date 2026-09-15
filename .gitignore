@@ -29,3 +29,4 @@ luac.out
 .DS_Store
 doc/tags
 notes/*
+/tmp/
