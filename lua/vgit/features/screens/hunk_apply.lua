@@ -12,6 +12,8 @@
   selection with stable ordering for mixed change hunks.
 ]]
 
+local GitHunk = require('vgit.git.GitHunk')
+
 local hunk_apply = {}
 
 -- Shallow line-array equality
@@ -203,6 +205,113 @@ function hunk_apply.apply_selections(lines, selections, direction)
   end
 
   return lines
+end
+
+-- Hunks of diff(old' -> new) once selections are applied onto old. rows_of[i]
+-- is the selection for hunks[i]: a row set, true for the whole hunk, or false
+-- when unselected. A selected row with an added line becomes context (both
+-- sides now agree), splitting the hunk there; a selected pure deletion just
+-- vanishes from both sides. Each run of unselected rows between such context
+-- lines becomes a hunk of its own.
+local function remaining_applied(hunks, rows_of)
+  local result = {}
+  -- Net line shift of old' relative to old, from hunks already walked
+  local delta = 0
+
+  for i, hunk in ipairs(hunks) do
+    local rows = rows_of[i]
+    local previous, current = hunk:parse_header()
+
+    if not rows then
+      local shifted = GitHunk({ { previous[1] + delta, previous[2] }, current })
+      for _, line in ipairs(hunk.diff) do
+        shifted:push(line)
+      end
+      result[#result + 1] = shifted
+    else
+      local removed, added = hunk:parse_diff()
+      local function selected(r)
+        return rows == true or rows[r]
+      end
+
+      -- The line preceding the hunk on each side (a zero-count header already
+      -- names that line); old'-side starts also carry the running delta.
+      local old_before = (previous[2] == 0 and previous[1] or previous[1] - 1) + delta
+      local new_before = current[2] == 0 and current[1] or current[1] - 1
+      -- old' lines emitted so far for this hunk's rows
+      local emitted = 0
+
+      -- The open run: its first row, and the old' line it follows
+      local run_lo, run_old_before
+      local function close_run(hi)
+        if not run_lo then return end
+
+        local sub_removed = {}
+        for r = run_lo, math.min(hi, #removed) do
+          if not selected(r) then sub_removed[#sub_removed + 1] = removed[r] end
+        end
+        local new_count = math.max(0, math.min(hi, #added) - run_lo + 1)
+        local old_start = run_old_before + (#sub_removed > 0 and 1 or 0)
+        local new_start = new_before + (new_count > 0 and run_lo or #added)
+
+        local sub = GitHunk({ { old_start, #sub_removed }, { new_start, new_count } })
+        for _, line in ipairs(sub_removed) do
+          sub:push('-' .. line)
+        end
+        for r = run_lo, run_lo + new_count - 1 do
+          sub:push('+' .. added[r])
+        end
+        result[#result + 1] = sub
+
+        emitted = emitted + #sub_removed
+        run_lo = nil
+      end
+
+      for r = 1, math.max(#removed, #added) do
+        if not selected(r) then
+          if not run_lo then run_lo, run_old_before = r, old_before + emitted end
+        elseif added[r] then
+          close_run(r - 1)
+          emitted = emitted + 1
+        end
+      end
+      close_run(math.max(#removed, #added))
+
+      delta = delta + emitted - #removed
+    end
+  end
+
+  return result
+end
+
+local function invert_all(hunks)
+  local inverted = {}
+  for i, hunk in ipairs(hunks) do
+    inverted[i] = hunk:invert()
+  end
+  return inverted
+end
+
+-- The diff left over after apply_selections: diff(old' -> new) for 'apply',
+-- diff(old -> new') for 'reverse'. Derived from the existing hunks rather
+-- than re-diffed, so marked lines stay where they were marked: a fresh diff
+-- may align repeated content (say a closing `'';` / `};` pair) with a
+-- different copy and show the mark on the wrong instance.
+function hunk_apply.remaining(hunks, selections, direction)
+  local rows_by_hunk = {}
+  for _, selection in ipairs(selections) do
+    rows_by_hunk[selection.hunk] = selection.rows or true
+  end
+
+  local rows_of = {}
+  for i, hunk in ipairs(hunks) do
+    rows_of[i] = rows_by_hunk[hunk] or false
+  end
+
+  if direction == 'reverse' then
+    return invert_all(remaining_applied(invert_all(hunks), rows_of))
+  end
+  return remaining_applied(hunks, rows_of)
 end
 
 return hunk_apply

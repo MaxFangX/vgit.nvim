@@ -240,19 +240,31 @@ function IndexedBaseReviewModel:get_seen_flags(entry_key, mark_key)
   return flags
 end
 
+local function diff_cache_key(self, entry)
+  return string.format('%s|%s', self:get_entry_key(entry), entry.type)
+end
+
+-- Build the Diff rendering hunks against lines and cache it for entry
+function IndexedBaseReviewModel:cache_diff(entry, hunks, lines, opts)
+  local diff = Diff():generate(hunks, lines, self:get_layout_type(), opts)
+  diff.entry_type = entry.type
+  diff.mark_key = self:get_mark_key(entry)
+  self.state.diffs[diff_cache_key(self, entry)] = diff
+  return diff
+end
+
 -- Get the diff for an entry:
 --   unseen: diff(approved-or-base -> current), rendered on current content
 --   seen:   diff(base -> approved), rendered on approved content
 function IndexedBaseReviewModel:get_diff_for(entry)
-  local entry_key = self:get_entry_key(entry)
-  local cache_key = string.format('%s|%s', entry_key, entry.type)
-  if self.state.diffs[cache_key] then return self.state.diffs[cache_key] end
+  local cached = self.state.diffs[diff_cache_key(self, entry)]
+  if cached then return cached end
 
   local contents = self:get_contents(entry)
   if not contents then return nil, { 'failed to load file contents' } end
 
   local mark_key = self:get_mark_key(entry)
-  track_mark_key(self, mark_key, entry_key)
+  track_mark_key(self, mark_key, self:get_entry_key(entry))
   local record = self:get_reconciled_record(mark_key, contents)
 
   local old_lines, new_lines, new_deleted
@@ -267,21 +279,13 @@ function IndexedBaseReviewModel:get_diff_for(entry)
   end
 
   local hunks = git_hunks.live(self.state.reponame, old_lines, new_lines) or {}
-  local layout_type = self:get_layout_type()
 
   -- A deleted new side renders the old content with whole-file removal marks;
   -- everything else renders the new content with hunks against it.
-  local diff
   if new_deleted and #new_lines == 0 and #hunks > 0 then
-    diff = Diff():generate(hunks, old_lines, layout_type, { is_deleted = true })
-  else
-    diff = Diff():generate(hunks, new_lines, layout_type)
+    return self:cache_diff(entry, hunks, old_lines, { is_deleted = true })
   end
-
-  diff.entry_type = entry.type
-  diff.mark_key = mark_key
-  self.state.diffs[cache_key] = diff
-  return diff
+  return self:cache_diff(entry, hunks, new_lines)
 end
 
 function IndexedBaseReviewModel:get_diff()
@@ -350,6 +354,12 @@ function IndexedBaseReviewModel:mark_selections(entry, selections)
   self.review_state:set_approved(mark_key, new_lines, deleted, derived_base(record, contents, new_lines))
 
   self:invalidate_mark_key(mark_key)
+  -- Derive what's left of this diff instead of re-diffing, so marked lines
+  -- stay put (see hunk_apply.remaining). A deleted current side keeps the
+  -- whole-file removal rendering of get_diff_for.
+  if not contents.current_deleted then
+    self:cache_diff(entry, hunk_apply.remaining(diff.hunks, hunk_selections, 'apply'), contents.current)
+  end
   self:rebuild_entries()
 end
 
@@ -379,6 +389,10 @@ function IndexedBaseReviewModel:unmark_selections(entry, selections)
   end
 
   self:invalidate_mark_key(mark_key)
+  -- As in mark_selections: keep the remaining seen lines where they were
+  if not deleted then
+    self:cache_diff(entry, hunk_apply.remaining(diff.hunks, hunk_selections, 'reverse'), new_lines)
+  end
   self:rebuild_entries()
 end
 

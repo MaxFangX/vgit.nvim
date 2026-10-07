@@ -278,4 +278,109 @@ describe('hunk_apply:', function()
       end
     end)
   end)
+  describe('remaining', function()
+    local function headers(hunks)
+      local out = {}
+      for i, hunk in ipairs(hunks) do out[i] = hunk.header end
+      return out
+    end
+
+    it('keeps marked rows in place where a re-diff would slide them', function()
+      -- An inserted block holding two copies of a closing pair; marking the
+      -- first copy must leave it as context there, not on the second copy.
+      local base = { 'top', 'end' }
+      local current = { 'top', 'x1', 'x2', 'close', '}', 'y1', 'y2', 'y3', 'close', '}', 'end' }
+      local hunks = live(base, current)
+      local selections = { { hunk = hunks[1], rows = { [3] = true, [4] = true } } }
+
+      local approved = hunk_apply.apply_selections(base, selections, 'apply')
+      eq(approved, { 'top', 'close', '}', 'end' })
+
+      local remaining = hunk_apply.remaining(hunks, selections, 'apply')
+      eq(headers(remaining), { '@@ -1,0 +2,2 @@', '@@ -3,0 +6,5 @@' })
+      eq(hunk_apply.apply_selections(approved, all_hunks(remaining), 'apply'), current)
+    end)
+
+    it('splits a change hunk around a marked row and shifts later hunks', function()
+      local old = { 'a', 'b', 'c', 'd', 'e', 'f' }
+      local new = { 'A', 'B', 'C', 'd', 'e', 'F', 'g' }
+      local hunks = live(old, new)
+      local selections = { { hunk = hunks[1], rows = { [2] = true } } }
+
+      local remaining = hunk_apply.remaining(hunks, selections, 'apply')
+      eq(headers(remaining), { '@@ -1,1 +1,1 @@', '@@ -3,1 +3,1 @@', '@@ -6,1 +6,2 @@' })
+      eq(remaining[1].diff, { '-a', '+A' })
+      eq(remaining[2].diff, { '-c', '+C' })
+      eq(remaining[3].diff, { '-f', '+F', '+g' })
+    end)
+
+    it('merges runs split only by an applied pure deletion', function()
+      -- Row 2 pairs removed 'b' with nothing; applying it leaves no line on
+      -- either side, so the rows around it stay one hunk.
+      local old = { 'a', 'b', 'c' }
+      local new = { 'A' }
+      local hunks = live(old, new)
+      local selections = { { hunk = hunks[1], rows = { [2] = true } } }
+
+      local remaining = hunk_apply.remaining(hunks, selections, 'apply')
+      eq(headers(remaining), { '@@ -1,2 +1,1 @@' })
+      eq(remaining[1].diff, { '-a', '-c', '+A' })
+    end)
+
+    it('derives the seen diff left after unmarking rows', function()
+      local base = { 'a', 'b', 'c' }
+      local approved = { 'a', 'x', 'y', 'c' }
+      local hunks = live(base, approved)
+      local selections = { { hunk = hunks[1], rows = { [1] = true } } }
+
+      local rolled_back = hunk_apply.apply_selections(approved, selections, 'reverse')
+      eq(rolled_back, { 'a', 'b', 'y', 'c' })
+
+      local remaining = hunk_apply.remaining(hunks, selections, 'reverse')
+      eq(headers(remaining), { '@@ -2,0 +3,1 @@' })
+      eq(remaining[1].diff, { '+y' })
+      eq(hunk_apply.apply_selections(rolled_back, all_hunks(remaining), 'reverse'), base)
+    end)
+
+    it('is a valid diff for randomized row selections in both directions', function()
+      local seed = 7
+      local function rand(n)
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        return (seed % n) + 1
+      end
+
+      for _ = 1, 200 do
+        local a, b = {}, {}
+        for _ = 1, rand(30) do a[#a + 1] = 'line' .. rand(6) end
+        for _ = 1, rand(30) do b[#b + 1] = 'line' .. rand(6) end
+
+        -- Select a random row subset of some hunks, leaving others untouched
+        local hunks = live(a, b)
+        local selections = {}
+        for _, hunk in ipairs(hunks) do
+          local choice = rand(3)
+          if choice == 1 then
+            selections[#selections + 1] = { hunk = hunk, rows = nil }
+          elseif choice == 2 then
+            local removed, added = hunk:parse_diff()
+            local rows = {}
+            for r = 1, math.max(#removed, #added) do
+              if rand(2) == 1 then rows[r] = true end
+            end
+            selections[#selections + 1] = { hunk = hunk, rows = rows }
+          end
+        end
+
+        local applied = hunk_apply.apply_selections(a, selections, 'apply')
+        local forward = hunk_apply.remaining(hunks, selections, 'apply')
+        eq(hunk_apply.apply_selections(applied, all_hunks(forward), 'apply'), b)
+        eq(hunk_apply.apply_selections(b, all_hunks(forward), 'reverse'), applied)
+
+        local reverted = hunk_apply.apply_selections(b, selections, 'reverse')
+        local backward = hunk_apply.remaining(hunks, selections, 'reverse')
+        eq(hunk_apply.apply_selections(a, all_hunks(backward), 'apply'), reverted)
+        eq(hunk_apply.apply_selections(reverted, all_hunks(backward), 'reverse'), a)
+      end
+    end)
+  end)
 end)
