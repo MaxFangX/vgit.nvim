@@ -304,12 +304,23 @@ function DiffView:render_title()
   self.scene:get('current'):set_title(title, options)
 end
 
+-- Neovim disables regex syntax for a buffer once a redraw exceeds
+-- 'redrawtime' (easy under heavy system load), and only a syntax reset
+-- re-enables it. Called on every render and hunk jump so it self-heals.
+function DiffView:reset_syntax()
+  local filetype = self.props.filetype()
+  if not filetype then return end
+
+  if self.props.layout_type() == 'split' then self.scene:get('previous'):set_syntax(filetype) end
+  self.scene:get('current'):set_syntax(filetype)
+end
+
 function DiffView:render_filetype()
   local filetype = self.props.filetype()
   if not filetype then return end
 
   local current_component = self.scene:get('current')
-  if current_component:get_filetype() == filetype then return end
+  if current_component:get_filetype() == filetype then return self:reset_syntax() end
 
   if self.props.layout_type() == 'split' then self.scene:get('previous'):set_filetype(filetype) end
   current_component:set_filetype(filetype)
@@ -855,6 +866,7 @@ function DiffView:move_to_hunk(mark_index, pos)
   end
 
   self:move_to_mark(marks, mark_index, pos)
+  self:reset_syntax()
 
   local msg = string.format('%s%s/%s Changes', string.rep(' ', 1), mark_index, #marks)
   self:notify(msg)

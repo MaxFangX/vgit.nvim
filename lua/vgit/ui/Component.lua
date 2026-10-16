@@ -199,9 +199,13 @@ end
 
 function Component:set_filetype(filetype)
   self.buffer:set_option('filetype', filetype)
-  self.buffer:set_option('ft', filetype)
   self.buffer:set_option('syntax', filetype)
 
+  return self
+end
+
+function Component:set_syntax(syntax)
+  self.buffer:set_option('syntax', syntax)
   return self
 end
 
