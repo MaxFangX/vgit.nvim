@@ -174,10 +174,10 @@ function IndexedReviewState:get_position()
   return pos.section or 'unseen', pos.filepath, pos.commit_message, pos.focus
 end
 
--- Write snapshot objects, then the JSON referencing them, then (optionally)
--- sweep unreferenced objects. Objects are immutable and content-addressed, so
--- unreferenced ones are harmless until the final save sweeps them.
-local function write_to_disk(self, sweep)
+-- Write snapshot objects, then the JSON referencing them. The final save also
+-- sweeps unreferenced objects and evicts stale branches; objects are immutable
+-- and content-addressed, so unreferenced ones are harmless in between.
+local function write_to_disk(self, final)
   if not self.repo_name or self._skip_persistence then return end
 
   -- Escape luv callback context to main Vim loop (required for vim.fn calls)
@@ -199,8 +199,9 @@ local function write_to_disk(self, sweep)
 
   persistence.write_objects(self.repo_name, self.branch_name, objects)
   persistence.save(self.repo_name, self.branch_name, self.review_type, { entries = entries })
-  if sweep then
+  if final then
     persistence.sweep_objects(self.repo_name, self.branch_name)
+    persistence.evict_lru(self.repo_name)
   end
 
   -- Our own write shouldn't trigger a reload on the next entry
@@ -217,8 +218,8 @@ function IndexedReviewState:schedule_save()
   self._debounced_save()
 end
 
--- Save state to disk now and sweep unreferenced objects, superseding any
--- queued write-behind save. Position is session-only, never persisted.
+-- Save state to disk now, with sweep and eviction, superseding any queued
+-- write-behind save. Position is session-only, never persisted.
 function IndexedReviewState:save()
   if self._debounced_save then
     loop.close_debounced(self._debounced_save)

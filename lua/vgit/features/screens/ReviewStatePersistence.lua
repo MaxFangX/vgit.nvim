@@ -12,7 +12,7 @@ local loop = require('vgit.core.loop')
 
   Features:
     - LRU eviction: max 128 branches per repository (all review types for a
-      branch count as one)
+      branch count as one), run from the quit-time save via evict_lru
     - Schema versioning: graceful migration with user prompts
     - Automatic lastUsed timestamp updates
 ]]
@@ -132,38 +132,58 @@ local function ensure_dir(dir)
   end
 end
 
--- List branches (one per directory) sorted by lastUsed, oldest first. A branch's
--- lastUsed is the most recent across its review-type files (by_file/by_commit).
-local function list_branches(state_dir)
-  if not fs.exists(state_dir) then return {} end
+-- Mtime (seconds) of the newest state file directly in `dir`, or nil if it
+-- holds none. Stat only; save() writes lastUsed and the file at the same
+-- instant, so mtime orders branches identically without parsing JSON.
+local function newest_state_mtime(dir)
+  local handle = vim.loop.fs_scandir(dir)
+  if not handle then return nil end
 
-  -- Reduce each branch dir's state files to its most recent lastUsed.
-  local last_used = {}
-  for _, filepath in ipairs(vim.fn.glob(state_dir .. '/**/*.json', false, true)) do
-    local content = fs.read_file(filepath)
-    if content then
-      local ok, data = pcall(vim.fn.json_decode, table.concat(content, '\n'))
-      if ok and data and data.lastUsed then
-        local dir = fs.dirname(filepath)
-        last_used[dir] = math.max(last_used[dir] or 0, data.lastUsed)
+  local newest
+  while true do
+    local entry, entry_type = vim.loop.fs_scandir_next(handle)
+    if not entry then break end
+    if entry_type == 'file' and entry:match('%.json$') then
+      local stat = vim.loop.fs_stat(dir .. '/' .. entry)
+      if stat and (not newest or stat.mtime.sec > newest) then newest = stat.mtime.sec end
+    end
+  end
+  return newest
+end
+
+-- List branch dirs holding state, sorted by last use, oldest first. Branch
+-- dirs with no state files left are pruned on the way (rmdir only succeeds
+-- when empty, so an objects/ dir or stray file keeps the dir).
+local function list_branches(state_dir)
+  local handle = vim.loop.fs_scandir(state_dir)
+  if not handle then return {} end
+
+  local branches = {}
+  while true do
+    local entry, entry_type = vim.loop.fs_scandir_next(handle)
+    if not entry then break end
+    if entry_type == 'directory' then
+      local dir = state_dir .. '/' .. entry
+      local last_used = newest_state_mtime(dir)
+      if last_used then
+        branches[#branches + 1] = { dir = dir, last_used = last_used }
+      else
+        vim.loop.fs_rmdir(dir)
       end
     end
   end
 
-  local branches = {}
-  for dir, lastUsed in pairs(last_used) do
-    branches[#branches + 1] = { dir = dir, lastUsed = lastUsed }
-  end
-  table.sort(branches, function(a, b) return a.lastUsed < b.lastUsed end)
+  table.sort(branches, function(a, b) return a.last_used < b.last_used end)
   return branches
 end
 
--- Evict least-recently-used branches until adding one more stays within capacity
-local function evict_if_needed(state_dir)
-  local branches = list_branches(state_dir)
-  while #branches >= MAX_BRANCHES do
-    local oldest = table.remove(branches, 1)
-    vim.fn.delete(oldest.dir, 'rf') -- Remove the branch dir and all its state files
+-- Evict least-recently-used branches until the repo is within capacity.
+-- Called from the quit-time save (never the write-behind one): the current
+-- branch was just saved, so it sorts newest and is never a candidate.
+function ReviewStatePersistence.evict_lru(repo_name)
+  local branches = list_branches(ReviewStatePersistence.get_state_dir(repo_name))
+  for i = 1, #branches - MAX_BRANCHES do
+    vim.fn.delete(branches[i].dir, 'rf') -- Remove the branch dir and all its state files
   end
 end
 
@@ -193,20 +213,10 @@ function ReviewStatePersistence.load(repo_name, branch_name, review_type)
   return data, nil
 end
 
--- Save state to disk
+-- Save state to disk. Does not evict; see evict_lru.
 function ReviewStatePersistence.save(repo_name, branch_name, review_type, state_data)
   local path = ReviewStatePersistence.get_state_path(repo_name, branch_name, review_type)
-  local state_dir = ReviewStatePersistence.get_state_dir(repo_name)
-  local branch_dir = fs.dirname(path)
-
-  -- Evict LRU branches before adding a new one. Adding another review type to an
-  -- existing branch doesn't count, so only evict when the branch dir is new.
-  if not fs.exists(branch_dir) then
-    evict_if_needed(state_dir)
-  end
-
-  -- Ensure full directory path exists (branch subdirs)
-  ensure_dir(branch_dir)
+  ensure_dir(fs.dirname(path))
 
   -- Add metadata
   state_data.version = CURRENT_VERSION

@@ -262,8 +262,9 @@ function ReviewState:get_content_ids(key)
   return get_state(self).content_ids[key]
 end
 
--- Write marks and their caches to the review-type JSON file.
-local function write_to_disk(self)
+-- Write marks and their caches to the review-type JSON file. The final save
+-- also evicts stale branches.
+local function write_to_disk(self, final)
   if not self.repo_name or self._skip_persistence then return end
 
   -- Escape luv callback context to main Vim loop (required for vim.fn calls)
@@ -275,25 +276,28 @@ local function write_to_disk(self)
     contentIds = state.content_ids,
   }
   persistence.save(self.repo_name, self.branch_name, self.review_type, data)
+  if final then
+    persistence.evict_lru(self.repo_name)
+  end
 end
 
 -- Queue a write-behind save; mark mutators call this so marks reach disk
 -- without waiting for the screen to close.
 function ReviewState:schedule_save()
   if not self._debounced_save then
-    self._debounced_save = loop.debounce_coroutine(function() write_to_disk(self) end, SAVE_DEBOUNCE_MS)
+    self._debounced_save = loop.debounce_coroutine(function() write_to_disk(self, false) end, SAVE_DEBOUNCE_MS)
   end
   self._debounced_save()
 end
 
--- Save state to disk now, superseding any queued write-behind save
--- (position is session-only, not persisted).
+-- Save state to disk now, with eviction, superseding any queued write-behind
+-- save. Position is session-only, not persisted.
 function ReviewState:save()
   if self._debounced_save then
     loop.close_debounced(self._debounced_save)
     self._debounced_save = nil
   end
-  write_to_disk(self)
+  write_to_disk(self, true)
 end
 
 return ReviewState
