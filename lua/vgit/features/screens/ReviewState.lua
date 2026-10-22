@@ -17,6 +17,10 @@ local persistence = require('vgit.features.screens.ReviewStatePersistence')
 
 local ReviewState = Object:extend()
 
+-- Write-behind delay: a burst of marks coalesces into one save shortly after
+-- it settles, so a crash or kill mid-review loses at most this much work.
+local SAVE_DEBOUNCE_MS = 1000
+
 -- Create a status object that mimics GitStatus for display in list views
 function ReviewState.create_status(filepath, file_status, old_filepath)
   local filetype = fs.detect_filetype(filepath)
@@ -130,12 +134,14 @@ end
 function ReviewState:mark_hunk(key, content_id)
   local marks = self:get_marks()
   marks[mark_key(key, content_id)] = true
+  self:schedule_save()
 end
 
 -- Unmark a hunk
 function ReviewState:unmark_hunk(key, content_id)
   local marks = self:get_marks()
   marks[mark_key(key, content_id)] = nil
+  self:schedule_save()
 end
 
 -- Mark all hunks as seen (takes array of content_ids)
@@ -204,6 +210,7 @@ end
 function ReviewState:reset()
   local state = get_state(self)
   state.marks = {}
+  self:schedule_save()
 end
 
 -- Clear cached content_ids (call when HEAD may have changed)
@@ -255,8 +262,8 @@ function ReviewState:get_content_ids(key)
   return get_state(self).content_ids[key]
 end
 
--- Save state to disk (position is session-only, not persisted)
-function ReviewState:save()
+-- Write marks and their caches to the review-type JSON file.
+local function write_to_disk(self)
   if not self.repo_name or self._skip_persistence then return end
 
   -- Escape luv callback context to main Vim loop (required for vim.fn calls)
@@ -268,6 +275,25 @@ function ReviewState:save()
     contentIds = state.content_ids,
   }
   persistence.save(self.repo_name, self.branch_name, self.review_type, data)
+end
+
+-- Queue a write-behind save; mark mutators call this so marks reach disk
+-- without waiting for the screen to close.
+function ReviewState:schedule_save()
+  if not self._debounced_save then
+    self._debounced_save = loop.debounce_coroutine(function() write_to_disk(self) end, SAVE_DEBOUNCE_MS)
+  end
+  self._debounced_save()
+end
+
+-- Save state to disk now, superseding any queued write-behind save
+-- (position is session-only, not persisted).
+function ReviewState:save()
+  if self._debounced_save then
+    loop.close_debounced(self._debounced_save)
+    self._debounced_save = nil
+  end
+  write_to_disk(self)
 end
 
 return ReviewState

@@ -50,6 +50,20 @@ function fs.write_file(filepath, lines)
   fd:close()
 end
 
+-- Write via a sibling temp file and rename, so a crash mid-write leaves the
+-- previous file intact instead of a truncated one.
+function fs.write_file_atomic(filepath, lines)
+  local tmp = filepath .. '.tmp'
+  local _, err = fs.write_file(tmp, lines)
+  if err then return nil, err end
+
+  local ok, rename_err = os.rename(tmp, filepath)
+  if not ok then
+    os.remove(tmp)
+    return nil, { rename_err }
+  end
+end
+
 function fs.remove_file(filepath)
   return os.remove(filepath)
 end

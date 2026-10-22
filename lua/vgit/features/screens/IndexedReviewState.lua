@@ -20,6 +20,10 @@ local persistence = require('vgit.features.screens.IndexedReviewPersistence')
 
 local IndexedReviewState = Object:extend()
 
+-- Write-behind delay: a burst of marks coalesces into one save shortly after
+-- it settles, so a crash or kill mid-review loses at most this much work.
+local SAVE_DEBOUNCE_MS = 1000
+
 -- Global state storage (persists across screen instances within a Vim session)
 local state_store = {}
 
@@ -137,15 +141,18 @@ end
 -- Content hashes are computed lazily on save() and cached on the record.
 function IndexedReviewState:set_approved(mark_key, lines, deleted, base_lines)
   get_state(self).approved[mark_key] = { lines = lines, deleted = deleted == true, base_lines = base_lines }
+  self:schedule_save()
 end
 
 function IndexedReviewState:remove_approved(mark_key)
   get_state(self).approved[mark_key] = nil
+  self:schedule_save()
 end
 
 -- Reset the index for the current session (everything back to unseen)
 function IndexedReviewState:reset()
   get_state(self).approved = {}
+  self:schedule_save()
 end
 
 -- Store last viewed file for re-entry fallback (when current buffer is not in review)
@@ -167,9 +174,10 @@ function IndexedReviewState:get_position()
   return pos.section or 'unseen', pos.filepath, pos.commit_message, pos.focus
 end
 
--- Save state to disk: write snapshot objects, then the JSON referencing them,
--- then sweep unreferenced objects. Position is session-only, never persisted.
-function IndexedReviewState:save()
+-- Write snapshot objects, then the JSON referencing them, then (optionally)
+-- sweep unreferenced objects. Objects are immutable and content-addressed, so
+-- unreferenced ones are harmless until the final save sweeps them.
+local function write_to_disk(self, sweep)
   if not self.repo_name or self._skip_persistence then return end
 
   -- Escape luv callback context to main Vim loop (required for vim.fn calls)
@@ -191,11 +199,32 @@ function IndexedReviewState:save()
 
   persistence.write_objects(self.repo_name, self.branch_name, objects)
   persistence.save(self.repo_name, self.branch_name, self.review_type, { entries = entries })
-  persistence.sweep_objects(self.repo_name, self.branch_name)
+  if sweep then
+    persistence.sweep_objects(self.repo_name, self.branch_name)
+  end
 
   -- Our own write shouldn't trigger a reload on the next entry
   state.loaded = true
   state.disk_mtime = state_file_mtime(self)
+end
+
+-- Queue a write-behind save; mark mutators call this so approvals reach disk
+-- without waiting for the screen to close.
+function IndexedReviewState:schedule_save()
+  if not self._debounced_save then
+    self._debounced_save = loop.debounce_coroutine(function() write_to_disk(self, false) end, SAVE_DEBOUNCE_MS)
+  end
+  self._debounced_save()
+end
+
+-- Save state to disk now and sweep unreferenced objects, superseding any
+-- queued write-behind save. Position is session-only, never persisted.
+function IndexedReviewState:save()
+  if self._debounced_save then
+    loop.close_debounced(self._debounced_save)
+    self._debounced_save = nil
+  end
+  write_to_disk(self, true)
 end
 
 return IndexedReviewState

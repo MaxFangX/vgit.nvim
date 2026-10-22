@@ -1566,7 +1566,7 @@ function IndexedReviewScreen:destroy()
   -- Save review state before destroying (handles :q, window close, etc.)
   -- Use pcall since destroy may be called from various contexts
   local current_focus = self._current_focus
-  pcall(function()
+  local ok, err = pcall(function()
     local entry = self.model:get_entry()
     local review_state = self.model:get_review_state()
     if review_state and entry then
@@ -1578,6 +1578,9 @@ function IndexedReviewScreen:destroy()
       review_state:save()
     end
   end)
+  if not ok then
+    console.warn(string.format('Failed to save review state: %s', tostring(err)))
+  end
 
   loop.close_debounced_handlers(self.diff_keymaps)
   self.diff_keymaps = {}

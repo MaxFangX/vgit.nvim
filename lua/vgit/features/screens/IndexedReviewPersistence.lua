@@ -65,7 +65,9 @@ function IndexedReviewPersistence.read_object(repo_name, branch_name, hash)
 end
 
 -- Write snapshot objects: objects is a map of hash -> lines. Existing objects
--- are left alone (content-addressed, so contents are immutable).
+-- are left alone (content-addressed, so contents are immutable), which is
+-- only safe because writes are atomic: a truncated object would otherwise be
+-- kept forever.
 function IndexedReviewPersistence.write_objects(repo_name, branch_name, objects)
   local dir = IndexedReviewPersistence.get_objects_dir(repo_name, branch_name)
   if not fs.exists(dir) then
@@ -75,7 +77,7 @@ function IndexedReviewPersistence.write_objects(repo_name, branch_name, objects)
   for hash, lines in pairs(objects) do
     local path = dir .. '/' .. hash
     if not fs.exists(path) then
-      fs.write_file(path, lines)
+      fs.write_file_atomic(path, lines)
     end
   end
 end

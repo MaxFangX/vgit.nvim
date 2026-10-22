@@ -213,9 +213,7 @@ function ReviewStatePersistence.save(repo_name, branch_name, review_type, state_
   state_data.lastUsed = os.time()
   state_data.branchName = branch_name
 
-  local json = vim.fn.json_encode(state_data)
-  local lines = { json }
-  fs.write_file(path, lines)
+  fs.write_file_atomic(path, { vim.fn.json_encode(state_data) })
 end
 
 -- Delete state file
