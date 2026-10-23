@@ -82,7 +82,13 @@ end
 local function get_state(self)
   local key = self:get_state_key()
   if not state_store[key] then
-    state_store[key] = { marks = {}, change_ids = {}, position = { section = 'unseen' }, hunk_counts = {}, content_ids = {} }
+    state_store[key] = {
+      marks = {},
+      change_ids = {},
+      position = { section = 'unseen' },
+      hunk_counts = {},
+      content_ids = {},
+    }
   end
   return state_store[key]
 end
@@ -128,39 +134,68 @@ local function mark_key(entry_key, hunk_id)
   return string.format('%s:%s', entry_key, hunk_id)
 end
 
--- The set of entry keys that currently hold marks (the composite mark keys
--- with their `:<content id>` suffix stripped).
-local function marked_keys(marks)
-  local keys = {}
+-- The content ids of the marks under each entry key, found by splitting each
+-- mark key at its last colon.
+local function marks_by_key(marks)
+  local grouped = {}
   for composite in pairs(marks) do
-    keys[composite:match('^(.*):[^:]*$') or composite] = true
+    local key, content_id = composite:match('^(.*):([^:]*)$')
+    if key then
+      local ids = grouped[key] or {}
+      ids[#ids + 1] = content_id
+      grouped[key] = ids
+    end
   end
-  return keys
+  return grouped
 end
 
--- Move marks orphaned by a reworded subject to their new key by jj change id,
--- and record the change id for every current (commit, file) so marks made
--- later carry it too. `items` are `{ key, filepath, change_id }`; see
+-- Copy marks for `items` from other branches' reviews of the same type,
+-- matched by change id, most recently used branch first, recording adopted
+-- keys in `held`. Returns true if any were adopted.
+local function adopt_from_siblings(self, state, items, held)
+  if #items == 0 or not self.repo_name then return false end
+
+  -- Escape luv callback context to main Vim loop (required for vim.fn calls)
+  loop.free_textlock()
+
+  local adopted = false
+  for _, sibling in ipairs(persistence.load_siblings(self.repo_name, self.branch_name, self.review_type)) do
+    local sibling_marks = marks_by_key(sibling.data.marks or {})
+    for _, match in ipairs(change_id_rekey.find(items, sibling_marks, sibling.data.changeIds or {})) do
+      for _, content_id in ipairs(sibling_marks[match.key]) do
+        state.marks[mark_key(match.item.key, content_id)] = true
+      end
+      held[match.item.key], adopted = sibling_marks[match.key], true
+    end
+
+    items = change_id_rekey.unheld(items, held)
+    if #items == 0 then break end
+  end
+  return adopted
+end
+
+-- Reconcile stored marks with the current (commit, file) `items`
+-- (`{ key, filepath, change_id }`) by jj change id. Moves marks orphaned by a
+-- reworded subject, adopts matching marks from other branches' reviews, and
+-- records each item's change id so marks made later carry it. See
 -- change_id_rekey.
 function ReviewState:reconcile_change_ids(items)
   local state = get_state(self)
 
-  local moves = change_id_rekey.plan(items, marked_keys(state.marks), state.change_ids)
+  local held = marks_by_key(state.marks)
+  local moves = change_id_rekey.plan(items, held, state.change_ids)
   for _, move in ipairs(moves) do
-    local from_prefix, to_prefix = move.from .. ':', move.to .. ':'
-    local renamed = {}
-    for composite in pairs(state.marks) do
-      if vim.startswith(composite, from_prefix) then
-        renamed[#renamed + 1] = composite
-      end
+    -- `or {}`: a divergent change id can plan two moves from one key
+    for _, content_id in ipairs(held[move.from] or {}) do
+      state.marks[mark_key(move.from, content_id)] = nil
+      state.marks[mark_key(move.to, content_id)] = true
     end
-    for _, composite in ipairs(renamed) do
-      state.marks[to_prefix .. composite:sub(#from_prefix + 1)] = state.marks[composite]
-      state.marks[composite] = nil
-    end
+    held[move.to], held[move.from] = held[move.from], nil
     state.change_ids[move.from] = nil
   end
-  if #moves > 0 then self:schedule_save() end
+
+  local adopted = adopt_from_siblings(self, state, change_id_rekey.unheld(items, held), held)
+  if #moves > 0 or adopted then self:schedule_save() end
 
   for _, item in ipairs(items) do
     state.change_ids[item.key] = item.change_id
@@ -314,10 +349,10 @@ local function write_to_disk(self, final)
   loop.free_textlock()
   local state = get_state(self)
 
-  -- Persist change ids only for keys holding marks; the rest are session
-  -- bookkeeping for marks that may be made later.
+  -- Unmarked keys hold change ids only for marks made later this session, so
+  -- persist just the change ids of keys holding marks.
   local change_ids = {}
-  for key in pairs(marked_keys(state.marks)) do
+  for key in pairs(marks_by_key(state.marks)) do
     change_ids[key] = state.change_ids[key]
   end
 

@@ -62,6 +62,24 @@ local function state_file_mtime(self)
   return stat and string.format('%d.%d', stat.mtime.sec, stat.mtime.nsec) or nil
 end
 
+-- An entry's approved record, materialized from `branch_name`'s object store,
+-- or nil if its snapshot object is missing. A missing base object only loses
+-- the ability to rebase the snapshot.
+local function read_record(repo_name, branch_name, entry)
+  local lines = persistence.read_object(repo_name, branch_name, entry.approved)
+  if not lines then return nil end
+
+  local base_lines = entry.base and persistence.read_object(repo_name, branch_name, entry.base)
+  return {
+    lines = lines,
+    deleted = entry.deleted == true,
+    base_lines = base_lines,
+    -- Cache content hashes so save() doesn't re-hash unchanged records
+    hash = entry.approved,
+    base_hash = base_lines and entry.base or nil,
+  }
+end
+
 -- Load state from disk (call explicitly from coroutine context). Every save
 -- goes through the in-session store, so it is the source of truth within a
 -- session, and re-entering a review skips re-reading the object store,
@@ -98,22 +116,12 @@ function IndexedReviewState:load_from_disk()
 
   -- Materialize approved snapshots from the object store. A missing object
   -- means the snapshot was lost; drop the entry (file reverts to unseen).
-  -- A missing base object only loses the ability to rebase the snapshot.
   local approved, change_ids, missing = {}, {}, 0
   for mark_key, entry in pairs(data.entries) do
     if type(entry) == 'table' and entry.approved then
-      local lines = persistence.read_object(self.repo_name, self.branch_name, entry.approved)
-      if lines then
-        change_ids[mark_key] = entry.change_id
-        local base_lines = entry.base and persistence.read_object(self.repo_name, self.branch_name, entry.base)
-        approved[mark_key] = {
-          lines = lines,
-          deleted = entry.deleted == true,
-          base_lines = base_lines,
-          -- Cache content hashes so save() doesn't re-hash unchanged records
-          hash = entry.approved,
-          base_hash = base_lines and entry.base or nil,
-        }
+      local record = read_record(self.repo_name, self.branch_name, entry)
+      if record then
+        approved[mark_key], change_ids[mark_key] = record, entry.change_id
       else
         missing = missing + 1
       end
@@ -153,10 +161,41 @@ function IndexedReviewState:remove_approved(mark_key)
   self:schedule_save()
 end
 
--- Move records orphaned by a reworded subject to their new key by jj change
--- id, and record the change id for every current (commit, file) so records
--- approved later carry it too. `items` are `{ key, filepath, change_id }`;
--- see change_id_rekey.
+-- Copy approved records for `items` from other branches' reviews of the same
+-- type, matched by change id, most recently used branch first. Returns true
+-- if any were adopted. Objects are content-addressed, so the copied record
+-- keeps its hash, and save() writes the object into this branch's store.
+local function adopt_from_siblings(self, state, items)
+  if #items == 0 or not self.repo_name then return false end
+
+  -- Escape luv callback context to main Vim loop (required for vim.fn calls)
+  loop.free_textlock()
+
+  local adopted = false
+  for _, sibling in ipairs(persistence.load_siblings(self.repo_name, self.branch_name, self.review_type)) do
+    local entries = sibling.data.entries or {}
+    -- Every key with a change id holds a record, so this doubles as the key set
+    local change_ids = {}
+    for key, entry in pairs(entries) do
+      if type(entry) == 'table' and entry.approved then change_ids[key] = entry.change_id end
+    end
+
+    for _, match in ipairs(change_id_rekey.find(items, change_ids, change_ids)) do
+      local record = read_record(self.repo_name, sibling.branch_name, entries[match.key])
+      if record then state.approved[match.item.key], adopted = record, true end
+    end
+
+    items = change_id_rekey.unheld(items, state.approved)
+    if #items == 0 then break end
+  end
+  return adopted
+end
+
+-- Reconcile stored records with the current (commit, file) `items`
+-- (`{ key, filepath, change_id }`) by jj change id. Moves records orphaned by
+-- a reworded subject, adopts matching records from other branches' reviews,
+-- and records each item's change id so records approved later carry it. See
+-- change_id_rekey.
 function IndexedReviewState:reconcile_change_ids(items)
   local state = get_state(self)
 
@@ -165,7 +204,9 @@ function IndexedReviewState:reconcile_change_ids(items)
     state.approved[move.to], state.approved[move.from] = state.approved[move.from], nil
     state.change_ids[move.from] = nil
   end
-  if #moves > 0 then self:schedule_save() end
+
+  local adopted = adopt_from_siblings(self, state, change_id_rekey.unheld(items, state.approved))
+  if #moves > 0 or adopted then self:schedule_save() end
 
   for _, item in ipairs(items) do
     state.change_ids[item.key] = item.change_id

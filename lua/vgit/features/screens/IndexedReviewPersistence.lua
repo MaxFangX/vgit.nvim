@@ -24,6 +24,7 @@ local IndexedReviewPersistence = {}
 local INDEXED_REVIEW_TYPES = { 'by_file_indexed', 'by_commit_indexed' }
 
 IndexedReviewPersistence.load = persistence.load
+IndexedReviewPersistence.load_siblings = persistence.load_siblings
 IndexedReviewPersistence.save = persistence.save
 IndexedReviewPersistence.delete = persistence.delete
 IndexedReviewPersistence.evict_lru = persistence.evict_lru

@@ -8,6 +8,7 @@ local git_hunks = require('vgit.git.git_hunks')
 local git_branch = require('vgit.git.git_branch')
 local git_setting = require('vgit.settings.git')
 local jj = require('vgit.git.jj')
+local change_id_rekey = require('vgit.features.screens.change_id_rekey')
 local ReviewState = require('vgit.features.screens.ReviewState')
 local BaseReviewModel = require('vgit.features.screens.BaseReviewModel')
 
@@ -160,9 +161,7 @@ function Model:fetch(base_branch_arg)
 
   self.state.commits = commits
 
-  -- In a jj repo, the list shows jj change ids instead of git short hashes,
-  -- and stored marks follow a commit across subject rewording by its change
-  -- id (see reconcile_change_ids). Hashes remain the keys everywhere.
+  -- In a jj repo, the list shows jj change ids instead of git short hashes
   jj.attach_change_ids(reponame, commits)
 
   -- Preload every commit's full message in one batched git call (avoids N
@@ -179,7 +178,10 @@ function Model:fetch(base_branch_arg)
     self.state.commit_files[hash] = jj.filter_conflict_artifacts(files)
   end
 
-  self:reconcile_change_ids(commits)
+  -- Marks stored under a reworded subject, or made while reviewing another
+  -- branch, are found by jj change id (see change_id_rekey)
+  local items = change_id_rekey.items(commits, self.state.commit_files, make_mark_key)
+  if #items > 0 then self.review_state:reconcile_change_ids(items) end
 
   -- Preload diffs in parallel for content_ids
   self:preload_diffs_parallel(commits)
@@ -484,25 +486,6 @@ function Model:get_full_diff(commit_hash, filepath)
   self.state.diffs[cache_key] = diff
 
   return diff
-end
-
--- Hand the review state every current (commit, file) with its jj change id,
--- so marks stored under a reworded subject are found and rekeyed. No-op when
--- change ids are unavailable (not a jj repo, or jj missing).
-function Model:reconcile_change_ids(commits)
-  local items = {}
-  for _, commit in ipairs(commits) do
-    if commit.change_id then
-      for _, file in ipairs(self.state.commit_files[commit.hash] or {}) do
-        items[#items + 1] = {
-          key = make_mark_key(commit.message, file.filepath),
-          filepath = file.filepath,
-          change_id = commit.change_id,
-        }
-      end
-    end
-  end
-  if #items > 0 then self.review_state:reconcile_change_ids(items) end
 end
 
 return Model

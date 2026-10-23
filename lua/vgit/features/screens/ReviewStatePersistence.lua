@@ -187,11 +187,8 @@ function ReviewStatePersistence.evict_lru(repo_name)
   end
 end
 
--- Load state from disk
--- Returns: state_data or nil, error_message or nil
-function ReviewStatePersistence.load(repo_name, branch_name, review_type)
-  local path = ReviewStatePersistence.get_state_path(repo_name, branch_name, review_type)
-
+-- Load a state file by path. Returns: state_data or nil, error_message or nil
+local function load_path(path)
   if not fs.exists(path) then
     return nil, nil -- No existing state (not an error)
   end
@@ -211,6 +208,47 @@ function ReviewStatePersistence.load(repo_name, branch_name, review_type)
   end
 
   return data, nil
+end
+
+-- Load state from disk
+-- Returns: state_data or nil, error_message or nil
+function ReviewStatePersistence.load(repo_name, branch_name, review_type)
+  return load_path(ReviewStatePersistence.get_state_path(repo_name, branch_name, review_type))
+end
+
+-- Decoded sibling state files by path, each tagged with the file's mtime, so
+-- opening a review re-reads only the sibling files that changed since.
+local sibling_cache = {}
+
+-- The other branches' readable state files for `review_type`, most recently
+-- used first, as `{ branch_name, data }` tables.
+function ReviewStatePersistence.load_siblings(repo_name, branch_name, review_type)
+  local state_dir = ReviewStatePersistence.get_state_dir(repo_name)
+  local handle = vim.loop.fs_scandir(state_dir)
+  if not handle then return {} end
+
+  local own_dir = encode_branch(branch_name)
+  local siblings = {}
+  while true do
+    local entry, entry_type = vim.loop.fs_scandir_next(handle)
+    if not entry then break end
+    local path = state_dir .. '/' .. entry .. '/' .. review_type .. '.json'
+    local stat = entry_type == 'directory' and entry ~= own_dir and vim.loop.fs_stat(path)
+    if stat then
+      local mtime = string.format('%d.%d', stat.mtime.sec, stat.mtime.nsec)
+      local cached = sibling_cache[path]
+      if not cached or cached.mtime ~= mtime then
+        cached = { mtime = mtime, data = load_path(path) }
+        sibling_cache[path] = cached
+      end
+      if cached.data and cached.data.branchName then
+        siblings[#siblings + 1] = { branch_name = cached.data.branchName, data = cached.data }
+      end
+    end
+  end
+
+  table.sort(siblings, function(a, b) return (a.data.lastUsed or 0) > (b.data.lastUsed or 0) end)
+  return siblings
 end
 
 -- Save state to disk. Does not evict; see evict_lru.
