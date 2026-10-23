@@ -33,7 +33,7 @@ local persistence = require('vgit.features.screens.ReviewPersistence')
 
   Subclasses must implement:
     - get_entry_key(entry) - key for content/diff caching
-    - get_review_type() - 'by_file_indexed' or 'by_commit_indexed'
+    - get_review_type() - 'by_file' or 'by_commit'
     - fetch(base_branch_arg) - fetches commits/files and preloads contents
     - rebuild_entries() - builds the entry structure
     - load_contents(entry) - fetch base/current contents for one entry

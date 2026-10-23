@@ -15,8 +15,8 @@ local loop = require('vgit.core.loop')
 
     $XDG_DATA_HOME/vgit/<repo>/<branch>/objects/<sha256>
 
-  The by_file_indexed.json / by_commit_indexed.json files reference objects by
-  hash; content addressing dedupes identical approved contents (e.g. the same
+  The by_file.json / by_commit.json files reference objects by hash;
+  content addressing dedupes identical approved contents (e.g. the same
   lockfile approved in several commits). Objects are swept on save.
 
   Features:
@@ -34,7 +34,7 @@ local MAX_BRANCHES = 128
 
 -- Both review types share the branch's object store; sweeping must honor
 -- references from each.
-local REVIEW_TYPES = { 'by_file_indexed', 'by_commit_indexed' }
+local REVIEW_TYPES = { 'by_file', 'by_commit' }
 
 -- Get XDG data home directory. Prefers env vars (safe in fast event contexts)
 -- over vim.fn.expand, since branch_by_subjects below may run from the branch
@@ -56,9 +56,80 @@ local function encode_branch(name)
   return name:gsub('/', '--')
 end
 
--- Get state directory path for a repo
+-- Migration (added 2026-10-23): review state moved from <type>_indexed.json
+-- to <type>.json, replacing any file there in the retired classic format.
+-- The _indexed file is copied, not moved: sessions still running pre-rename
+-- code sweep objects by its references alone, so removing it would let them
+-- delete the snapshots of that review. Such a session can also keep writing
+-- the _indexed file, so it is copied again whenever it is newer. libuv/io
+-- only (safe in fast event contexts). Delete this block, its call in
+-- get_state_dir, and the _indexed refs in referenced_hashes once no session
+-- runs pre-rename code; delete leftover _indexed files then too.
+
+-- Whether stat result `a` has a newer mtime than `b`
+local function is_newer(a, b)
+  if a.mtime.sec ~= b.mtime.sec then return a.mtime.sec > b.mtime.sec end
+  return a.mtime.nsec > b.mtime.nsec
+end
+
+-- Whether the state file at `path` is in the current format (has entries)
+local function has_entries(path)
+  local fd = io.open(path, 'r')
+  if not fd then return false end
+  local content = fd:read('*a')
+  fd:close()
+
+  local ok, data = pcall(vim.json.decode, content)
+  return ok and type(data) == 'table' and type(data.entries) == 'table'
+end
+
+-- Copy `from` over `to` atomically, so a crash can't leave a truncated file
+local function copy_file(from, to)
+  local fd = io.open(from, 'rb')
+  if not fd then return end
+  local content = fd:read('*a')
+  fd:close()
+
+  -- write_file_atomic terminates each line with '\n'
+  if content:sub(-1) == '\n' then content = content:sub(1, -2) end
+  fs.write_file_atomic(to, { content })
+end
+
+-- State dirs already migrated this session
+local migrated = {}
+
+-- Copy each branch's <type>_indexed.json over <type>.json unless the latter
+-- is already in the new format and at least as new. Once per state dir.
+local function migrate_indexed_names(state_dir)
+  if migrated[state_dir] then return end
+  migrated[state_dir] = true
+
+  local handle = vim.loop.fs_scandir(state_dir)
+  if not handle then return end
+
+  while true do
+    local entry, entry_type = vim.loop.fs_scandir_next(handle)
+    if not entry then break end
+    if entry_type == 'directory' then
+      for _, review_type in ipairs(REVIEW_TYPES) do
+        local path = string.format('%s/%s/%s.json', state_dir, entry, review_type)
+        local old_path = string.format('%s/%s/%s_indexed.json', state_dir, entry, review_type)
+        local old_stat = vim.loop.fs_stat(old_path)
+        local stat = old_stat and vim.loop.fs_stat(path)
+        if old_stat and (not stat or is_newer(old_stat, stat) or not has_entries(path)) then
+          copy_file(old_path, path)
+        end
+      end
+    end
+  end
+end
+
+-- Get state directory path for a repo. Every path into a repo's state comes
+-- through here, so this runs the name migration before anything reads it.
 function ReviewPersistence.get_state_dir(repo_name)
-  return get_data_home() .. '/vgit/' .. repo_name
+  local state_dir = get_data_home() .. '/vgit/' .. repo_name
+  migrate_indexed_names(state_dir)
+  return state_dir
 end
 
 -- Get state file path for a (repo, branch, review_type) tuple
@@ -276,12 +347,16 @@ end
 local function referenced_hashes(repo_name, branch_name)
   local referenced = {}
   for _, review_type in ipairs(REVIEW_TYPES) do
-    local data = ReviewPersistence.load(repo_name, branch_name, review_type)
-    if data and type(data.entries) == 'table' then
-      for _, entry in pairs(data.entries) do
-        if type(entry) == 'table' and entry.approved then
-          referenced[entry.approved] = true
-          if entry.base then referenced[entry.base] = true end
+    -- Migration: a pre-rename session may have written approvals to the
+    -- _indexed file since this session copied it to <type>.json.
+    for _, name in ipairs({ review_type, review_type .. '_indexed' }) do
+      local data = ReviewPersistence.load(repo_name, branch_name, name)
+      if data and type(data.entries) == 'table' then
+        for _, entry in pairs(data.entries) do
+          if type(entry) == 'table' and entry.approved then
+            referenced[entry.approved] = true
+            if entry.base then referenced[entry.base] = true end
+          end
         end
       end
     end
@@ -373,7 +448,7 @@ function ReviewPersistence.branch_by_subjects(repo_name, head_subjects)
     local entry, entry_type = vim.loop.fs_scandir_next(handle)
     if not entry then break end
     if entry_type == 'directory' and entry ~= 'objects' then
-      consider(subject_overlap(state_dir .. '/' .. entry .. '/by_commit_indexed.json', head_subjects))
+      consider(subject_overlap(state_dir .. '/' .. entry .. '/by_commit.json', head_subjects))
     end
   end
 

@@ -17,7 +17,7 @@ local function run(fn)
 end
 
 local function new_state(opts)
-  return ReviewState(vim.tbl_extend('force', { review_type = 'by_commit_indexed' }, opts))
+  return ReviewState(vim.tbl_extend('force', { review_type = 'by_commit' }, opts))
 end
 
 local function item(key, filepath, change_id)
@@ -128,7 +128,7 @@ describe('change_id_rekey', function()
 
         -- The adopted record is now this branch's own, objects included
         current:save()
-        local data = persistence.load('repo', 'pool-current', 'by_commit_indexed')
+        local data = persistence.load('repo', 'pool-current', 'by_commit')
         local entry = data.entries['subj:src/a.lua']
         eq(entry.change_id, cid)
         eq(persistence.read_object('repo', 'pool-current', entry.approved), { 'approved' })

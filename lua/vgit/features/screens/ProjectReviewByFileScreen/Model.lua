@@ -51,7 +51,7 @@ function Model:get_entry_key(entry)
 end
 
 function Model:get_review_type()
-  return 'by_file_indexed'
+  return 'by_file'
 end
 
 function Model:fetch(base_branch_arg)

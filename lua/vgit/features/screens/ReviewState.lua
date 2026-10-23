@@ -10,7 +10,7 @@ local change_id_rekey = require('vgit.features.screens.change_id_rekey')
   to base/current what the index is to HEAD/worktree).
 
   State is keyed by (base_branch, branch_name, review_type) where review_type
-  is 'by_file_indexed' or 'by_commit_indexed'.
+  is 'by_file' or 'by_commit'.
 
   An approved record is { lines = {...}, deleted = bool, base_lines = {...} }
   where base_lines is the base the approval was made against (used to rebase
@@ -35,7 +35,7 @@ function ReviewState:constructor(opts)
   return {
     base_branch = opts.base_branch,
     branch_name = opts.branch_name,
-    review_type = opts.review_type or 'by_file_indexed',
+    review_type = opts.review_type or 'by_file',
     repo_name = opts.repo_name,
     _loaded = false,           -- Whether state has been loaded from disk
     _skip_persistence = false, -- Set if user declines to delete corrupted state

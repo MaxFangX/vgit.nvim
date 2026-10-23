@@ -85,7 +85,7 @@ function Model:get_entry_key(entry)
 end
 
 function Model:get_review_type()
-  return 'by_commit_indexed'
+  return 'by_commit'
 end
 
 function Model:get_mark_key(entry)

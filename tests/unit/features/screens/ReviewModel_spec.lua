@@ -15,7 +15,7 @@ function TestModel:get_entry_key(entry)
 end
 
 function TestModel:get_review_type()
-  return 'by_file_indexed'
+  return 'by_file'
 end
 
 function TestModel:rebuild_entries() end
@@ -25,7 +25,7 @@ local FILE = 'foo.lua'
 local function make_model(contents)
   local model = TestModel({ layout_type = 'unified' })
   model.state.reponame = '.'
-  model.review_state = ReviewState({ review_type = 'by_file_indexed' })
+  model.review_state = ReviewState({ review_type = 'by_file' })
   model:set_contents(FILE, contents)
   return model
 end
@@ -41,7 +41,7 @@ end
 describe('ReviewModel reconcile:', function()
   before_each(function()
     -- state_store is module-global and keyed by branch/type; reset between tests
-    ReviewState({ review_type = 'by_file_indexed' }):reset()
+    ReviewState({ review_type = 'by_file' }):reset()
   end)
 
   it('rebases the approved snapshot when the base gains unrelated changes', function()
