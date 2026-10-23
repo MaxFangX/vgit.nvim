@@ -5,11 +5,11 @@ local git_show = require('vgit.git.git_show')
 local git_branch = require('vgit.git.git_branch')
 local jj = require('vgit.git.jj')
 local change_id_rekey = require('vgit.features.screens.change_id_rekey')
-local IndexedReviewState = require('vgit.features.screens.IndexedReviewState')
-local IndexedBaseReviewModel = require('vgit.features.screens.IndexedBaseReviewModel')
+local ReviewState = require('vgit.features.screens.ReviewState')
+local ReviewModel = require('vgit.features.screens.ReviewModel')
 
 --[[
-  Indexed by-commit review model. Each entry is a (commit, file) pair diffed
+  By-commit review model. Each entry is a (commit, file) pair diffed
   against the commit's parent. Contents (parent and commit versions per pair)
   are preloaded via one batched `git cat-file`; all diffs derive from those
   in-process.
@@ -49,10 +49,10 @@ end
 -- to bound memory.
 local session_contents = { id = nil, contents = {} }
 
-local Model = IndexedBaseReviewModel:extend()
+local Model = ReviewModel:extend()
 
 function Model:constructor(opts)
-  local base = IndexedBaseReviewModel.constructor(self, opts)
+  local base = ReviewModel.constructor(self, opts)
   base.state.commits = {}
   base.state.commit_files = {} -- Cache: commit_hash -> files array
   base.state.commit_messages = {} -- Cache: commit_hash -> message lines
@@ -141,7 +141,7 @@ function Model:fetch(base_branch_arg)
   self.state.merge_base = merge_base
 
   -- Initialize or restore the index
-  self.review_state = IndexedReviewState({
+  self.review_state = ReviewState({
     base_branch = base_branch,
     branch_name = branch_name,
     review_type = self:get_review_type(),
@@ -270,7 +270,7 @@ function Model:rebuild_entries()
       local mark_key = make_mark_key(commit.message, file.filepath)
       local flags = self:get_seen_flags(entry_key, mark_key)
 
-      local status = IndexedBaseReviewModel.create_status(file.filepath, file.status, file.old_filepath)
+      local status = ReviewModel.create_status(file.filepath, file.status, file.old_filepath)
 
       if flags.has_unseen then
         local id = entry_id(commit.hash, file.filepath, 'unseen')

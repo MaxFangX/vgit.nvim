@@ -1,16 +1,16 @@
 local dimensions = require('vgit.ui.dimensions')
 local StatusListView = require('vgit.ui.views.StatusListView')
-local IndexedReviewScreen = require('vgit.features.screens.IndexedReviewScreen')
-local Model = require('vgit.features.screens.IndexedFileReviewScreen.Model')
-local setting = require('vgit.settings.indexed_file_review')
+local ProjectReviewScreen = require('vgit.features.screens.ProjectReviewScreen')
+local Model = require('vgit.features.screens.ProjectReviewByFileScreen.Model')
+local setting = require('vgit.settings.project_review_by_file')
 
-local IndexedFileReviewScreen = IndexedReviewScreen:extend()
+local ProjectReviewByFileScreen = ProjectReviewScreen:extend()
 
-function IndexedFileReviewScreen:constructor(opts)
+function ProjectReviewByFileScreen:constructor(opts)
   opts = opts or {}
 
-  local base = IndexedReviewScreen.constructor(self, opts)
-  base.name = 'Indexed File Review Screen'
+  local base = ProjectReviewScreen.constructor(self, opts)
+  base.name = 'Project Review By File Screen'
   base.model = Model(opts)
   base.setting = setting
 
@@ -32,9 +32,9 @@ function IndexedFileReviewScreen:constructor(opts)
     },
   })
 
-  IndexedReviewScreen.init_views(base, list_plot, diff_plot)
+  ProjectReviewScreen.init_views(base, list_plot, diff_plot)
 
   return base
 end
 
-return IndexedFileReviewScreen
+return ProjectReviewByFileScreen

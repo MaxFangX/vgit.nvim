@@ -1,20 +1,20 @@
 local dimensions = require('vgit.ui.dimensions')
 local CommitListView = require('vgit.ui.views.CommitListView')
 local CommitMessageView = require('vgit.ui.views.CommitMessageView')
-local IndexedReviewScreen = require('vgit.features.screens.IndexedReviewScreen')
-local Model = require('vgit.features.screens.IndexedCommitReviewScreen.Model')
-local setting = require('vgit.settings.indexed_commit_review')
+local ProjectReviewScreen = require('vgit.features.screens.ProjectReviewScreen')
+local Model = require('vgit.features.screens.ProjectReviewByCommitScreen.Model')
+local setting = require('vgit.settings.project_review_by_commit')
 
-local IndexedCommitReviewScreen = IndexedReviewScreen:extend()
+local ProjectReviewByCommitScreen = ProjectReviewScreen:extend()
 
 -- Height of commit message box
 local MSG_HEIGHT = 14
 
-function IndexedCommitReviewScreen:constructor(opts)
+function ProjectReviewByCommitScreen:constructor(opts)
   opts = opts or {}
 
-  local base = IndexedReviewScreen.constructor(self, opts)
-  base.name = 'Indexed Commit Review Screen'
+  local base = ProjectReviewScreen.constructor(self, opts)
+  base.name = 'Project Review By Commit Screen'
   base.model = Model(opts)
   base.setting = setting
 
@@ -89,7 +89,7 @@ function IndexedCommitReviewScreen:constructor(opts)
     })
   end
 
-  IndexedReviewScreen.init_views(base, list_plot, diff_plot)
+  ProjectReviewScreen.init_views(base, list_plot, diff_plot)
 
   return base
 end
@@ -101,7 +101,7 @@ end
 -- (subjects past it truncate). A positive list_width (user config, or a
 -- boundary drag earlier this session) is used as-is. Called by the base
 -- screen after fetch, before windows are defined.
-function IndexedCommitReviewScreen:resolve_list_width()
+function ProjectReviewByCommitScreen:resolve_list_width()
   local plots = self._width_plots
   if not plots then return end
   if setting:get('list_width') > 0 then return end
@@ -122,4 +122,4 @@ function IndexedCommitReviewScreen:resolve_list_width()
   end
 end
 
-return IndexedCommitReviewScreen
+return ProjectReviewByCommitScreen

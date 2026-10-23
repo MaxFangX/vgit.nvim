@@ -6,11 +6,11 @@ local git_repo = require('vgit.git.git_repo')
 local git_hunks = require('vgit.git.git_hunks')
 local git_branch = require('vgit.git.git_branch')
 local hunk_apply = require('vgit.features.screens.hunk_apply')
-local persistence = require('vgit.features.screens.IndexedReviewPersistence')
+local persistence = require('vgit.features.screens.ReviewPersistence')
 
 --[[
-  IndexedBaseReviewModel contains shared logic for the indexed review models
-  (IndexedFileReviewScreen and IndexedCommitReviewScreen).
+  ReviewModel contains shared logic for the review models
+  (ProjectReviewByFileScreen and ProjectReviewByCommitScreen).
 
   These models keep an *index*: an approved content snapshot per mark_key.
   Three contents exist per entry:
@@ -46,10 +46,10 @@ local persistence = require('vgit.features.screens.IndexedReviewPersistence')
       by-commit: subject_hash:filepath — rebase-stable)
 ]]
 
-local IndexedBaseReviewModel = Object:extend()
+local ReviewModel = Object:extend()
 
 -- Create a status object that mimics GitStatus for display in list views
-function IndexedBaseReviewModel.create_status(filepath, file_status, old_filepath)
+function ReviewModel.create_status(filepath, file_status, old_filepath)
   local filetype = fs.detect_filetype(filepath)
   local status_char = file_status or 'M'
 
@@ -80,7 +80,7 @@ function IndexedBaseReviewModel.create_status(filepath, file_status, old_filepat
   }
 end
 
-function IndexedBaseReviewModel:constructor(opts)
+function ReviewModel:constructor(opts)
   return {
     state = {
       id = nil,
@@ -100,11 +100,11 @@ function IndexedBaseReviewModel:constructor(opts)
   }
 end
 
-function IndexedBaseReviewModel:get_layout_type()
+function ReviewModel:get_layout_type()
   return self.state.layout_type
 end
 
-function IndexedBaseReviewModel:get_review_state()
+function ReviewModel:get_review_state()
   return self.review_state
 end
 
@@ -113,7 +113,7 @@ end
 -- which stored review covers HEAD's commits (rebase-stable) before falling
 -- back to topology, so the review follows the stack across rebases.
 -- Returns branch_name, repo_name, err.
-function IndexedBaseReviewModel:resolve_branch_name(reponame, base_branch)
+function ReviewModel:resolve_branch_name(reponame, base_branch)
   local repo_name = git_repo.get_name(reponame)
   local branch_name, err = git_branch.current_persistent(reponame, function()
     return persistence.branch_by_subjects(repo_name, git_branch.head_subject_hashes(reponame, base_branch))
@@ -123,7 +123,7 @@ end
 
 -- A trunk review (base = origin/<branch key>) covers exactly the unpushed
 -- trunk commits; count them so the title can say so. No-op for other reviews.
-function IndexedBaseReviewModel:resolve_unpushed_count(reponame)
+function ReviewModel:resolve_unpushed_count(reponame)
   self.state.unpushed_count = nil
   if self.state.base_branch ~= 'origin/' .. (self.state.branch_name or '') then return end
 
@@ -135,7 +135,7 @@ end
 -- the base it's diffed against. A trunk review also shows how many unpushed
 -- commits it covers — the branch key names the trunk there, not the ref diffed
 -- (the diff runs to HEAD, past the lagging trunk ref).
-function IndexedBaseReviewModel:get_list_title()
+function ReviewModel:get_list_title()
   local count = self.state.unpushed_count
   if count then
     local plural = count == 1 and '' or 's'
@@ -144,26 +144,26 @@ function IndexedBaseReviewModel:get_list_title()
   return string.format('%s (vs %s)', self.state.branch_name, self.state.base_branch)
 end
 
-function IndexedBaseReviewModel:set_entry_id(id)
+function ReviewModel:set_entry_id(id)
   self.state.id = id
 end
 
-function IndexedBaseReviewModel:get_entry(id)
+function ReviewModel:get_entry(id)
   if id then self.state.id = id end
   return self.state.list_entries[self.state.id]
 end
 
-function IndexedBaseReviewModel:get_entries()
+function ReviewModel:get_entries()
   return self.state.entries
 end
 
-function IndexedBaseReviewModel:get_filepath()
+function ReviewModel:get_filepath()
   local entry = self:get_entry()
   if not entry then return nil end
   return entry.filepath
 end
 
-function IndexedBaseReviewModel:get_abs_filepath()
+function ReviewModel:get_abs_filepath()
   local reponame = self.state.reponame
   local filepath = self:get_filepath()
   if not filepath then return nil end
@@ -171,24 +171,24 @@ function IndexedBaseReviewModel:get_abs_filepath()
   return string.format('%s/%s', reponame, filepath)
 end
 
-function IndexedBaseReviewModel:get_filetype()
+function ReviewModel:get_filetype()
   local entry = self:get_entry()
   if not entry then return nil end
   return entry.status.filetype
 end
 
 -- Get mark key for an entry (by-file: filepath; by-commit overrides)
-function IndexedBaseReviewModel:get_mark_key(entry)
+function ReviewModel:get_mark_key(entry)
   return entry.filepath
 end
 
 -- Store fetched contents for an entry_key
-function IndexedBaseReviewModel:set_contents(entry_key, contents)
+function ReviewModel:set_contents(entry_key, contents)
   self.state.contents[entry_key] = contents
 end
 
 -- Get contents for an entry, fetching lazily if the preload missed it
-function IndexedBaseReviewModel:get_contents(entry)
+function ReviewModel:get_contents(entry)
   local entry_key = self:get_entry_key(entry)
   local contents = self.state.contents[entry_key]
   if contents then return contents end
@@ -215,7 +215,7 @@ end
 -- replaces the stored one, so this runs once per base change. Records
 -- without base_lines (written before bases were stored) can't be rebased
 -- and are returned as-is.
-function IndexedBaseReviewModel:get_reconciled_record(mark_key, contents)
+function ReviewModel:get_reconciled_record(mark_key, contents)
   local record = self.review_state and self.review_state:get_approved(mark_key)
   if not record or not contents then return record end
   if not record.base_lines then return record end
@@ -247,7 +247,7 @@ end
 -- Categorize an entry: does it have seen content (approved != base) and/or
 -- unseen content (approved != current)? Cached per entry_key; invalidated
 -- when the entry's mark_key index changes.
-function IndexedBaseReviewModel:get_seen_flags(entry_key, mark_key)
+function ReviewModel:get_seen_flags(entry_key, mark_key)
   local cached = self.state.seen_flags[entry_key]
   if cached then return cached end
 
@@ -277,7 +277,7 @@ local function diff_cache_key(self, entry)
 end
 
 -- Build the Diff rendering hunks against lines and cache it for entry
-function IndexedBaseReviewModel:cache_diff(entry, hunks, lines, opts)
+function ReviewModel:cache_diff(entry, hunks, lines, opts)
   local diff = Diff():generate(hunks, lines, self:get_layout_type(), opts)
   diff.entry_type = entry.type
   diff.mark_key = self:get_mark_key(entry)
@@ -288,7 +288,7 @@ end
 -- Get the diff for an entry:
 --   unseen: diff(approved-or-base -> current), rendered on current content
 --   seen:   diff(base -> approved), rendered on approved content
-function IndexedBaseReviewModel:get_diff_for(entry)
+function ReviewModel:get_diff_for(entry)
   local cached = self.state.diffs[diff_cache_key(self, entry)]
   if cached then return cached end
 
@@ -320,14 +320,14 @@ function IndexedBaseReviewModel:get_diff_for(entry)
   return self:cache_diff(entry, hunks, new_lines)
 end
 
-function IndexedBaseReviewModel:get_diff()
+function ReviewModel:get_diff()
   local entry = self:get_entry()
   if not entry then return nil, { 'entry not found' } end
   return self:get_diff_for(entry)
 end
 
 -- Drop cached diffs and categorization for every entry deriving from mark_key
-function IndexedBaseReviewModel:invalidate_mark_key(mark_key)
+function ReviewModel:invalidate_mark_key(mark_key)
   local entries = self.state.mark_key_entries[mark_key]
   if not entries then return end
 
@@ -364,7 +364,7 @@ end
 -- Mark hunks (or selected rows) of the current unseen diff as seen: apply
 -- them onto the approved snapshot. selections: array of
 -- { index = hunk index, rows = set of row indices or nil for the whole hunk }.
-function IndexedBaseReviewModel:mark_selections(entry, selections)
+function ReviewModel:mark_selections(entry, selections)
   if not self.review_state or entry.type ~= 'unseen' then return end
 
   local diff = self:get_diff_for(entry)
@@ -397,7 +397,7 @@ end
 
 -- Unmark hunks (or selected rows) of the current seen diff: reverse-apply
 -- them, rolling the approved snapshot back toward base.
-function IndexedBaseReviewModel:unmark_selections(entry, selections)
+function ReviewModel:unmark_selections(entry, selections)
   if not self.review_state or entry.type ~= 'seen' then return end
 
   local mark_key = self:get_mark_key(entry)
@@ -429,7 +429,7 @@ function IndexedBaseReviewModel:unmark_selections(entry, selections)
 end
 
 -- Mark a whole file seen: approved := current
-function IndexedBaseReviewModel:mark_file(entry)
+function ReviewModel:mark_file(entry)
   if not self.review_state then return end
 
   local contents = self:get_contents(entry)
@@ -443,7 +443,7 @@ function IndexedBaseReviewModel:mark_file(entry)
 end
 
 -- Unmark a whole file: approved := base
-function IndexedBaseReviewModel:unmark_file(entry)
+function ReviewModel:unmark_file(entry)
   if not self.review_state then return end
 
   local mark_key = self:get_mark_key(entry)
@@ -453,7 +453,7 @@ function IndexedBaseReviewModel:unmark_file(entry)
   self:rebuild_entries()
 end
 
-function IndexedBaseReviewModel:reset_marks()
+function ReviewModel:reset_marks()
   if not self.review_state then return end
   self.review_state:reset()
   self.state.diffs = {}
@@ -462,24 +462,24 @@ function IndexedBaseReviewModel:reset_marks()
 end
 
 -- Abstract methods - subclasses must implement
-function IndexedBaseReviewModel:get_entry_key(entry)
+function ReviewModel:get_entry_key(entry)
   error('get_entry_key must be implemented by subclass')
 end
 
-function IndexedBaseReviewModel:get_review_type()
+function ReviewModel:get_review_type()
   error('get_review_type must be implemented by subclass')
 end
 
-function IndexedBaseReviewModel:fetch(base_branch_arg)
+function ReviewModel:fetch(base_branch_arg)
   error('fetch must be implemented by subclass')
 end
 
-function IndexedBaseReviewModel:rebuild_entries()
+function ReviewModel:rebuild_entries()
   error('rebuild_entries must be implemented by subclass')
 end
 
-function IndexedBaseReviewModel:load_contents(entry)
+function ReviewModel:load_contents(entry)
   error('load_contents must be implemented by subclass')
 end
 
-return IndexedBaseReviewModel
+return ReviewModel

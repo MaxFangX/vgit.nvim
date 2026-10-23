@@ -1,13 +1,13 @@
-local IndexedReviewState = require('vgit.features.screens.IndexedReviewState')
-local IndexedBaseReviewModel = require('vgit.features.screens.IndexedBaseReviewModel')
+local ReviewState = require('vgit.features.screens.ReviewState')
+local ReviewModel = require('vgit.features.screens.ReviewModel')
 
 local eq = assert.are.same
 
 -- Minimal concrete model: contents are injected directly, entries are static.
-local TestModel = IndexedBaseReviewModel:extend()
+local TestModel = ReviewModel:extend()
 
 function TestModel:constructor(opts)
-  return IndexedBaseReviewModel.constructor(self, opts)
+  return ReviewModel.constructor(self, opts)
 end
 
 function TestModel:get_entry_key(entry)
@@ -25,7 +25,7 @@ local FILE = 'foo.lua'
 local function make_model(contents)
   local model = TestModel({ layout_type = 'unified' })
   model.state.reponame = '.'
-  model.review_state = IndexedReviewState({ review_type = 'by_file_indexed' })
+  model.review_state = ReviewState({ review_type = 'by_file_indexed' })
   model:set_contents(FILE, contents)
   return model
 end
@@ -38,10 +38,10 @@ local function seen_entry()
   return { filepath = FILE, type = 'seen' }
 end
 
-describe('IndexedBaseReviewModel reconcile:', function()
+describe('ReviewModel reconcile:', function()
   before_each(function()
     -- state_store is module-global and keyed by branch/type; reset between tests
-    IndexedReviewState({ review_type = 'by_file_indexed' }):reset()
+    ReviewState({ review_type = 'by_file_indexed' }):reset()
   end)
 
   it('rebases the approved snapshot when the base gains unrelated changes', function()

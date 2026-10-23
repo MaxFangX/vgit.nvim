@@ -3,11 +3,11 @@ local git_repo = require('vgit.git.git_repo')
 local git_show = require('vgit.git.git_show')
 local git_branch = require('vgit.git.git_branch')
 local jj = require('vgit.git.jj')
-local IndexedReviewState = require('vgit.features.screens.IndexedReviewState')
-local IndexedBaseReviewModel = require('vgit.features.screens.IndexedBaseReviewModel')
+local ReviewState = require('vgit.features.screens.ReviewState')
+local ReviewModel = require('vgit.features.screens.ReviewModel')
 
 --[[
-  Indexed by-file review model. Each entry is a file diffed cumulatively from
+  By-file review model. Each entry is a file diffed cumulatively from
   the merge-base to HEAD. Contents (merge-base and HEAD versions per file)
   are preloaded via one batched `git cat-file`; all diffs derive from those
   in-process.
@@ -19,10 +19,10 @@ local IndexedBaseReviewModel = require('vgit.features.screens.IndexedBaseReviewM
 -- HEAD) pair, so a move of either starts a fresh cache.
 local session_contents = { id = nil, contents = {} }
 
-local Model = IndexedBaseReviewModel:extend()
+local Model = ReviewModel:extend()
 
 function Model:constructor(opts)
-  local base = IndexedBaseReviewModel.constructor(self, opts)
+  local base = ReviewModel.constructor(self, opts)
   base.state.changed_files = {}
   return base
 end
@@ -101,7 +101,7 @@ function Model:fetch(base_branch_arg)
   end
 
   -- Initialize or restore the index
-  self.review_state = IndexedReviewState({
+  self.review_state = ReviewState({
     base_branch = base_branch,
     branch_name = branch_name,
     review_type = self:get_review_type(),
@@ -197,7 +197,7 @@ function Model:rebuild_entries()
   local seen_files = {}
 
   for _, file in ipairs(changed_files) do
-    local status = IndexedBaseReviewModel.create_status(file.filepath, file.status, file.old_filepath)
+    local status = ReviewModel.create_status(file.filepath, file.status, file.old_filepath)
     local flags = self:get_seen_flags(file.filepath, file.filepath)
 
     if flags.has_unseen then

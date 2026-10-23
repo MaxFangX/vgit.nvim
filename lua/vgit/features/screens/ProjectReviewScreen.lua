@@ -16,9 +16,9 @@ local file_navigation = require('vgit.features.screens.file_navigation')
 local visual_selection = require('vgit.features.screens.visual_selection')
 
 --[[
-  IndexedReviewScreen is the base class for the indexed review screens
-  (IndexedFileReviewScreen and IndexedCommitReviewScreen). Marks are edits
-  to an approved content snapshot (see IndexedBaseReviewModel), so hunk
+  ProjectReviewScreen is the base class for the review screens
+  (ProjectReviewByFileScreen and ProjectReviewByCommitScreen). Marks are edits
+  to an approved content snapshot (see ReviewModel), so hunk
   indices in a section shift as hunks are marked, and s/u also work on visual
   selections (line-level marking, current pane only in split layout).
 
@@ -27,14 +27,14 @@ local visual_selection = require('vgit.features.screens.visual_selection')
     - Set self.setting in constructor
 ]]
 
-local IndexedReviewScreen = Object:extend()
+local ProjectReviewScreen = Object:extend()
 
-function IndexedReviewScreen:constructor(opts)
+function ProjectReviewScreen:constructor(opts)
   opts = opts or {}
   local scene = Scene()
 
   return {
-    name = 'Indexed Review Screen',
+    name = 'Project Review Screen',
     scene = scene,
     model = nil,      -- Set by subclass
     setting = nil,    -- Set by subclass
@@ -49,14 +49,14 @@ function IndexedReviewScreen:constructor(opts)
 end
 
 -- Update commit message view if present (scheduled to escape fast event context)
-function IndexedReviewScreen:update_commit_message()
+function ProjectReviewScreen:update_commit_message()
   if not self.commit_message_view then return end
   local view = self.commit_message_view
   vim.schedule(function() view:render() end)
 end
 
 -- Initialize views (called by subclass after setting model and setting)
-function IndexedReviewScreen:init_views(list_plot, diff_plot)
+function ProjectReviewScreen:init_views(list_plot, diff_plot)
   local model = self.model
   local setting = self.setting
 
@@ -97,19 +97,19 @@ function IndexedReviewScreen:init_views(list_plot, diff_plot)
   })
 end
 
-function IndexedReviewScreen:move_to(query_fn)
+function ProjectReviewScreen:move_to(query_fn)
   return self.list_view:move_to(query_fn)
 end
 
-function IndexedReviewScreen:get_mark_at_cursor()
+function ProjectReviewScreen:get_mark_at_cursor()
   return self.diff_view:get_cursor_mark_position()
 end
 
 -- Returns (hunk_index, total_hunks) for the cursor position in the current
--- entry's diff. Indexed diffs are never filtered, so the cursor index maps
+-- entry's diff. Diffs are never filtered, so the cursor index maps
 -- straight onto diff.hunks. Returns (nil, 0) on hunkless diffs (identical
 -- content, e.g. a marked pure rename) - callers fall back to file-level ops.
-function IndexedReviewScreen:get_current_mark_index()
+function ProjectReviewScreen:get_current_mark_index()
   loop.free_textlock()
   local diff = self.model:get_diff()
   if not diff or not diff.marks or #diff.marks == 0 then return nil, 0 end
@@ -120,7 +120,7 @@ function IndexedReviewScreen:get_current_mark_index()
   return index, #diff.marks
 end
 
-function IndexedReviewScreen:move_to_next_file()
+function ProjectReviewScreen:move_to_next_file()
   -- Drop keypresses while a navigation is mid-flight (see jump_section) —
   -- falling through to lnum-based navigation would read a stale cursor.
   if self._navigating then return nil end
@@ -153,7 +153,7 @@ function IndexedReviewScreen:move_to_next_file()
   return nil
 end
 
-function IndexedReviewScreen:move_to_prev_file()
+function ProjectReviewScreen:move_to_prev_file()
   if self._navigating then return nil end
   loop.free_textlock()
 
@@ -185,7 +185,7 @@ function IndexedReviewScreen:move_to_prev_file()
 end
 
 -- Point the diff pane at list_item and align to its first (next) / last (prev) hunk.
-function IndexedReviewScreen:focus_list_item_in_diff(list_item, direction)
+function ProjectReviewScreen:focus_list_item_in_diff(list_item, direction)
   self.model:set_entry_id(list_item.id)
   self.diff_view:render()
   self.diff_view:move_to_hunk(direction == 'next' and 1 or 0, 'smart')
@@ -193,7 +193,7 @@ end
 
 -- Move the list cursor to the adjacent file (wraps) and align the diff to its
 -- first hunk (next) or last hunk (prev).
-function IndexedReviewScreen:move_to_adjacent_file(direction)
+function ProjectReviewScreen:move_to_adjacent_file(direction)
   local list_item = direction == 'next' and self:move_to_next_file() or self:move_to_prev_file()
   if list_item then self:focus_list_item_in_diff(list_item, direction) end
 end
@@ -201,7 +201,7 @@ end
 -- J/K in the diff pane: jump to the last (next) / first (prev) hunk in the
 -- current file. If already on that hunk, cross into the next / previous file's
 -- first / last hunk.
-function IndexedReviewScreen:jump_to_file_edge(direction)
+function ProjectReviewScreen:jump_to_file_edge(direction)
   -- Skip if we're in the middle of a mark operation
   if self._marking then return end
 
@@ -214,14 +214,14 @@ function IndexedReviewScreen:jump_to_file_edge(direction)
   self.diff_view:move_to_hunk(direction == 'next' and 0 or 1, 'smart')
 end
 
-function IndexedReviewScreen:scroll_list_to_top()
+function ProjectReviewScreen:scroll_list_to_top()
   local component = self.list_view.scene:get('list')
   component:call(function()
     vim.fn.winrestview({ topline = 1 })
   end)
 end
 
-function IndexedReviewScreen:scroll_list_to_bottom()
+function ProjectReviewScreen:scroll_list_to_bottom()
   local component = self.list_view.scene:get('list')
   component:call(function()
     local line_count = vim.fn.line('$')
@@ -246,7 +246,7 @@ end
 -- cursor is on a header (folder, commit, or section) rather than a file —
 -- callers use that to land on the first file under the header (rather than
 -- +1 past it) when going next.
-function IndexedReviewScreen:get_current_file_index(all_files)
+function ProjectReviewScreen:get_current_file_index(all_files)
   local current_item = self.list_view:get_current_list_item()
   if not current_item then return nil end
 
@@ -295,7 +295,7 @@ end
 -- Handle navigation that involves commit expansion/collapse and folder expansion
 -- direction: 'prev' or 'next'
 -- Returns (item, wrapped) if handled, (nil, nil) if should fall back to standard navigation
-function IndexedReviewScreen:navigate_commit_aware(direction)
+function ProjectReviewScreen:navigate_commit_aware(direction)
   if not self.list_view.get_entries then return nil end
 
   local entries = self.list_view:get_entries()
@@ -328,7 +328,7 @@ end
 
 -- Switch to the commit owning target_info (if needed), expand its folders, and
 -- move the list cursor onto that file. Returns the list_item, or nil.
-function IndexedReviewScreen:goto_logical_file(target_info)
+function ProjectReviewScreen:goto_logical_file(target_info)
   self._navigating = true
 
   -- Change active commit if needed (by-commit mode only)
@@ -351,7 +351,7 @@ function IndexedReviewScreen:goto_logical_file(target_info)
 end
 
 -- Navigate to a specific file by ID, expanding parent folders if needed
-function IndexedReviewScreen:navigate_to_file_by_id(file_id, commit_hash)
+function ProjectReviewScreen:navigate_to_file_by_id(file_id, commit_hash)
   local component = self.list_view.scene:get('list')
 
   local function find_and_move()
@@ -374,7 +374,7 @@ function IndexedReviewScreen:navigate_to_file_by_id(file_id, commit_hash)
 end
 
 -- Expand all parent folders for a file within a commit
-function IndexedReviewScreen:expand_folders_for_file(file_id, commit_hash)
+function ProjectReviewScreen:expand_folders_for_file(file_id, commit_hash)
   local folds = self.list_view.state.folds
   if not folds then return false end
 
@@ -424,7 +424,7 @@ end
 -- Find adjacent files in a section (for navigation after mark/unmark).
 -- Returns next_file, prev_file, first_file as {filepath, commit_hash} tables or nil.
 -- first_file is used for wrap-around when reaching end of section.
-function IndexedReviewScreen:find_adjacent_files(target_section, current_filepath, current_commit)
+function ProjectReviewScreen:find_adjacent_files(target_section, current_filepath, current_commit)
   if not self.list_view.get_entries then return nil, nil, nil end
 
   local entries = self.list_view:get_entries()
@@ -439,7 +439,7 @@ end
 -- J/K in the list pane. By-commit jumps to the adjacent commit; by-file jumps
 -- between crate-level folder headings (see
 -- vgit.ui.views.StatusListView.section_headings for the rule).
-function IndexedReviewScreen:jump_section(direction)
+function ProjectReviewScreen:jump_section(direction)
   -- Drop keypresses while a navigation or mark is mid-flight: its commit
   -- expand/collapse has re-rendered the list but not yet repositioned the
   -- cursor, so reading the cursor now resolves to the wrong file.
@@ -471,7 +471,7 @@ end
 -- J/K in the by-commit list pane: jump to the next commit's first file ('next')
 -- or the previous commit's last file ('prev'), regardless of where in the
 -- current commit the cursor sits. Wraps around.
-function IndexedReviewScreen:jump_to_adjacent_commit(direction)
+function ProjectReviewScreen:jump_to_adjacent_commit(direction)
   loop.free_textlock()
 
   local entries = self.list_view:get_entries()
@@ -499,7 +499,7 @@ end
 
 -- Move to an entry, expanding its commit if needed
 -- commit_message: match by commit message (stable across rebases) instead of hash
-function IndexedReviewScreen:move_to_entry_expanding_commit(filepath, commit_hash, entry_type, commit_message)
+function ProjectReviewScreen:move_to_entry_expanding_commit(filepath, commit_hash, entry_type, commit_message)
   if not self.list_view.get_entries then return nil end
 
   local entries = self.list_view:get_entries()
@@ -552,7 +552,7 @@ function IndexedReviewScreen:move_to_entry_expanding_commit(filepath, commit_has
   return nil
 end
 
-function IndexedReviewScreen:next_hunk()
+function ProjectReviewScreen:next_hunk()
   -- Skip if we're in the middle of a mark operation
   if self._marking then return end
 
@@ -574,7 +574,7 @@ function IndexedReviewScreen:next_hunk()
   end
 end
 
-function IndexedReviewScreen:prev_hunk()
+function ProjectReviewScreen:prev_hunk()
   -- Skip if we're in the middle of a mark operation
   if self._marking then return end
 
@@ -597,7 +597,7 @@ function IndexedReviewScreen:prev_hunk()
 end
 
 -- Position the list cursor on a specific file (by filepath, optional commit_hash, and entry type)
-function IndexedReviewScreen:move_list_cursor_to_file(filepath, commit_hash, entry_type)
+function ProjectReviewScreen:move_list_cursor_to_file(filepath, commit_hash, entry_type)
   -- For CommitListView, expand the correct commit first
   if self.list_view.get_entries then
     self:move_to_entry_expanding_commit(filepath, commit_hash, entry_type)
@@ -627,7 +627,7 @@ end
 --   2. Next file in section (first hunk)
 --   3. Wrap to first file in section
 --   4. Section complete - stay on current file (now in opposite section)
-function IndexedReviewScreen:move_to_next_target(target_entry_type, filepath, commit_hash, from_top, next_file, first_file)
+function ProjectReviewScreen:move_to_next_target(target_entry_type, filepath, commit_hash, from_top, next_file, first_file)
   local hunk_alignment = 'smart'
 
   -- 1. Same file, same section: go to the first hunk past the marked region.
@@ -691,7 +691,7 @@ end
 -- Falls back to file-level ops on hunkless diffs (e.g. a marked pure rename).
 -- Serialize mark operations. The lock always clears, even if fn errors --
 -- a dead coroutine must not leave the screen ignoring input forever.
-function IndexedReviewScreen:with_mark_lock(fn)
+function ProjectReviewScreen:with_mark_lock(fn)
   if self._marking then return end
   self._marking = true
   local ok, err = pcall(fn)
@@ -699,7 +699,7 @@ function IndexedReviewScreen:with_mark_lock(fn)
   if not ok then error(err, 0) end
 end
 
-function IndexedReviewScreen:apply_seen_change(mark_as_seen, selections)
+function ProjectReviewScreen:apply_seen_change(mark_as_seen, selections)
   self:with_mark_lock(function()
     local entry = self.model:get_entry()
     if not entry then return end
@@ -757,36 +757,36 @@ function IndexedReviewScreen:apply_seen_change(mark_as_seen, selections)
 end
 
 -- Build the selection for the hunk under the cursor, or nil for hunkless diffs
-function IndexedReviewScreen:selection_at_cursor()
+function ProjectReviewScreen:selection_at_cursor()
   local hunk_index = self:get_current_mark_index()
   if not hunk_index then return nil end
   return { { index = hunk_index, rows = nil } }
 end
 
-function IndexedReviewScreen:mark_hunk()
+function ProjectReviewScreen:mark_hunk()
   self:apply_seen_change(true, self:selection_at_cursor())
 end
 
-function IndexedReviewScreen:unmark_hunk()
+function ProjectReviewScreen:unmark_hunk()
   self:apply_seen_change(false, self:selection_at_cursor())
 end
 
 -- Map a visual line range in the diff buffer to per-hunk row selections;
 -- a selected row takes the new side of its pair.
-function IndexedReviewScreen:selections_for_range(top, bot)
+function ProjectReviewScreen:selections_for_range(top, bot)
   loop.free_textlock()
   return visual_selection.for_range(self.model:get_diff(), self.model:get_layout_type(), top, bot)
 end
 
 -- Unified mark/unmark file operation
 -- mark_as_seen: true = mark all hunks as seen, false = unmark all hunks
-function IndexedReviewScreen:set_file_seen_state(mark_as_seen)
+function ProjectReviewScreen:set_file_seen_state(mark_as_seen)
   self:with_mark_lock(function()
     self:set_file_seen_state_locked(mark_as_seen)
   end)
 end
 
-function IndexedReviewScreen:set_file_seen_state_locked(mark_as_seen)
+function ProjectReviewScreen:set_file_seen_state_locked(mark_as_seen)
   local entry = self.model:get_entry()
   if not entry then return end
 
@@ -861,15 +861,15 @@ function IndexedReviewScreen:set_file_seen_state_locked(mark_as_seen)
   end
 end
 
-function IndexedReviewScreen:mark_file()
+function ProjectReviewScreen:mark_file()
   self:set_file_seen_state(true)
 end
 
-function IndexedReviewScreen:unmark_file()
+function ProjectReviewScreen:unmark_file()
   self:set_file_seen_state(false)
 end
 
-function IndexedReviewScreen:reset_marks()
+function ProjectReviewScreen:reset_marks()
   if self._marking then return end
 
   loop.free_textlock()
@@ -884,7 +884,7 @@ function IndexedReviewScreen:reset_marks()
   end)
 end
 
-function IndexedReviewScreen:toggle_focus()
+function ProjectReviewScreen:toggle_focus()
   local list_component = self.scene:get('list')
   local diff_component = self.scene:get('current')
 
@@ -897,7 +897,7 @@ function IndexedReviewScreen:toggle_focus()
   end
 end
 
-function IndexedReviewScreen:handle_list_move()
+function ProjectReviewScreen:handle_list_move()
   -- Skip if we're in the middle of a mark operation
   if self._marking then return end
 
@@ -926,7 +926,7 @@ end
 -- toggles that commit's expansion (BaseListView's raw fold flip is
 -- reconciled by the active-commit render); section headers and folders keep
 -- the plain fold toggle BaseListView already applied.
-function IndexedReviewScreen:handle_list_enter(item)
+function ProjectReviewScreen:handle_list_enter(item)
   if item.id then return self:open_file() end
 
   local is_commit_header = item.commit_hash ~= nil and item.node_type == nil
@@ -961,7 +961,7 @@ end
 
 -- Ensure at least one file is visible (expand first commit if needed)
 -- Prefers Unseen commits to bias towards action
-function IndexedReviewScreen:ensure_visible_file()
+function ProjectReviewScreen:ensure_visible_file()
   if not self.list_view.get_entries then return end
 
   -- Check if any file is currently visible
@@ -1003,7 +1003,7 @@ function IndexedReviewScreen:ensure_visible_file()
   end
 end
 
-function IndexedReviewScreen:open_file()
+function ProjectReviewScreen:open_file()
   local filepath = self.model:get_abs_filepath()
   if not filepath then return end
 
@@ -1041,7 +1041,7 @@ function IndexedReviewScreen:open_file()
   event.emit('VGitSync')
 end
 
-function IndexedReviewScreen:render(on_list_render)
+function ProjectReviewScreen:render(on_list_render)
   self.list_view:render()
   if on_list_render then on_list_render() end
 
@@ -1055,7 +1055,7 @@ function IndexedReviewScreen:render(on_list_render)
   self.diff_view:move_to_hunk(nil, hunk_alignment)
 end
 
-function IndexedReviewScreen:setup_list_keymaps()
+function ProjectReviewScreen:setup_list_keymaps()
   local keymaps = self.setting:get('keymaps')
 
   self.list_view:set_keymap({
@@ -1125,7 +1125,7 @@ function IndexedReviewScreen:setup_list_keymaps()
   })
 end
 
-function IndexedReviewScreen:setup_diff_keymaps()
+function ProjectReviewScreen:setup_diff_keymaps()
   local keymaps = self.setting:get('keymaps')
 
   local handlers = {
@@ -1237,7 +1237,7 @@ end
 -- before deferring to a coroutine. In split layout only the current (right)
 -- pane accepts selections; the previous pane notifies instead (its rows show
 -- old content, and every change is addressable from the current pane).
-function IndexedReviewScreen:setup_visual_keymaps(keymaps)
+function ProjectReviewScreen:setup_visual_keymaps(keymaps)
   local current_component = self.scene:get('current')
 
   -- Keep the debounced coroutines (not the wrappers) so destroy can close them
@@ -1279,7 +1279,7 @@ function IndexedReviewScreen:setup_visual_keymaps(keymaps)
 end
 
 -- Coroutine body for visual s/u once the range has been captured
-function IndexedReviewScreen:apply_visual_seen_change_range(mark_as_seen, top, bot)
+function ProjectReviewScreen:apply_visual_seen_change_range(mark_as_seen, top, bot)
   local selections = self:selections_for_range(top, bot)
   if not selections then
     self.diff_view:notify('No hunks in selection')
@@ -1289,7 +1289,7 @@ function IndexedReviewScreen:apply_visual_seen_change_range(mark_as_seen, top, b
   self:apply_seen_change(mark_as_seen, selections)
 end
 
-function IndexedReviewScreen:setup_keymaps()
+function ProjectReviewScreen:setup_keymaps()
   self:setup_list_keymaps()
   self:setup_diff_keymaps()
 end
@@ -1297,7 +1297,7 @@ end
 -- Reconfigure all width-dependent windows for a new list column width
 -- (mouse drag on the list/diff boundary, left-list layout only). Cheap:
 -- window re-plots only; content re-renders once on release.
-function IndexedReviewScreen:apply_list_width(cols)
+function ProjectReviewScreen:apply_list_width(cols)
   local total = dimensions.global_width()
   cols = math.max(20, math.min(cols, total - 40))
   if cols == self.list_cols then return end
@@ -1338,7 +1338,7 @@ end
 -- Re-render width-dependent content (void filler, message wrap height) after
 -- a drag completes, and remember the width for screens opened later this
 -- session.
-function IndexedReviewScreen:finish_list_resize()
+function ProjectReviewScreen:finish_list_resize()
   self.setting:set('list_width', self.list_cols)
 
   self.diff_view:save_viewport()
@@ -1352,7 +1352,7 @@ end
 
 -- Make the list/diff boundary mouse-draggable. Only active when the subclass
 -- plotted a left-side list (list_cols set).
-function IndexedReviewScreen:setup_drag_resize()
+function ProjectReviewScreen:setup_drag_resize()
   if not self.list_cols then return end
 
   -- The handlers arrive via vim.schedule and can race destroy(); _drag_detach
@@ -1372,7 +1372,7 @@ function IndexedReviewScreen:setup_drag_resize()
 end
 
 -- Returns true if current buffer is in the review (triggers source line positioning)
-function IndexedReviewScreen:focus_relative_buffer_entry(buffer)
+function ProjectReviewScreen:focus_relative_buffer_entry(buffer)
   local review_state = self.model:get_review_state()
   local last_section, last_filepath, last_commit_message = review_state:get_position()
 
@@ -1419,7 +1419,7 @@ function IndexedReviewScreen:focus_relative_buffer_entry(buffer)
   return false
 end
 
-function IndexedReviewScreen:create(args)
+function ProjectReviewScreen:create(args)
   args = args or {}
   local base_branch = args[1]
   local buffer = Buffer(0)
@@ -1511,7 +1511,7 @@ function IndexedReviewScreen:create(args)
   return true
 end
 
-function IndexedReviewScreen:on_quit()
+function ProjectReviewScreen:on_quit()
   local is_diff_focused = (self._current_focus or 'diff') == 'diff'
 
   -- State is saved by destroy() below
@@ -1556,7 +1556,7 @@ function IndexedReviewScreen:on_quit()
   return true
 end
 
-function IndexedReviewScreen:destroy()
+function ProjectReviewScreen:destroy()
   -- Quit paths can trigger destroy several times (on_quit, BufWinLeave,
   -- QuitPre); save and tear down only once.
   if self._destroyed then return end
@@ -1594,4 +1594,4 @@ function IndexedReviewScreen:destroy()
   self.scene:destroy()
 end
 
-return IndexedReviewScreen
+return ProjectReviewScreen

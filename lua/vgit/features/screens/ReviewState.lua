@@ -1,12 +1,12 @@
 local loop = require('vgit.core.loop')
 local Object = require('vgit.core.Object')
 local console = require('vgit.core.console')
-local persistence = require('vgit.features.screens.IndexedReviewPersistence')
+local persistence = require('vgit.features.screens.ReviewPersistence')
 local change_id_rekey = require('vgit.features.screens.change_id_rekey')
 
 --[[
-  IndexedReviewState manages the "index" for indexed review workflows: an
-  approved content snapshot per mark_key (the git-index analogy — approved is
+  ReviewState manages the "index" for review workflows: an approved
+  content snapshot per mark_key (the git-index analogy — approved is
   to base/current what the index is to HEAD/worktree).
 
   State is keyed by (base_branch, branch_name, review_type) where review_type
@@ -20,7 +20,7 @@ local change_id_rekey = require('vgit.features.screens.change_id_rekey')
   jj change id of its commit when known (see change_id_rekey).
 ]]
 
-local IndexedReviewState = Object:extend()
+local ReviewState = Object:extend()
 
 -- Write-behind delay: a burst of marks coalesces into one save shortly after
 -- it settles, so a crash or kill mid-review loses at most this much work.
@@ -29,7 +29,7 @@ local SAVE_DEBOUNCE_MS = 1000
 -- Global state storage (persists across screen instances within a Vim session)
 local state_store = {}
 
-function IndexedReviewState:constructor(opts)
+function ReviewState:constructor(opts)
   opts = opts or {}
 
   return {
@@ -42,7 +42,7 @@ function IndexedReviewState:constructor(opts)
   }
 end
 
-function IndexedReviewState:get_state_key()
+function ReviewState:get_state_key()
   return string.format('%s|%s|%s', self.base_branch or '', self.branch_name or '', self.review_type)
 end
 
@@ -85,7 +85,7 @@ end
 -- session, and re-entering a review skips re-reading the object store,
 -- unless the state file's mtime shows another session wrote it since we
 -- last touched it.
-function IndexedReviewState:load_from_disk()
+function ReviewState:load_from_disk()
   if not self.repo_name or self._loaded then return end
   self._loaded = true
 
@@ -144,19 +144,19 @@ end
 
 -- Get the approved snapshot for a mark_key: { lines, deleted, base_lines }
 -- or nil (nil means approved == base, i.e. nothing seen)
-function IndexedReviewState:get_approved(mark_key)
+function ReviewState:get_approved(mark_key)
   return get_state(self).approved[mark_key]
 end
 
 -- base_lines: the base content the approval was made against; lets the model
 -- rebase the snapshot when the base later changes (stack restructuring).
 -- Content hashes are computed lazily on save() and cached on the record.
-function IndexedReviewState:set_approved(mark_key, lines, deleted, base_lines)
+function ReviewState:set_approved(mark_key, lines, deleted, base_lines)
   get_state(self).approved[mark_key] = { lines = lines, deleted = deleted == true, base_lines = base_lines }
   self:schedule_save()
 end
 
-function IndexedReviewState:remove_approved(mark_key)
+function ReviewState:remove_approved(mark_key)
   get_state(self).approved[mark_key] = nil
   self:schedule_save()
 end
@@ -196,7 +196,7 @@ end
 -- a reworded subject, adopts matching records from other branches' reviews,
 -- and records each item's change id so records approved later carry it. See
 -- change_id_rekey.
-function IndexedReviewState:reconcile_change_ids(items)
+function ReviewState:reconcile_change_ids(items)
   local state = get_state(self)
 
   local moves = change_id_rekey.plan(items, state.approved, state.change_ids)
@@ -214,7 +214,7 @@ function IndexedReviewState:reconcile_change_ids(items)
 end
 
 -- Reset the index for the current session (everything back to unseen)
-function IndexedReviewState:reset()
+function ReviewState:reset()
   get_state(self).approved = {}
   self:schedule_save()
 end
@@ -222,7 +222,7 @@ end
 -- Store last viewed file for re-entry fallback (when current buffer is not in review)
 -- commit_message: first line of commit message (stable across rebases, unlike hash)
 -- focus: 'diff' or 'list' - which component had focus
-function IndexedReviewState:save_position(section, filepath, commit_message, focus)
+function ReviewState:save_position(section, filepath, commit_message, focus)
   get_state(self).position = {
     section = section,
     filepath = filepath,
@@ -233,7 +233,7 @@ end
 
 -- Get last viewed file for re-entry fallback
 -- Returns: section, filepath, commit_message, focus
-function IndexedReviewState:get_position()
+function ReviewState:get_position()
   local pos = get_state(self).position
   return pos.section or 'unseen', pos.filepath, pos.commit_message, pos.focus
 end
@@ -280,7 +280,7 @@ end
 
 -- Queue a write-behind save; mark mutators call this so approvals reach disk
 -- without waiting for the screen to close.
-function IndexedReviewState:schedule_save()
+function ReviewState:schedule_save()
   if not self._debounced_save then
     self._debounced_save = loop.debounce_coroutine(function() write_to_disk(self, false) end, SAVE_DEBOUNCE_MS)
   end
@@ -289,7 +289,7 @@ end
 
 -- Save state to disk now, with sweep and eviction, superseding any queued
 -- write-behind save. Position is session-only, never persisted.
-function IndexedReviewState:save()
+function ReviewState:save()
   if self._debounced_save then
     loop.close_debounced(self._debounced_save)
     self._debounced_save = nil
@@ -297,4 +297,4 @@ function IndexedReviewState:save()
   write_to_disk(self, true)
 end
 
-return IndexedReviewState
+return ReviewState

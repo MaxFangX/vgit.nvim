@@ -1,5 +1,5 @@
 -- Shared helpers for navigating between files in screen entries.
--- Used by both ProjectDiffScreen and IndexedReviewScreen so they share a
+-- Used by both ProjectDiffScreen and ProjectReviewScreen so they share a
 -- single notion of "next file in section, with wrap-around" — independent
 -- of which folders/commits are currently expanded in the list view.
 

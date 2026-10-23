@@ -1,7 +1,7 @@
 local loop = require('vgit.core.loop')
-local IndexedReviewState = require('vgit.features.screens.IndexedReviewState')
+local ReviewState = require('vgit.features.screens.ReviewState')
 local change_id_rekey = require('vgit.features.screens.change_id_rekey')
-local indexed_persistence = require('vgit.features.screens.IndexedReviewPersistence')
+local persistence = require('vgit.features.screens.ReviewPersistence')
 
 local eq = assert.are.same
 
@@ -16,8 +16,8 @@ local function run(fn)
   assert(vim.wait(5000, function() return done end, 10), 'coroutine did not finish')
 end
 
-local function indexed_state(opts)
-  return IndexedReviewState(vim.tbl_extend('force', { review_type = 'by_commit_indexed' }, opts))
+local function new_state(opts)
+  return ReviewState(vim.tbl_extend('force', { review_type = 'by_commit_indexed' }, opts))
 end
 
 local function item(key, filepath, change_id)
@@ -67,11 +67,11 @@ describe('change_id_rekey', function()
     end)
   end)
 
-  describe('IndexedReviewState:reconcile_change_ids', function()
+  describe('ReviewState:reconcile_change_ids', function()
     local cid = 'tvnuvoxmqpwrkxlsyrmzxuyokmnplwtx'
 
     it('rekeys an approved record after the subject is reworded', function()
-      local state = indexed_state({ branch_name = 'rekey-indexed', base_branch = 'origin/master' })
+      local state = new_state({ branch_name = 'rekey', base_branch = 'origin/master' })
       state:set_approved('oldsubj:src/a.lua', { 'approved' }, false, { 'base' })
       state:reconcile_change_ids({ item('oldsubj:src/a.lua', 'src/a.lua', cid) })
 
@@ -81,7 +81,7 @@ describe('change_id_rekey', function()
     end)
 
     it('keeps a record found by subject when the change id was re-derived (git rebase)', function()
-      local state = indexed_state({ branch_name = 'rebase-indexed', base_branch = 'origin/master' })
+      local state = new_state({ branch_name = 'rebase', base_branch = 'origin/master' })
       state:set_approved('subj:src/a.lua', { 'approved' }, false, { 'base' })
       state:reconcile_change_ids({ item('subj:src/a.lua', 'src/a.lua', cid) })
 
@@ -91,14 +91,14 @@ describe('change_id_rekey', function()
 
     it('rekeys a record approved in an earlier session', function()
       run(function()
-        local opts = { branch_name = 'reload-indexed', repo_name = 'repo' }
-        local before = indexed_state(vim.tbl_extend('force', opts, { base_branch = 'a' }))
+        local opts = { branch_name = 'reload', repo_name = 'repo' }
+        local before = new_state(vim.tbl_extend('force', opts, { base_branch = 'a' }))
         before:set_approved('oldsubj:src/a.lua', { 'approved' }, false, { 'base' })
         before:reconcile_change_ids({ item('oldsubj:src/a.lua', 'src/a.lua', cid) })
         before:save()
 
         -- A different base_branch is a fresh session state reading the same file
-        local after = indexed_state(vim.tbl_extend('force', opts, { base_branch = 'b' }))
+        local after = new_state(vim.tbl_extend('force', opts, { base_branch = 'b' }))
         after:load_from_disk()
         after:reconcile_change_ids({ item('newsubj:src/a.lua', 'src/a.lua', cid) })
         eq(after:get_approved('newsubj:src/a.lua').lines, { 'approved' })
@@ -112,12 +112,12 @@ describe('change_id_rekey', function()
 
     it("adopts an approved record from another branch's review of the same commit", function()
       run(function()
-        local sibling = indexed_state({ branch_name = 'pool-sibling', repo_name = 'repo' })
+        local sibling = new_state({ branch_name = 'pool-sibling', repo_name = 'repo' })
         sibling:set_approved('subj:src/a.lua', { 'approved' }, false, { 'base' })
         sibling:reconcile_change_ids({ item('subj:src/a.lua', 'src/a.lua', cid) })
         sibling:save()
 
-        local current = indexed_state({ branch_name = 'pool-current', repo_name = 'repo' })
+        local current = new_state({ branch_name = 'pool-current', repo_name = 'repo' })
         current:reconcile_change_ids({
           item('subj:src/a.lua', 'src/a.lua', cid),
           item('subj:src/b.lua', 'src/b.lua', 'unrelated'),
@@ -128,21 +128,21 @@ describe('change_id_rekey', function()
 
         -- The adopted record is now this branch's own, objects included
         current:save()
-        local data = indexed_persistence.load('repo', 'pool-current', 'by_commit_indexed')
+        local data = persistence.load('repo', 'pool-current', 'by_commit_indexed')
         local entry = data.entries['subj:src/a.lua']
         eq(entry.change_id, cid)
-        eq(indexed_persistence.read_object('repo', 'pool-current', entry.approved), { 'approved' })
+        eq(persistence.read_object('repo', 'pool-current', entry.approved), { 'approved' })
       end)
     end)
 
     it("keeps its own record over another branch's for the same commit", function()
       run(function()
-        local sibling = indexed_state({ branch_name = 'own-sibling', repo_name = 'repo' })
+        local sibling = new_state({ branch_name = 'own-sibling', repo_name = 'repo' })
         sibling:set_approved('subj:src/a.lua', { 'theirs' }, false, { 'base' })
         sibling:reconcile_change_ids({ item('subj:src/a.lua', 'src/a.lua', cid) })
         sibling:save()
 
-        local current = indexed_state({ branch_name = 'own-current', repo_name = 'repo' })
+        local current = new_state({ branch_name = 'own-current', repo_name = 'repo' })
         current:set_approved('subj:src/a.lua', { 'mine' }, false, { 'base' })
         current:reconcile_change_ids({ item('subj:src/a.lua', 'src/a.lua', cid) })
         eq(current:get_approved('subj:src/a.lua').lines, { 'mine' })

@@ -8,8 +8,8 @@ local ProjectLogsScreen = require('vgit.features.screens.ProjectLogsScreen')
 local ProjectStashScreen = require('vgit.features.screens.ProjectStashScreen')
 local ProjectCommitScreen = require('vgit.features.screens.ProjectCommitScreen')
 local ProjectCommitsScreen = require('vgit.features.screens.ProjectCommitsScreen')
-local IndexedFileReviewScreen = require('vgit.features.screens.IndexedFileReviewScreen')
-local IndexedCommitReviewScreen = require('vgit.features.screens.IndexedCommitReviewScreen')
+local ProjectReviewByFileScreen = require('vgit.features.screens.ProjectReviewByFileScreen')
+local ProjectReviewByCommitScreen = require('vgit.features.screens.ProjectReviewByCommitScreen')
 
 local screen_manager = {
   screens = {},
@@ -68,14 +68,14 @@ function screen_manager.screens.line_blame_screen()
   return line_blame_screen:create(), line_blame_screen
 end
 
-function screen_manager.screens.indexed_file_review_screen(...)
-  local indexed_file_review_screen = IndexedFileReviewScreen({ layout_type = scene_setting:get('diff_preference') })
-  return indexed_file_review_screen:create({ ... }), indexed_file_review_screen
+function screen_manager.screens.project_review_by_file_screen(...)
+  local project_review_by_file_screen = ProjectReviewByFileScreen({ layout_type = scene_setting:get('diff_preference') })
+  return project_review_by_file_screen:create({ ... }), project_review_by_file_screen
 end
 
-function screen_manager.screens.indexed_commit_review_screen(...)
-  local indexed_commit_review_screen = IndexedCommitReviewScreen({ layout_type = scene_setting:get('diff_preference') })
-  return indexed_commit_review_screen:create({ ... }), indexed_commit_review_screen
+function screen_manager.screens.project_review_by_commit_screen(...)
+  local project_review_by_commit_screen = ProjectReviewByCommitScreen({ layout_type = scene_setting:get('diff_preference') })
+  return project_review_by_commit_screen:create({ ... }), project_review_by_commit_screen
 end
 
 function screen_manager.is_screen_registered(screen_name)

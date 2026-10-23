@@ -1,7 +1,7 @@
 --[[
   Shared helpers for visual-mode line operations on a rendered diff
-  (line-level mark-seen in the indexed review screens, line-level staging in
-  the project diff screen).
+  (line-level mark-seen in the review screens, line-level staging in the
+  project diff screen).
 ]]
 
 local visual_selection = {}

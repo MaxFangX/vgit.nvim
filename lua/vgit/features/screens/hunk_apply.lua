@@ -1,7 +1,7 @@
 --[[
   hunk_apply applies GitHunks (produced by diffing two in-memory contents,
   e.g. git_hunks.live) onto line arrays. This is the patch engine behind the
-  indexed review screens: marking hunks/lines "seen" advances the approved
+  review screens: marking hunks/lines "seen" advances the approved
   snapshot by applying hunks of diff(approved -> current); unmarking rolls it
   back by reverse-applying hunks of diff(base -> approved).
 
