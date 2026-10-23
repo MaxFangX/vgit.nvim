@@ -103,35 +103,6 @@ function GitHunk:push(line)
   return self
 end
 
-local fnv1a = require('vgit.core.utils').str.fnv1a
-
--- Compute content-based identifier for this hunk.
--- Hashes diff + 5 lines of surrounding context to disambiguate identical hunks
--- within the same file (mark keys already distinguish different files).
-function GitHunk:get_content_id(file_lines, context_size)
-  if #self.diff == 0 then return 'empty' end
-
-  if file_lines and context_size and context_size > 0 then
-    local context = {}
-
-    for i = math.max(1, self.top - context_size), self.top - 1 do
-      context[#context + 1] = file_lines[i] or ''
-    end
-
-    for _, line in ipairs(self.diff) do
-      context[#context + 1] = line
-    end
-
-    for i = self.bot + 1, math.min(#file_lines, self.bot + context_size) do
-      context[#context + 1] = file_lines[i] or ''
-    end
-
-    return fnv1a(table.concat(context, '\n'))
-  end
-
-  return fnv1a(table.concat(self.diff, '\n'))
-end
-
 -- Return the inverse hunk: sides swapped, removed and added lines flipped.
 -- Forward-applying the inverse undoes the hunk. This positions better than
 -- `git apply --reverse`: git locates a patch by its old-side line numbers

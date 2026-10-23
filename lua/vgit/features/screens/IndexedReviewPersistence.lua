@@ -118,9 +118,13 @@ function IndexedReviewPersistence.sweep_objects(repo_name, branch_name)
   end
 end
 
+-- Minimum shared commit-subjects for a stored review to be considered "the review
+-- for HEAD" — guards against a coincidental one-commit overlap between branches.
+local MIN_SUBJECT_OVERLAP = 2
+
 -- Count how many of an indexed by-commit review's approved entries have a
 -- subject hash (the prefix of each entry key) present in head_subjects.
-local function indexed_subject_overlap(path, head_subjects)
+local function subject_overlap(path, head_subjects)
   local fd = io.open(path, 'r')
   if not fd then return 0, nil, 0 end
   local content = fd:read('*a')
@@ -147,15 +151,16 @@ local function indexed_subject_overlap(path, head_subjects)
   return overlap, data.branchName, data.lastUsed or 0, stored
 end
 
-local MIN_SUBJECT_OVERLAP = 2
-
--- Resolve which stored review best covers HEAD's commit subjects, like
--- ReviewStatePersistence.branch_by_subjects, but consulting both the classic
--- by_commit marks and the indexed by_commit entries. A review qualifies with
--- `MIN_SUBJECT_OVERLAP` matching subjects; below that it qualifies only if
--- *all* its stored subjects match AND they cover at least half of HEAD's
--- stack (see the classic resolver for rationale). Safe in fast event
--- contexts (libuv/io/vim.json only).
+-- Resolve which stored review (branch) best covers HEAD's current commits, keyed on
+-- commit subjects (rebase-stable, like the entry keys) so a review is followed across
+-- rebases regardless of where the branch bookmark sits. A review qualifies with
+-- `MIN_SUBJECT_OVERLAP` matching subjects; below that (a single-commit stack can
+-- otherwise never match) it qualifies only if *all* its stored subjects match AND
+-- they cover at least half of HEAD's stack — one stray subject (e.g. entries saved
+-- under a misresolved key) must not claim a larger stack away from its bookmark.
+-- Returns the qualifying branch with the most overlap (ties break toward the most
+-- recently used), or nil. Uses libuv/io/vim.json so it's safe in the fast event
+-- contexts where the branch resolver runs.
 function IndexedReviewPersistence.branch_by_subjects(repo_name, head_subjects)
   local head_count = 0
   for _ in pairs(head_subjects) do
@@ -180,9 +185,7 @@ function IndexedReviewPersistence.branch_by_subjects(repo_name, head_subjects)
     local entry, entry_type = vim.loop.fs_scandir_next(handle)
     if not entry then break end
     if entry_type == 'directory' and entry ~= 'objects' then
-      local branch_dir = state_dir .. '/' .. entry
-      consider(persistence.subject_overlap(branch_dir .. '/by_commit.json', head_subjects))
-      consider(indexed_subject_overlap(branch_dir .. '/by_commit_indexed.json', head_subjects))
+      consider(subject_overlap(state_dir .. '/' .. entry .. '/by_commit_indexed.json', head_subjects))
     end
   end
 

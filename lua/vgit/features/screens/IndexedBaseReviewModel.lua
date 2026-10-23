@@ -1,4 +1,6 @@
+local fs = require('vgit.core.fs')
 local Diff = require('vgit.core.Diff')
+local utils = require('vgit.core.utils')
 local Object = require('vgit.core.Object')
 local git_repo = require('vgit.git.git_repo')
 local git_hunks = require('vgit.git.git_hunks')
@@ -10,9 +12,8 @@ local persistence = require('vgit.features.screens.IndexedReviewPersistence')
   IndexedBaseReviewModel contains shared logic for the indexed review models
   (IndexedFileReviewScreen and IndexedCommitReviewScreen).
 
-  Unlike BaseReviewModel, which marks hunks seen by content hash, these models
-  keep an *index*: an approved content snapshot per mark_key. Three contents
-  exist per entry:
+  These models keep an *index*: an approved content snapshot per mark_key.
+  Three contents exist per entry:
 
     base     - what the review diffs against (merge-base / commit parent)
     approved - the index; absent record means approved == base
@@ -47,6 +48,38 @@ local persistence = require('vgit.features.screens.IndexedReviewPersistence')
 
 local IndexedBaseReviewModel = Object:extend()
 
+-- Create a status object that mimics GitStatus for display in list views
+function IndexedBaseReviewModel.create_status(filepath, file_status, old_filepath)
+  local filetype = fs.detect_filetype(filepath)
+  local status_char = file_status or 'M'
+
+  return {
+    id = utils.math.uuid(),
+    value = status_char .. ' ',
+    first = status_char,
+    second = ' ',
+    filepath = filepath,
+    old_filepath = old_filepath,
+    filetype = filetype,
+    is_staged = function() return false end,
+    is_unstaged = function() return true end,
+    is_unmerged = function() return false end,
+    has = function(_, s)
+      local f = s:sub(1, 1)
+      if f == '*' then return true end
+      return f == status_char
+    end,
+    has_either = function(_, s)
+      local f, sec = s:sub(1, 1), s:sub(2, 2)
+      return f == status_char or sec == ' '
+    end,
+    has_both = function(_, s)
+      local f, sec = s:sub(1, 1), s:sub(2, 2)
+      return f == status_char and sec == ' '
+    end,
+  }
+end
+
 function IndexedBaseReviewModel:constructor(opts)
   return {
     state = {
@@ -78,8 +111,7 @@ end
 -- Resolve the persistence keys for HEAD: the branch name the index is stored
 -- under, plus the repo name. For a detached jj HEAD, the branch is resolved by
 -- which stored review covers HEAD's commits (rebase-stable) before falling
--- back to topology, so the review follows the stack across rebases. Considers
--- both classic and indexed by-commit reviews.
+-- back to topology, so the review follows the stack across rebases.
 -- Returns branch_name, repo_name, err.
 function IndexedBaseReviewModel:resolve_branch_name(reponame, base_branch)
   local repo_name = git_repo.get_name(reponame)

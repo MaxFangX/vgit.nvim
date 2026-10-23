@@ -10,8 +10,8 @@ local change_id_rekey = {}
 
   Stacked branches share commits, so a (commit, file) with no state in this
   review also adopts the entry another branch's review holds for the same
-  change id. ReviewState and IndexedReviewState share these lookups, and
-  each applies the results to its own storage.
+  change id. IndexedReviewState applies the results of these lookups to
+  its storage.
 
   Subject hashes are FNV-1a hex, so a key's file path is everything after
   its first colon.

@@ -3,7 +3,6 @@ local git_repo = require('vgit.git.git_repo')
 local git_show = require('vgit.git.git_show')
 local git_branch = require('vgit.git.git_branch')
 local jj = require('vgit.git.jj')
-local ReviewState = require('vgit.features.screens.ReviewState')
 local IndexedReviewState = require('vgit.features.screens.IndexedReviewState')
 local IndexedBaseReviewModel = require('vgit.features.screens.IndexedBaseReviewModel')
 
@@ -198,7 +197,7 @@ function Model:rebuild_entries()
   local seen_files = {}
 
   for _, file in ipairs(changed_files) do
-    local status = ReviewState.create_status(file.filepath, file.status, file.old_filepath)
+    local status = IndexedBaseReviewModel.create_status(file.filepath, file.status, file.old_filepath)
     local flags = self:get_seen_flags(file.filepath, file.filepath)
 
     if flags.has_unseen then

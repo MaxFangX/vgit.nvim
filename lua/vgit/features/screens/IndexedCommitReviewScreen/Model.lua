@@ -5,7 +5,6 @@ local git_show = require('vgit.git.git_show')
 local git_branch = require('vgit.git.git_branch')
 local jj = require('vgit.git.jj')
 local change_id_rekey = require('vgit.features.screens.change_id_rekey')
-local ReviewState = require('vgit.features.screens.ReviewState')
 local IndexedReviewState = require('vgit.features.screens.IndexedReviewState')
 local IndexedBaseReviewModel = require('vgit.features.screens.IndexedBaseReviewModel')
 
@@ -15,7 +14,7 @@ local IndexedBaseReviewModel = require('vgit.features.screens.IndexedBaseReviewM
   are preloaded via one batched `git cat-file`; all diffs derive from those
   in-process.
 
-  KEYING (mirrors ProjectReviewByCommitScreen)
+  KEYING
 
   entry_key = commit_hash:filepath   (content/diff caching; hash-exact)
   mark_key  = subject_hash:filepath  (index storage; rebase-stable)
@@ -271,7 +270,7 @@ function Model:rebuild_entries()
       local mark_key = make_mark_key(commit.message, file.filepath)
       local flags = self:get_seen_flags(entry_key, mark_key)
 
-      local status = ReviewState.create_status(file.filepath, file.status, file.old_filepath)
+      local status = IndexedBaseReviewModel.create_status(file.filepath, file.status, file.old_filepath)
 
       if flags.has_unseen then
         local id = entry_id(commit.hash, file.filepath, 'unseen')

@@ -1,9 +1,7 @@
 local loop = require('vgit.core.loop')
-local ReviewState = require('vgit.features.screens.ReviewState')
 local IndexedReviewState = require('vgit.features.screens.IndexedReviewState')
 local change_id_rekey = require('vgit.features.screens.change_id_rekey')
 local indexed_persistence = require('vgit.features.screens.IndexedReviewPersistence')
-local classic_persistence = require('vgit.features.screens.ReviewStatePersistence')
 
 local eq = assert.are.same
 
@@ -20,10 +18,6 @@ end
 
 local function indexed_state(opts)
   return IndexedReviewState(vim.tbl_extend('force', { review_type = 'by_commit_indexed' }, opts))
-end
-
-local function classic_state(opts)
-  return ReviewState(vim.tbl_extend('force', { review_type = 'by_commit' }, opts))
 end
 
 local function item(key, filepath, change_id)
@@ -113,61 +107,6 @@ describe('change_id_rekey', function()
     end)
   end)
 
-  describe('ReviewState:reconcile_change_ids', function()
-    local cid = 'npktmlpzvwyrsxqkuoplmnrtwzxyvkos'
-
-    it('moves every mark under a reworded subject to the new key', function()
-      local state = classic_state({ branch_name = 'rekey-classic', base_branch = 'origin/master' })
-      state:mark_hunk('oldsubj:src/a.lua', 'c1')
-      state:mark_hunk('oldsubj:src/a.lua', 'c2')
-      state:mark_hunk('oldsubj:src/b.lua', 'c3')
-      state:reconcile_change_ids({
-        item('oldsubj:src/a.lua', 'src/a.lua', cid),
-        item('oldsubj:src/b.lua', 'src/b.lua', cid),
-      })
-
-      state:reconcile_change_ids({
-        item('newsubj:src/a.lua', 'src/a.lua', cid),
-        item('newsubj:src/b.lua', 'src/b.lua', cid),
-      })
-      eq(state:is_hunk_seen('newsubj:src/a.lua', 'c1'), true)
-      eq(state:is_hunk_seen('newsubj:src/a.lua', 'c2'), true)
-      eq(state:is_hunk_seen('newsubj:src/b.lua', 'c3'), true)
-      eq(state:is_hunk_seen('oldsubj:src/a.lua', 'c1'), false)
-    end)
-
-    it('rekeys marks made in an earlier session', function()
-      run(function()
-        local opts = { branch_name = 'reload-classic', repo_name = 'repo' }
-        local before = classic_state(vim.tbl_extend('force', opts, { base_branch = 'a' }))
-        before:mark_hunk('oldsubj:src/a.lua', 'c1')
-        before:reconcile_change_ids({ item('oldsubj:src/a.lua', 'src/a.lua', cid) })
-        before:save()
-
-        local after = classic_state(vim.tbl_extend('force', opts, { base_branch = 'b' }))
-        after:load_from_disk()
-        after:reconcile_change_ids({ item('newsubj:src/a.lua', 'src/a.lua', cid) })
-        eq(after:is_hunk_seen('newsubj:src/a.lua', 'c1'), true)
-        eq(after:is_hunk_seen('oldsubj:src/a.lua', 'c1'), false)
-      end)
-    end)
-
-    it('persists change ids only for keys holding marks', function()
-      run(function()
-        local state = classic_state({ branch_name = 'persist-classic', repo_name = 'repo' })
-        state:mark_hunk('subj:src/a.lua', 'c1')
-        state:reconcile_change_ids({
-          item('subj:src/a.lua', 'src/a.lua', cid),
-          item('subj:src/unmarked.lua', 'src/unmarked.lua', cid),
-        })
-        state:save()
-
-        local data = classic_persistence.load('repo', 'persist-classic', 'by_commit')
-        eq(data.changeIds, { ['subj:src/a.lua'] = cid })
-      end)
-    end)
-  end)
-
   describe('adopting from other branches by change id:', function()
     local cid = 'xlspqkuoplmnrtwzxyvkosmrwlzyqtvn'
 
@@ -207,21 +146,6 @@ describe('change_id_rekey', function()
         current:set_approved('subj:src/a.lua', { 'mine' }, false, { 'base' })
         current:reconcile_change_ids({ item('subj:src/a.lua', 'src/a.lua', cid) })
         eq(current:get_approved('subj:src/a.lua').lines, { 'mine' })
-      end)
-    end)
-
-    it("adopts hunk marks from another branch's review of the same commit", function()
-      run(function()
-        local sibling = classic_state({ branch_name = 'pool-sibling-c', repo_name = 'repo' })
-        sibling:mark_hunk('subj:src/a.lua', 'c1')
-        sibling:mark_hunk('subj:src/a.lua', 'c2')
-        sibling:reconcile_change_ids({ item('subj:src/a.lua', 'src/a.lua', cid) })
-        sibling:save()
-
-        local current = classic_state({ branch_name = 'pool-current-c', repo_name = 'repo' })
-        current:reconcile_change_ids({ item('reworded:src/a.lua', 'src/a.lua', cid) })
-        eq(current:is_hunk_seen('reworded:src/a.lua', 'c1'), true)
-        eq(current:is_hunk_seen('reworded:src/a.lua', 'c2'), true)
       end)
     end)
   end)

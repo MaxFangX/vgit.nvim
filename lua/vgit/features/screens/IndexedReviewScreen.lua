@@ -17,11 +17,10 @@ local visual_selection = require('vgit.features.screens.visual_selection')
 
 --[[
   IndexedReviewScreen is the base class for the indexed review screens
-  (IndexedFileReviewScreen and IndexedCommitReviewScreen). It is a fork of
-  ProjectReviewScreen adapted to the index model: marks are edits to an
-  approved content snapshot rather than per-hunk flags, so hunk indices in a
-  section shift as hunks are marked, and s/u also work on visual selections
-  (line-level marking, current pane only in split layout).
+  (IndexedFileReviewScreen and IndexedCommitReviewScreen). Marks are edits
+  to an approved content snapshot (see IndexedBaseReviewModel), so hunk
+  indices in a section shift as hunks are marked, and s/u also work on visual
+  selections (line-level marking, current pane only in split layout).
 
   Subclasses must:
     - Set self.list_view in constructor
