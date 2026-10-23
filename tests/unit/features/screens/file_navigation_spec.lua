@@ -273,6 +273,42 @@ describe('file_navigation:', function()
     end)
   end)
 
+  describe('should_cross_file', function()
+    local cross = file_navigation.should_cross_file
+
+    it('crosses when the file has no hunks', function()
+      eq(cross('next', nil, 0, nil), true)
+      eq(cross('prev', nil, 0, nil), true)
+    end)
+
+    it("'next' crosses only from inside the last hunk", function()
+      eq(cross('next', 3, 3, 'inside'), true)
+      eq(cross('next', 2, 3, 'inside'), false)
+      eq(cross('next', 2, 3, 'between'), false)
+      eq(cross('next', 1, 3, 'above'), false)
+    end)
+
+    it("'next' from below the last hunk lands on it first", function()
+      eq(cross('next', 3, 3, 'below'), false)
+    end)
+
+    it("'prev' crosses only from inside the first hunk", function()
+      eq(cross('prev', 1, 3, 'inside'), true)
+      eq(cross('prev', 2, 3, 'inside'), false)
+      eq(cross('prev', 1, 3, 'between'), false)
+      eq(cross('prev', 3, 3, 'below'), false)
+    end)
+
+    it("'prev' from above the first hunk lands on it first", function()
+      eq(cross('prev', 1, 3, 'above'), false)
+    end)
+
+    it('crosses from inside a lone hunk in either direction', function()
+      eq(cross('next', 1, 1, 'inside'), true)
+      eq(cross('prev', 1, 1, 'inside'), true)
+    end)
+  end)
+
   describe('hunk_past_position', function()
     local function marks(tops)
       local out = {}

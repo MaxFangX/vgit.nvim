@@ -481,7 +481,7 @@ function ProjectDiffScreen:move_to_adjacent_file(direction)
 end
 
 -- J/K in the diff pane: jump to the last (next) / first (prev) hunk in the
--- current file. If already at that edge, cross into the next / previous file's
+-- current file. If already on that hunk, cross into the next / previous file's
 -- first / last hunk.
 function ProjectDiffScreen:jump_to_file_edge(direction)
   local current_index, total_hunks, position = self:get_current_mark_index()
@@ -717,7 +717,7 @@ function ProjectDiffScreen:setup_diff_keymaps()
       self:prev_hunk()
     end, 15),
     -- In the diff pane, J/K jump to the last/first hunk in the current file,
-    -- then cross into the next/prev FILE once already at that edge (not the
+    -- then cross into the next/prev FILE once already on that hunk (not the
     -- list's section headers, which only make sense in the list pane). Wraps.
     jump_file_next = loop.debounce_coroutine(function()
       self:jump_to_file_edge('next')

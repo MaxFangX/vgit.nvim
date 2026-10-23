@@ -61,18 +61,14 @@ function M.build_logical_file_list(entries)
 end
 
 -- Whether J/K should cross into the adjacent file rather than jump to the
--- current file's far edge. direction: 'next' (J) or 'prev' (K). True with no
--- hunks, or when the cursor is already at (or past) the relevant edge —
--- mirroring the end/start detection in next_hunk/prev_hunk.
+-- current file's last/first hunk. direction: 'next' (J) or 'prev' (K). True
+-- with no hunks, or when the cursor is already on that hunk; from below the
+-- last (above the first) hunk, J (K) lands on it first.
 function M.should_cross_file(direction, current_index, total_hunks, position)
   if not current_index or total_hunks == 0 then return true end
+  if position ~= 'inside' then return false end
 
-  if direction == 'next' then
-    return position == 'below'
-      or (position == 'inside' and current_index >= total_hunks)
-  end
-  return position == 'above'
-    or (position == 'inside' and current_index <= 1)
+  return current_index == (direction == 'next' and total_hunks or 1)
 end
 
 -- Whether two logical-file infos belong to the same commit. Compares section as
