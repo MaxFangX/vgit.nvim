@@ -89,11 +89,11 @@ local run_jj = loop.suspend(function(reponame, args, callback)
   stderr:read_start(function() end)
 end, 3)
 
--- Map full git commit hashes -> jj change ids, as the shortest unique prefix
--- `jj log` shows, in one `jj log` call. `present()` drops commits jj hasn't
--- imported instead of erroring, so an unknown commit is just missing from
--- the map. Returns nil when jj is missing or fails; callers then keep git
--- hashes.
+-- Map full git commit hashes -> `{ id, short }` jj change ids in one `jj log`
+-- call, where `short` is the shortest unique prefix `jj log` shows.
+-- `present()` drops commits jj hasn't imported instead of erroring, so an
+-- unknown commit is just missing from the map. Returns nil when jj is
+-- missing or fails; callers then keep git hashes.
 local function fetch_change_ids(reponame, commit_hashes)
   local revset = {}
   for i, hash in ipairs(commit_hashes) do
@@ -104,21 +104,22 @@ local function fetch_change_ids(reponame, commit_hashes)
     'log',
     '--no-graph',
     '-r', table.concat(revset, '|'),
-    '-T', 'commit_id ++ " " ++ change_id.shortest() ++ "\n"',
+    '-T', 'commit_id ++ " " ++ change_id ++ " " ++ change_id.shortest() ++ "\n"',
   })
   if not output then return nil end
 
   local ids = {}
-  for hash, change_id in output:gmatch('(%x+) (%S+)') do
-    ids[hash] = change_id
+  for hash, id, short in output:gmatch('(%x+) (%S+) (%S+)') do
+    ids[hash] = { id = id, short = short }
   end
   return ids
 end
 
--- Attach `change_id` to each commit (`{ hash = ... }` tables) for display in
--- a jj repo. Outside jj repos, or when jj is unavailable, this is a no-op
--- and git short hashes remain the display. Must be called from a coroutine
--- context.
+-- Attach jj change ids to each commit (`{ hash = ... }` tables) in a jj repo.
+-- `change_id` is the full id, which identifies a commit across rewording.
+-- `change_id_short` is the shortest unique prefix, for display. Outside jj
+-- repos, or when jj is unavailable, this is a no-op and git short hashes
+-- remain the display. Must be called from a coroutine context.
 function jj.attach_change_ids(reponame, commits)
   if not jj.is_repo(reponame) or #commits == 0 then return end
 
@@ -131,7 +132,11 @@ function jj.attach_change_ids(reponame, commits)
   if not change_ids then return end
 
   for _, commit in ipairs(commits) do
-    commit.change_id = change_ids[commit.hash]
+    local ids = change_ids[commit.hash]
+    if ids then
+      commit.change_id = ids.id
+      commit.change_id_short = ids.short
+    end
   end
 end
 

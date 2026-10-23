@@ -3,6 +3,7 @@ local loop = require('vgit.core.loop')
 local utils = require('vgit.core.utils')
 local Object = require('vgit.core.Object')
 local persistence = require('vgit.features.screens.ReviewStatePersistence')
+local change_id_rekey = require('vgit.features.screens.change_id_rekey')
 
 --[[
   ReviewState manages the seen/unseen state for PR review workflows.
@@ -13,6 +14,8 @@ local persistence = require('vgit.features.screens.ReviewStatePersistence')
   All mark operations use a unified key-based API. The key is provided by
   callers - typically the filepath. Marks use content-based identifiers
   (FNV-1a hashes of hunk content) so they persist when hunks shift position.
+  By-commit keys also record their commit's jj change id when known (see
+  change_id_rekey).
 ]]
 
 local ReviewState = Object:extend()
@@ -79,7 +82,7 @@ end
 local function get_state(self)
   local key = self:get_state_key()
   if not state_store[key] then
-    state_store[key] = { marks = {}, position = { section = 'unseen' }, hunk_counts = {}, content_ids = {} }
+    state_store[key] = { marks = {}, change_ids = {}, position = { section = 'unseen' }, hunk_counts = {}, content_ids = {} }
   end
   return state_store[key]
 end
@@ -107,6 +110,7 @@ function ReviewState:load_from_disk()
     local existing = state_store[key]
     state_store[key] = {
       marks = data.marks or {},
+      change_ids = data.changeIds or {},
       position = existing and existing.position or { section = 'unseen' },
       hunk_counts = data.hunkCounts or {},
       content_ids = data.contentIds or {},
@@ -122,6 +126,45 @@ end
 -- Generate a mark key from entry key and content id (or hunk index for legacy)
 local function mark_key(entry_key, hunk_id)
   return string.format('%s:%s', entry_key, hunk_id)
+end
+
+-- The set of entry keys that currently hold marks (the composite mark keys
+-- with their `:<content id>` suffix stripped).
+local function marked_keys(marks)
+  local keys = {}
+  for composite in pairs(marks) do
+    keys[composite:match('^(.*):[^:]*$') or composite] = true
+  end
+  return keys
+end
+
+-- Move marks orphaned by a reworded subject to their new key by jj change id,
+-- and record the change id for every current (commit, file) so marks made
+-- later carry it too. `items` are `{ key, filepath, change_id }`; see
+-- change_id_rekey.
+function ReviewState:reconcile_change_ids(items)
+  local state = get_state(self)
+
+  local moves = change_id_rekey.plan(items, marked_keys(state.marks), state.change_ids)
+  for _, move in ipairs(moves) do
+    local from_prefix, to_prefix = move.from .. ':', move.to .. ':'
+    local renamed = {}
+    for composite in pairs(state.marks) do
+      if vim.startswith(composite, from_prefix) then
+        renamed[#renamed + 1] = composite
+      end
+    end
+    for _, composite in ipairs(renamed) do
+      state.marks[to_prefix .. composite:sub(#from_prefix + 1)] = state.marks[composite]
+      state.marks[composite] = nil
+    end
+    state.change_ids[move.from] = nil
+  end
+  if #moves > 0 then self:schedule_save() end
+
+  for _, item in ipairs(items) do
+    state.change_ids[item.key] = item.change_id
+  end
 end
 
 -- Check if a hunk is marked as seen
@@ -270,8 +313,17 @@ local function write_to_disk(self, final)
   -- Escape luv callback context to main Vim loop (required for vim.fn calls)
   loop.free_textlock()
   local state = get_state(self)
+
+  -- Persist change ids only for keys holding marks; the rest are session
+  -- bookkeeping for marks that may be made later.
+  local change_ids = {}
+  for key in pairs(marked_keys(state.marks)) do
+    change_ids[key] = state.change_ids[key]
+  end
+
   local data = {
     marks = state.marks,
+    changeIds = change_ids,
     hunkCounts = state.hunk_counts,
     contentIds = state.content_ids,
   }

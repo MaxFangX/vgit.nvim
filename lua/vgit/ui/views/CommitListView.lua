@@ -74,7 +74,7 @@ local function column_widths(entries)
     for _, commit_data in ipairs(section.commits or {}) do
       max_index = math.max(max_index, commit_data.index or 0)
       local commit = commit_data.commit
-      id_width = math.max(id_width, #(commit.change_id or commit.short_hash))
+      id_width = math.max(id_width, #(commit.change_id_short or commit.short_hash))
     end
   end
   return math.max(2, #tostring(max_index)), id_width
@@ -124,7 +124,7 @@ function CommitListView:render()
         and self.active_commit.section == section.title
       commit_items[#commit_items + 1] = {
         open = is_active,
-        value = string.format(row_format, index_label, commit.change_id or commit.short_hash, commit.message),
+        value = string.format(row_format, index_label, commit.change_id_short or commit.short_hash, commit.message),
         items = file_items,
         section_type = section.title,
         commit_hash = commit.hash,

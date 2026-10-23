@@ -2,6 +2,7 @@ local loop = require('vgit.core.loop')
 local Object = require('vgit.core.Object')
 local console = require('vgit.core.console')
 local persistence = require('vgit.features.screens.IndexedReviewPersistence')
+local change_id_rekey = require('vgit.features.screens.change_id_rekey')
 
 --[[
   IndexedReviewState manages the "index" for indexed review workflows: an
@@ -15,7 +16,8 @@ local persistence = require('vgit.features.screens.IndexedReviewPersistence')
   where base_lines is the base the approval was made against (used to rebase
   the snapshot when the base changes; absent on legacy records). No record
   means approved == base (nothing seen). Records persist to disk as content-
-  addressed objects referenced from the review-type JSON file.
+  addressed objects referenced from the review-type JSON file, each with the
+  jj change id of its commit when known (see change_id_rekey).
 ]]
 
 local IndexedReviewState = Object:extend()
@@ -47,7 +49,7 @@ end
 local function get_state(self)
   local key = self:get_state_key()
   if not state_store[key] then
-    state_store[key] = { approved = {}, position = { section = 'unseen' } }
+    state_store[key] = { approved = {}, change_ids = {}, position = { section = 'unseen' } }
   end
   return state_store[key]
 end
@@ -97,11 +99,12 @@ function IndexedReviewState:load_from_disk()
   -- Materialize approved snapshots from the object store. A missing object
   -- means the snapshot was lost; drop the entry (file reverts to unseen).
   -- A missing base object only loses the ability to rebase the snapshot.
-  local approved, missing = {}, 0
+  local approved, change_ids, missing = {}, {}, 0
   for mark_key, entry in pairs(data.entries) do
     if type(entry) == 'table' and entry.approved then
       local lines = persistence.read_object(self.repo_name, self.branch_name, entry.approved)
       if lines then
+        change_ids[mark_key] = entry.change_id
         local base_lines = entry.base and persistence.read_object(self.repo_name, self.branch_name, entry.base)
         approved[mark_key] = {
           lines = lines,
@@ -124,6 +127,7 @@ function IndexedReviewState:load_from_disk()
   local existing = state_store[key]
   state_store[key] = {
     approved = approved,
+    change_ids = change_ids,
     position = existing and existing.position or { section = 'unseen' },
     loaded = true,
     disk_mtime = mtime,
@@ -147,6 +151,25 @@ end
 function IndexedReviewState:remove_approved(mark_key)
   get_state(self).approved[mark_key] = nil
   self:schedule_save()
+end
+
+-- Move records orphaned by a reworded subject to their new key by jj change
+-- id, and record the change id for every current (commit, file) so records
+-- approved later carry it too. `items` are `{ key, filepath, change_id }`;
+-- see change_id_rekey.
+function IndexedReviewState:reconcile_change_ids(items)
+  local state = get_state(self)
+
+  local moves = change_id_rekey.plan(items, state.approved, state.change_ids)
+  for _, move in ipairs(moves) do
+    state.approved[move.to], state.approved[move.from] = state.approved[move.from], nil
+    state.change_ids[move.from] = nil
+  end
+  if #moves > 0 then self:schedule_save() end
+
+  for _, item in ipairs(items) do
+    state.change_ids[item.key] = item.change_id
+  end
 end
 
 -- Reset the index for the current session (everything back to unseen)
@@ -193,7 +216,12 @@ local function write_to_disk(self, final)
       record.base_hash = record.base_hash or persistence.hash_lines(record.base_lines)
       objects[record.base_hash] = record.base_lines
     end
-    entries[mark_key] = { approved = record.hash, deleted = record.deleted or nil, base = record.base_hash }
+    entries[mark_key] = {
+      approved = record.hash,
+      deleted = record.deleted or nil,
+      base = record.base_hash,
+      change_id = state.change_ids[mark_key],
+    }
     objects[record.hash] = record.lines
   end
 
