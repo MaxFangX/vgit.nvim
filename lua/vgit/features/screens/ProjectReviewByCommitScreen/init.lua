@@ -101,6 +101,7 @@ end
 -- earlier this session) is used as-is. Called after fetch, before windows
 -- are defined.
 function ProjectReviewByCommitScreen:resolve_list_width()
+  -- Top/bottom layouts (no message box) span the full width
   if not self.commit_message_view or setting:get('list_width') > 0 then return end
 
   local cap = math.floor(dimensions.global_width() * 0.45)

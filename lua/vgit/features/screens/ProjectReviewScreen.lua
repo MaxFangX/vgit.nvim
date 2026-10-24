@@ -28,6 +28,12 @@ local visual_selection = require('vgit.features.screens.visual_selection')
 
   Keys run as jobs through one queue (see enqueue).
 
+  Model calls that may run git (fetch, a mark or diff that loads contents,
+  reset) resume in a fast event context, where window and buffer calls
+  fail. Free the textlock right after them, at the call site; views don't,
+  except DiffView:get_diff, which wraps the diff prop (read diffs through
+  it).
+
   Subclasses set model, setting and list_view, then call init_views. They may
   override jump_section (J/K in the list), and the list width hooks
   (resolve_list_width, apply_list_width, finish_list_resize).
@@ -120,7 +126,7 @@ function ProjectReviewScreen:select(id, hunk)
   return true
 end
 
--- Index into `files` of the entry shown in the diff
+-- Index of file node `id` in `files`
 local function index_of(files, id)
   for i, node in ipairs(files) do
     if node.id == id then return i end
@@ -238,8 +244,8 @@ function ProjectReviewScreen:mark(mark_as_seen, selections)
   -- selection's hunk (the bottom of a visual range)
   local from_top = 0
   local last = selections and selections[#selections]
-  local diff = last and self.diff_view:get_diff()
-  local mark = diff and diff.marks[last.index]
+  local marked_diff = last and self.diff_view:get_diff()
+  local mark = marked_diff and marked_diff.marks[last.index]
   if mark then from_top = mark.top_relative end
 
   local next_id = file_navigation.next_of_type(self.list_view:file_nodes(), entry.id, entry.type)
@@ -247,12 +253,13 @@ function ProjectReviewScreen:mark(mark_as_seen, selections)
 
   local remaining = self.model:lookup(entry.id)
   if remaining then
-    diff = self.model:get_diff_for(remaining)
+    local diff = self.model:get_diff_for(remaining)
     loop.free_textlock()
     local hunk = diff and file_navigation.hunk_past_position(diff.marks, from_top)
     if hunk and self:select(entry.id, hunk) then return end
   end
-  if self:select(next_id, 1) or self:select(remaining and entry.id, 1) then return end
+  if self:select(next_id, 1) then return end
+  if remaining and self:select(entry.id, 1) then return end
   self:select(self.model:sibling_id(entry), 1)
 end
 
@@ -595,10 +602,13 @@ function ProjectReviewScreen:initial_entry_id(buffer, lnum)
   local function in_section(entry)
     return entry.type == position.type
   end
-  local saved_id = filepath
-    and (find(function(entry)
-      return in_section(entry) and (not entry.commit or entry.commit.message == position.commit_message)
-    end) or find(in_section) or find(function() return true end))
+  local function in_commit(entry)
+    return in_section(entry) and (not entry.commit or entry.commit.message == position.commit_message)
+  end
+  local function any()
+    return true
+  end
+  local saved_id = filepath and (find(in_commit) or find(in_section) or find(any))
   return saved_id or self:first_entry_id(), false
 end
 
