@@ -32,7 +32,7 @@ function ProjectReviewByFileScreen:constructor(opts)
     },
   })
 
-  ProjectReviewScreen.init_views(base, list_plot, diff_plot)
+  ProjectReviewScreen.init_views(base, diff_plot)
 
   return base
 end

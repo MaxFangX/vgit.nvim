@@ -75,11 +75,6 @@ function BaseListView:find_list_item(callback)
   return self.scene:get('list'):find_list_item(callback)
 end
 
-function BaseListView:each_list_item(callback)
-  local component = self.scene:get('list')
-  component:each_list_item(callback)
-end
-
 -- Put the cursor on the first row matching pred(item, lnum); returns the item
 function BaseListView:move_to_item(pred)
   local item, lnum = self:find_list_item(pred)
@@ -94,14 +89,6 @@ function BaseListView:move_to(callback)
     return status ~= nil and callback(status, node.entry.type, lnum) == true
   end)
   return item and item.entry.status
-end
-
--- Like move_to but passes the full entry (with commit_hash, etc.)
-function BaseListView:move_to_entry(callback)
-  local item = self:move_to_item(function(node)
-    return node.entry ~= nil and node.entry.status ~= nil and callback(node.entry) == true
-  end)
-  return item and item.entry
 end
 
 function BaseListView:set_lnum(lnum)

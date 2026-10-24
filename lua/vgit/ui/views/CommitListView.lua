@@ -1,4 +1,5 @@
 local BaseListView = require('vgit.ui.views.BaseListView')
+local fold_tree = require('vgit.ui.fold_tree')
 local StatusFolds = require('vgit.ui.views.StatusListView.StatusFolds')
 
 --[[
@@ -23,44 +24,56 @@ local CommitListView = BaseListView:extend()
 
 function CommitListView:constructor(scene, props, plot, config)
   local base = BaseListView.constructor(self, scene, props, plot, config)
-  -- Track which commit is currently expanded (hash + section, nil = none)
-  base.active_commit = nil  -- { hash, section }
+  -- The expanded commit, { hash, section } (nil: none)
+  base.active_commit = nil
   return base
 end
 
--- Set which commit should be expanded (nil to collapse all)
+-- Expand commit `hash` in section `section` (nil: collapse all), re-render,
+-- and tell props.on_active_commit. No-op if it is already the active one.
 function CommitListView:set_active_commit(hash, section)
-  if hash == nil then
-    if self.active_commit == nil then return false end
-    self.active_commit = nil
-    return true
-  end
-  if self.active_commit and self.active_commit.hash == hash and self.active_commit.section == section then
-    return false
-  end
-  self.active_commit = { hash = hash, section = section }
-  return true
+  local active = self.active_commit
+  if active and active.hash == hash and active.section == section then return end
+  if not active and not hash then return end
+
+  self.active_commit = hash and { hash = hash, section = section } or nil
+  self:render()
+  if self.props.on_active_commit then self.props.on_active_commit() end
 end
 
--- Get the currently active commit
 function CommitListView:get_active_commit()
   return self.active_commit
 end
 
--- Get entries data for navigation purposes
-function CommitListView:get_entries()
-  return self.props.entries()
+-- Expand the commit holding file `id`, then reveal the file
+function CommitListView:reveal(id)
+  local path = fold_tree.path_to(self.state.folds, id)
+  if not path then return false end
+
+  -- section > commit > folders > file
+  local commit = path[2]
+  self:set_active_commit(commit.commit_hash, commit.section_type)
+  return BaseListView.reveal(self, id)
 end
 
--- Mark items with their section and commit info for tracking
-local function mark_items(items, section_type, commit_hash)
-  for _, item in ipairs(items) do
-    item.section_type = section_type
-    item.commit_hash = commit_hash
-    if item.items then
-      mark_items(item.items, section_type, commit_hash)
-    end
+local function is_commit_row(item, hash, section)
+  return item.node_type == 'commit' and item.commit_hash == hash and item.section_type == section
+end
+
+-- Enter on a commit row expands it (collapsing the open one) or collapses it,
+-- keeping the cursor on it; other rows toggle as usual
+function CommitListView:toggle_current_list_item()
+  local item = self:get_current_list_item()
+  if not item or item.node_type ~= 'commit' then return BaseListView.toggle_current_list_item(self) end
+
+  local hash, section = item.commit_hash, item.section_type
+  local active = self.active_commit
+  if active and is_commit_row(item, active.hash, active.section) then
+    self:set_active_commit(nil)
+  else
+    self:set_active_commit(hash, section)
   end
+  self:move_to_item(function(node) return is_commit_row(node, hash, section) end)
 end
 
 -- Column widths shared by every commit row, so the same commit aligns across
@@ -102,12 +115,10 @@ end
 
 function CommitListView:render()
   local entries = self.props.entries()
-  local open = self.config.open_folds
-  if open == nil then open = true end
-
   local index_width, id_width = column_widths(entries)
   local index_format = string.format('%%0%dd', index_width)
   local row_format = string.format('%%s - %%-%ds - %%s', id_width)
+  local active = self.active_commit
 
   local folds = {}
   for _, section in ipairs(entries) do
@@ -115,18 +126,13 @@ function CommitListView:render()
 
     for _, commit_data in ipairs(section.commits or {}) do
       local commit = commit_data.commit
-      local file_items = StatusFolds():generate(commit_data.files)
-      mark_items(file_items, section.title, commit.hash)
-
       local index_label = string.format(index_format, commit_data.index)
-      local is_active = self.active_commit
-        and self.active_commit.hash == commit.hash
-        and self.active_commit.section == section.title
       commit_items[#commit_items + 1] = {
-        open = is_active,
+        node_type = 'commit',
+        open = active ~= nil and active.hash == commit.hash and active.section == section.type,
         value = string.format(row_format, index_label, commit.change_id_short or commit.short_hash, commit.message),
-        items = file_items,
-        section_type = section.title,
+        items = StatusFolds():generate(commit_data.files),
+        section_type = section.type,
         commit_hash = commit.hash,
         icon_before = function(item)
           return { icon = item.open and '' or '' }
@@ -135,10 +141,11 @@ function CommitListView:render()
     end
 
     folds[#folds + 1] = {
-      open = open,
+      node_type = 'section',
+      open = true,
       value = section.title,
       items = commit_items,
-      section_type = section.title,
+      section_type = section.type,
     }
   end
 

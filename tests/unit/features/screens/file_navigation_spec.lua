@@ -2,111 +2,35 @@ local file_navigation = require('vgit.features.screens.file_navigation')
 
 local eq = assert.are.same
 
--- Shorthand for building a file entry as it appears in screen models.
-local function f(filepath, type)
-  return { status = { filepath = filepath }, type = type }
+-- Shorthand for a list file node (see BaseListView:file_nodes)
+local function node(filepath, type, commit_hash)
+  return {
+    id = string.format('%s|%s|%s', commit_hash or '', filepath, type),
+    entry = { status = { filepath = filepath }, type = type, commit_hash = commit_hash },
+  }
 end
 
--- Shorthand for a `{filepath, commit_hash}` ref returned by find_adjacent_files.
-local function ref(filepath, commit_hash)
-  return { filepath = filepath, commit_hash = commit_hash }
+-- Shorthand for a `{filepath}` ref returned by find_adjacent_files.
+local function ref(filepath)
+  return { filepath = filepath }
 end
 
 local function any_type() return true end
 
 describe('file_navigation:', function()
-  describe('build_logical_file_list', function()
-    it('returns empty for nil or empty entries', function()
-      eq(file_navigation.build_logical_file_list(nil), {})
-      eq(file_navigation.build_logical_file_list({}), {})
-    end)
-
-    it('flattens by-file entries and tags them with section', function()
-      local entries = {
-        { title = 'Staged Changes', entries = { f('b.lua', 'staged') } },
-        { title = 'Changes',        entries = { f('a.lua', 'unstaged'), f('c.lua', 'unstaged') } },
-      }
-      local out = file_navigation.build_logical_file_list(entries)
-      eq(#out, 3)
-      eq(out[1].section, 'Staged Changes')
-      eq(out[1].file.status.filepath, 'b.lua')
-      eq(out[1].commit_hash, nil)
-      eq(out[2].section, 'Changes')
-      eq(out[2].file.status.filepath, 'a.lua')
-      eq(out[3].file.status.filepath, 'c.lua')
-    end)
-
-    it('flattens by-commit entries and tags them with commit_hash', function()
-      local entries = {
-        {
-          title = 'Unseen',
-          commits = {
-            {
-              commit = { hash = 'abc' },
-              files = { f('b.lua', 'unseen'), f('a.lua', 'unseen') },
-            },
-            {
-              commit = { hash = 'def' },
-              files = { f('z.lua', 'unseen') },
-            },
-          },
-        },
-      }
-      local out = file_navigation.build_logical_file_list(entries)
-      eq(#out, 3)
-      -- Files within a commit are sorted alphabetically.
-      eq(out[1].commit_hash, 'abc')
-      eq(out[1].file.status.filepath, 'a.lua')
-      eq(out[2].commit_hash, 'abc')
-      eq(out[2].file.status.filepath, 'b.lua')
-      eq(out[3].commit_hash, 'def')
-      eq(out[3].file.status.filepath, 'z.lua')
-    end)
-
-    it('orders folders before files at each level (by-file)', function()
-      local entries = {
-        {
-          title = 'Changes',
-          entries = {
-            f('zeta.lua',     'unstaged'),
-            f('alpha.lua',    'unstaged'),
-            f('src/foo.lua',  'unstaged'),
-            f('src/bar.lua',  'unstaged'),
-          },
-        },
-      }
-      local out = file_navigation.build_logical_file_list(entries)
-      local paths = {}
-      for _, info in ipairs(out) do paths[#paths + 1] = info.file.status.filepath end
-      -- src/ folder comes before top-level files; within src/, alphabetical;
-      -- top-level files alphabetical.
-      eq(paths, { 'src/bar.lua', 'src/foo.lua', 'alpha.lua', 'zeta.lua' })
-    end)
-  end)
-
   describe('find_adjacent_files', function()
-    -- Helper: build all_files of unstaged-type entries with optional staged
-    -- entries at the start (matching the section ordering in fetch()).
     local function make_files(specs)
-      local out = {}
-      for _, spec in ipairs(specs) do
-        out[#out + 1] = {
-          section = spec.section or 'Changes',
-          commit_hash = spec.commit_hash,
-          file = f(spec.filepath, spec.type or 'unstaged'),
-        }
-      end
-      return out
+      return vim.tbl_map(function(spec) return node(spec.filepath, spec.type or 'unstaged') end, specs)
     end
 
     it('returns all nil for empty input', function()
-      local n, p, fst = file_navigation.find_adjacent_files({}, 'a.lua', nil, any_type)
+      local n, p, fst = file_navigation.find_adjacent_files({}, 'a.lua', any_type)
       eq(n, nil); eq(p, nil); eq(fst, nil)
     end)
 
     it('current is the only match: first=self, prev=nil, next=nil', function()
       local files = make_files({ { filepath = 'only.lua' } })
-      local n, p, fst = file_navigation.find_adjacent_files(files, 'only.lua', nil, any_type)
+      local n, p, fst = file_navigation.find_adjacent_files(files, 'only.lua', any_type)
       eq(n, nil)
       eq(p, nil)
       eq(fst, ref('only.lua'))
@@ -116,7 +40,7 @@ describe('file_navigation:', function()
       local files = make_files({
         { filepath = 'a.lua' }, { filepath = 'b.lua' }, { filepath = 'c.lua' },
       })
-      local n, p, fst = file_navigation.find_adjacent_files(files, 'a.lua', nil, any_type)
+      local n, p, fst = file_navigation.find_adjacent_files(files, 'a.lua', any_type)
       eq(n, ref('b.lua'))
       eq(p, nil)
       eq(fst, ref('a.lua'))
@@ -126,7 +50,7 @@ describe('file_navigation:', function()
       local files = make_files({
         { filepath = 'a.lua' }, { filepath = 'b.lua' }, { filepath = 'c.lua' },
       })
-      local n, p, fst = file_navigation.find_adjacent_files(files, 'c.lua', nil, any_type)
+      local n, p, fst = file_navigation.find_adjacent_files(files, 'c.lua', any_type)
       eq(n, nil)
       eq(p, ref('b.lua'))
       eq(fst, ref('a.lua'))
@@ -137,7 +61,7 @@ describe('file_navigation:', function()
         { filepath = 'a.lua' }, { filepath = 'b.lua' },
         { filepath = 'c.lua' }, { filepath = 'd.lua' },
       })
-      local n, p, fst = file_navigation.find_adjacent_files(files, 'c.lua', nil, any_type)
+      local n, p, fst = file_navigation.find_adjacent_files(files, 'c.lua', any_type)
       eq(n, ref('d.lua'))
       eq(p, ref('b.lua'))
       eq(fst, ref('a.lua'))
@@ -146,18 +70,18 @@ describe('file_navigation:', function()
     it('predicate filters out non-matching items', function()
       -- Mimics fetch()'s order: staged section before unstaged section.
       local files = make_files({
-        { section = 'Staged Changes', filepath = 'a.lua', type = 'staged' },
-        { section = 'Staged Changes', filepath = 'b.lua', type = 'staged' },
-        { section = 'Changes',        filepath = 'a.lua', type = 'unstaged' },
-        { section = 'Changes',        filepath = 'b.lua', type = 'unstaged' },
-        { section = 'Changes',        filepath = 'c.lua', type = 'unstaged' },
+        { filepath = 'a.lua', type = 'staged' },
+        { filepath = 'b.lua', type = 'staged' },
+        { filepath = 'a.lua', type = 'unstaged' },
+        { filepath = 'b.lua', type = 'unstaged' },
+        { filepath = 'c.lua', type = 'unstaged' },
       })
-      local function unstaged(info) return info.file.type == 'unstaged' end
+      local function unstaged(file) return file.entry.type == 'unstaged' end
 
       -- Current = c (last unstaged): first should be a.lua (first unstaged,
       -- skipping the staged-section entries entirely), prev = b, next = nil.
       -- This is the regression case: the user is on the last unstaged file.
-      local n, p, fst = file_navigation.find_adjacent_files(files, 'c.lua', nil, unstaged)
+      local n, p, fst = file_navigation.find_adjacent_files(files, 'c.lua', unstaged)
       eq(n, nil)
       eq(p, ref('b.lua'))
       eq(fst, ref('a.lua'))
@@ -170,51 +94,17 @@ describe('file_navigation:', function()
       -- Walking the loop with current='zzz' (never matches): we never set
       -- found_current, so each match becomes prev_file (overwriting).
       -- next stays nil; first is the first match.
-      local n, p, fst = file_navigation.find_adjacent_files(files, 'zzz.lua', nil, any_type)
+      local n, p, fst = file_navigation.find_adjacent_files(files, 'zzz.lua', any_type)
       eq(n, nil)
       eq(p, ref('c.lua'))
       eq(fst, ref('a.lua'))
     end)
-
-    it('commit_hash disambiguates same filepath across commits', function()
-      local files = make_files({
-        { filepath = 'shared.lua', commit_hash = 'abc' },
-        { filepath = 'other.lua',  commit_hash = 'abc' },
-        { filepath = 'shared.lua', commit_hash = 'def' },
-      })
-      -- current = shared.lua@def, NOT shared.lua@abc
-      local n, p, fst = file_navigation.find_adjacent_files(files, 'shared.lua', 'def', any_type)
-      eq(n, nil)
-      eq(p, ref('other.lua', 'abc'))
-      eq(fst, ref('shared.lua', 'abc'))
-    end)
-
-    it('without current_commit, matches the first occurrence by filepath', function()
-      local files = make_files({
-        { filepath = 'shared.lua', commit_hash = 'abc' },
-        { filepath = 'other.lua',  commit_hash = 'abc' },
-        { filepath = 'shared.lua', commit_hash = 'def' },
-      })
-      -- current_commit = nil: shared.lua@abc matches first.
-      local n, p, fst = file_navigation.find_adjacent_files(files, 'shared.lua', nil, any_type)
-      eq(n, ref('other.lua', 'abc'))
-      eq(p, nil)
-      eq(fst, ref('shared.lua', 'abc'))
-    end)
   end)
 
   describe('adjacent_commit_target', function()
-    -- Build all_files from {commit, path, section?} specs.
+    -- Build file nodes from {commit, path, type?} specs.
     local function make(specs)
-      local out = {}
-      for _, s in ipairs(specs) do
-        out[#out + 1] = {
-          section = s.section or 'Unseen',
-          commit_hash = s.commit,
-          file = f(s.path, 'unseen'),
-        }
-      end
-      return out
+      return vim.tbl_map(function(spec) return node(spec.path, spec.type or 'unseen', spec.commit) end, specs)
     end
 
     -- Three commits: abc=[1,2], def=[3], ghi=[4,5].
@@ -264,12 +154,43 @@ describe('file_navigation:', function()
     it('section distinguishes a commit that spans Unseen and Seen', function()
       -- The same hash appears in both sections as two separate ranges.
       local split = make({
-        { section = 'Unseen', commit = 'abc', path = 'a.lua' },
-        { section = 'Seen',   commit = 'abc', path = 'b.lua' },
+        { type = 'unseen', commit = 'abc', path = 'a.lua' },
+        { type = 'seen',   commit = 'abc', path = 'b.lua' },
       })
       -- Each section's range counts as its own commit, so J/K cross between them.
       eq(file_navigation.adjacent_commit_target(split, 1, 'next'), 2)
       eq(file_navigation.adjacent_commit_target(split, 2, 'prev'), 1)
+    end)
+  end)
+
+  describe('next_of_type', function()
+    local files = {
+      node('a.lua', 'seen'),
+      node('a.lua', 'unseen'),
+      node('b.lua', 'unseen'),
+      node('c.lua', 'seen'),
+    }
+    local function next_of(i, type)
+      local id = file_navigation.next_of_type(files, files[i].id, type)
+      return id and vim.iter(ipairs(files)):find(function(_, file) return file.id == id end)
+    end
+
+    it('finds the next file of the type', function()
+      eq(next_of(2, 'unseen'), 3)
+      eq(next_of(1, 'seen'), 4)
+    end)
+
+    it('wraps around', function()
+      eq(next_of(3, 'unseen'), 2)
+      eq(next_of(4, 'seen'), 1)
+    end)
+
+    it('is nil when the file is the only one of its type', function()
+      eq(file_navigation.next_of_type({ node('a.lua', 'unseen') }, node('a.lua', 'unseen').id, 'unseen'), nil)
+    end)
+
+    it('is nil for an unknown id', function()
+      eq(file_navigation.next_of_type(files, 'nope', 'unseen'), nil)
     end)
   end)
 

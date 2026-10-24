@@ -1,64 +1,8 @@
--- Shared helpers for navigating between files in screen entries.
--- Used by both ProjectDiffScreen and ProjectReviewScreen so they share a
--- single notion of "next file in section, with wrap-around" — independent
--- of which folders/commits are currently expanded in the list view.
+-- Shared helpers for navigating between files, used by ProjectDiffScreen and
+-- ProjectReviewScreen. `files` are list file nodes in display order (see
+-- BaseListView:file_nodes), independent of which folds are open.
 
 local M = {}
-
--- Compare paths in path order: folders before files at each level, then alphabetically.
-local function compare_paths(path_a, path_b)
-  local parts_a = vim.split(path_a, '/')
-  local parts_b = vim.split(path_b, '/')
-
-  for i = 1, math.max(#parts_a, #parts_b) do
-    local a, b = parts_a[i], parts_b[i]
-
-    -- One path ended: the longer one is inside a folder, so it comes first.
-    if not a then return false end
-    if not b then return true end
-
-    -- At this level, folder (has more parts after) comes before file (last part).
-    local a_is_last = (i == #parts_a)
-    local b_is_last = (i == #parts_b)
-    if a_is_last ~= b_is_last then return not a_is_last end
-
-    if a ~= b then return a < b end
-  end
-
-  return false
-end
-
-local function by_filepath(a, b)
-  return compare_paths(a.status.filepath, b.status.filepath)
-end
-
--- Append `files` to `out` in path-sorted order, tagging each with section/commit_hash.
-local function append_sorted(out, files, section, commit_hash)
-  local sorted = vim.list_extend({}, files)
-  table.sort(sorted, by_filepath)
-  for _, file in ipairs(sorted) do
-    out[#out + 1] = { section = section, commit_hash = commit_hash, file = file }
-  end
-end
-
--- Build a flat list of all files in path order.
--- Handles two entry shapes:
---   - by-commit: section.commits[].files
---   - by-file:   section.entries
--- Each output info is { section = title, commit_hash = hash|nil, file = entry }.
-function M.build_logical_file_list(entries)
-  local files = {}
-  for _, section in ipairs(entries or {}) do
-    if section.commits then
-      for _, commit_data in ipairs(section.commits) do
-        append_sorted(files, commit_data.files or {}, section.title, commit_data.commit.hash)
-      end
-    elseif section.entries then
-      append_sorted(files, section.entries, section.title, nil)
-    end
-  end
-  return files
-end
 
 -- Whether J/K should cross into the adjacent file rather than jump to the
 -- current file's last/first hunk. direction: 'next' (J) or 'prev' (K). True
@@ -71,11 +15,10 @@ function M.should_cross_file(direction, current_index, total_hunks, position)
   return current_index == (direction == 'next' and total_hunks or 1)
 end
 
--- Whether two logical-file infos belong to the same commit. Compares section as
--- well as hash, since a partially-seen commit appears under one hash in both the
--- Unseen and Seen sections.
+-- Whether two file nodes belong to the same commit row. Compares the section
+-- as well as the hash: a partly seen commit has a row in both.
 local function same_commit(a, b)
-  return a.commit_hash == b.commit_hash and a.section == b.section
+  return a.entry.commit_hash == b.entry.commit_hash and a.entry.type == b.entry.type
 end
 
 -- Target index for a J/K commit jump in the by-commit list: always leave the
@@ -83,18 +26,37 @@ end
 -- previous commit's last file ('prev'). Both are simply the file just past the
 -- current commit's boundary, so one step off that edge lands correctly. Wraps
 -- around. Files within a commit stay j/k's job.
-function M.adjacent_commit_target(all_files, current_index, direction)
-  local current = all_files[current_index]
-  local total = #all_files
+function M.adjacent_commit_target(files, current_index, direction)
+  local current = files[current_index]
+  local total = #files
   local step = direction == 'next' and 1 or -1
 
   -- Walk to the commit's boundary in the direction of travel, then step past it.
   local edge = current_index
-  while edge + step >= 1 and edge + step <= total and same_commit(all_files[edge + step], current) do
+  while edge + step >= 1 and edge + step <= total and same_commit(files[edge + step], current) do
     edge = edge + step
   end
 
   return ((edge + step - 1) % total) + 1
+end
+
+-- Id of the first file after `id` (wrapping, `id` itself excluded) whose
+-- entry has type `entry_type`, or nil
+function M.next_of_type(files, id, entry_type)
+  local start
+  for i, node in ipairs(files) do
+    if node.id == id then
+      start = i
+      break
+    end
+  end
+  if not start then return nil end
+
+  for offset = 1, #files - 1 do
+    local node = files[(start - 1 + offset) % #files + 1]
+    if node.entry.type == entry_type then return node.id end
+  end
+  return nil
 end
 
 -- After a mark/unmark rewrites a diff, pick the hunk to land on: the first
@@ -111,34 +73,30 @@ function M.hunk_past_position(marks, from_top_relative)
   return nil
 end
 
-local function to_ref(info)
-  return { filepath = info.file.status.filepath, commit_hash = info.commit_hash }
+local function to_ref(node)
+  return { filepath = node.entry.status.filepath }
 end
 
--- Find next/prev/first files among `all_files` matching `predicate`,
--- relative to (current_filepath, current_commit).
--- Each return value is { filepath, commit_hash } or nil.
---   first_file: first match in the filtered list (used for wrap-around).
-function M.find_adjacent_files(all_files, current_filepath, current_commit, predicate)
+-- Find next/prev/first files among `files` matching `predicate(node)`,
+-- relative to the file at `current_filepath`. Each return value is
+-- { filepath } or nil; first_file (the first match) is for wrap-around.
+function M.find_adjacent_files(files, current_filepath, predicate)
   local next_file, prev_file, first_file = nil, nil, nil
   local found_current = false
 
-  for _, info in ipairs(all_files) do
-    if predicate(info) then
-      first_file = first_file or to_ref(info)
-
-      local is_current = info.file.status.filepath == current_filepath
-        and (not current_commit or info.commit_hash == current_commit)
+  for _, node in ipairs(files) do
+    if predicate(node) then
+      first_file = first_file or to_ref(node)
 
       if found_current then
         -- First match after current = next_file; we're done.
-        next_file = to_ref(info)
+        next_file = to_ref(node)
         break
-      elseif is_current then
+      elseif node.entry.status.filepath == current_filepath then
         found_current = true
       else
         -- Last non-current match before current becomes prev_file.
-        prev_file = to_ref(info)
+        prev_file = to_ref(node)
       end
     end
   end

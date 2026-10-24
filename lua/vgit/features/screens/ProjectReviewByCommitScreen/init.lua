@@ -1,9 +1,11 @@
+local loop = require('vgit.core.loop')
 local dimensions = require('vgit.ui.dimensions')
 local CommitListView = require('vgit.ui.views.CommitListView')
 local CommitMessageView = require('vgit.ui.views.CommitMessageView')
 local ProjectReviewScreen = require('vgit.features.screens.ProjectReviewScreen')
 local Model = require('vgit.features.screens.ProjectReviewByCommitScreen.Model')
 local setting = require('vgit.settings.project_review_by_commit')
+local file_navigation = require('vgit.features.screens.file_navigation')
 
 local ProjectReviewByCommitScreen = ProjectReviewScreen:extend()
 
@@ -63,6 +65,9 @@ function ProjectReviewByCommitScreen:constructor(opts)
     entries = function()
       return base.model:get_entries()
     end,
+    on_active_commit = function()
+      if base.commit_message_view then base.commit_message_view:render() end
+    end,
   }, list_plot, {
     elements = {
       header = true,
@@ -76,7 +81,10 @@ function ProjectReviewByCommitScreen:constructor(opts)
       message = function()
         local active = base.list_view:get_active_commit()
         if not active then return {} end
-        return base.model:get_commit_message(active.hash) or {}
+        -- Preloaded at fetch; a miss reads it through git
+        local lines = base.model:get_commit_message(active.hash)
+        loop.free_textlock()
+        return lines or {}
       end,
       list_view = function() return base.list_view end,
     }, msg_plot, {
@@ -89,9 +97,19 @@ function ProjectReviewByCommitScreen:constructor(opts)
     })
   end
 
-  ProjectReviewScreen.init_views(base, list_plot, diff_plot)
+  ProjectReviewScreen.init_views(base, diff_plot)
 
   return base
+end
+
+-- J/K in the list: the next commit's first file, or the previous commit's
+-- last file, wherever the cursor sits in the current commit. Wraps.
+function ProjectReviewByCommitScreen:jump_section(direction)
+  local from = self.list_view:cursor_file_index()
+  if not from then return end
+
+  local files = self.list_view:file_nodes()
+  self:select_file(files, from, file_navigation.adjacent_commit_target(files, from, direction), direction)
 end
 
 -- Auto-size the list column to the widest commit row when list_width is

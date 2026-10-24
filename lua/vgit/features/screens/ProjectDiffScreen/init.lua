@@ -98,16 +98,12 @@ function ProjectDiffScreen:move_to(query_fn)
 end
 
 -- Find adjacent files matching `type_predicate` (function(entry_type) -> bool)
--- in the logical entry list (independent of which folders are expanded).
+-- in display order (independent of which folders are expanded).
 -- Returns next_file, prev_file, first_file as { filepath } tables (or nil),
 -- where first_file enables wrap-around to the start of the section.
 function ProjectDiffScreen:find_adjacent_files(filepath, type_predicate)
-  local entries = self.model:get_entries()
-  if not entries then return nil, nil, nil end
-
-  local all_files = file_navigation.build_logical_file_list(entries)
-  return file_navigation.find_adjacent_files(all_files, filepath, nil, function(info)
-    return type_predicate(info.file.type)
+  return file_navigation.find_adjacent_files(self.status_list_view:file_nodes(), filepath, function(node)
+    return type_predicate(node.entry.type)
   end)
 end
 
