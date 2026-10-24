@@ -1341,7 +1341,9 @@ function ProjectReviewScreen:focus_relative_buffer_entry(buffer)
 
   -- Priority 1: Find current buffer's file, preferring saved section
   -- This keeps the review in sync with what you're editing in vim
-  local filepath = buffer:get_relative_name()
+  -- Entries are repo-relative, whatever the cwd
+  local name = buffer:get_name()
+  local filepath = name ~= '' and fs.make_relative(self.model:get_reponame(), name) or ''
   if filepath ~= '' then
     if self.list_view.get_entries then
       local found = self:move_to_entry_expanding_commit(filepath, nil, last_section, last_commit_message)
