@@ -420,6 +420,17 @@ async.describe('resolution caches:', function()
   end)
 end)
 
+describe('git_branch.subjects_qualify:', function()
+  it('takes two shared subjects, or a small stack sharing all of its own', function()
+    eq(git_branch.subjects_qualify(2, 5, 9), true)
+    eq(git_branch.subjects_qualify(1, 1, 2), true)
+    -- One stray subject can't claim a larger stack
+    eq(git_branch.subjects_qualify(1, 1, 3), false)
+    eq(git_branch.subjects_qualify(1, 2, 1), false)
+    eq(git_branch.subjects_qualify(0, 0, 1), false)
+  end)
+end)
+
 async.describe('trunk work:', function()
   async.it('keeps its trunk key when origin moves ahead', function()
     -- Unpushed jj trunk work, then a fetch brings in someone else's push

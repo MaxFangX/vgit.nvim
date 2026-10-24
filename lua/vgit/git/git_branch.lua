@@ -93,8 +93,19 @@ end
 
 local TRUNKS = { 'main', 'master' }
 
--- Matches ReviewModel.branch_by_subjects's threshold
+-- Minimum shared commit subjects for a stack to count as HEAD's: guards
+-- against a coincidental one-commit overlap between branches.
 local MIN_SUBJECT_OVERLAP = 2
+
+-- Whether a stack holding `subjects` distinct subjects, `overlap` of them
+-- shared with HEAD's `head_count`, is HEAD's stack by content. Below
+-- MIN_SUBJECT_OVERLAP (a single-commit stack can otherwise never match), it
+-- must share *all* its subjects and cover at least half of HEAD's stack, so
+-- one stray subject can't claim a larger stack. Also judges stored reviews
+-- (ReviewModel.branch_by_subjects).
+function git_branch.subjects_qualify(overlap, subjects, head_count)
+  return overlap >= MIN_SUBJECT_OVERLAP or (overlap > 0 and overlap == subjects and 2 * overlap >= head_count)
+end
 
 -- Local branches that never claim HEAD: the trunk, which is the base rather
 -- than the feature branch, and `backup/*` snapshots, which would otherwise tie
@@ -225,9 +236,7 @@ local function claim_head(reponame, head, refs)
       end
     end
 
-    local qualifies = shares_commit
-      or overlap >= MIN_SUBJECT_OVERLAP
-      or (overlap > 0 and overlap == subjects and 2 * overlap >= head_count)
+    local qualifies = shares_commit or git_branch.subjects_qualify(overlap, subjects, head_count)
     local score = qualifies and math.max(overlap, 1) or 0
     if score > best_overlap then
       best, best_overlap = { name }, score

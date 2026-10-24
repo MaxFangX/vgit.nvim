@@ -49,8 +49,6 @@ local ReviewModel = Object:extend()
 -- modify them.
 local session_objects = { by_file = {}, by_commit = {} }
 
-local MIN_SUBJECT_OVERLAP = 2
-
 function ReviewModel:constructor(opts)
   return {
     state = { layout_type = opts.layout_type or 'unified' },
@@ -76,12 +74,9 @@ end
 -- survive rebases, so this follows a review across rebases wherever the
 -- branch bookmark sits.
 --
--- A review qualifies with `MIN_SUBJECT_OVERLAP` matching subjects, so a
--- coincidental one-commit overlap between branches doesn't count. A
--- single-commit stack could then never match, so a review also qualifies if
--- *all* its stored subjects match and they cover at least half of HEAD's
--- stack. The half-stack rule keeps one stray subject (e.g. records saved under a
--- misresolved key) from claiming a larger stack away from its bookmark.
+-- A review qualifies as a bookmark's stack does (git_branch.subjects_qualify),
+-- so one stray subject (e.g. records saved under a misresolved key) can't
+-- claim a larger stack away from its bookmark.
 --
 -- Returns the qualifying branch with the most overlap, ties going to the most
 -- recently used, or nil. Safe in fast event contexts.
@@ -101,9 +96,8 @@ function ReviewModel.branch_by_subjects(repo_key, head_subjects)
       end
     end
 
-    local qualifies = overlap >= MIN_SUBJECT_OVERLAP
-      or (overlap > 0 and overlap == stored and 2 * overlap >= head_count)
-    if qualifies and (overlap > best_overlap or (overlap == best_overlap and mtime > best_mtime)) then
+    local better = overlap > best_overlap or (overlap == best_overlap and mtime > best_mtime)
+    if better and git_branch.subjects_qualify(overlap, stored, head_count) then
       best_key, best_overlap, best_mtime = state_file.branch_key, overlap, mtime
     end
   end
