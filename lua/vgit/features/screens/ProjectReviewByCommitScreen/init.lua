@@ -1,4 +1,3 @@
-local loop = require('vgit.core.loop')
 local dimensions = require('vgit.ui.dimensions')
 local CommitListView = require('vgit.ui.views.CommitListView')
 local CommitMessageView = require('vgit.ui.views.CommitMessageView')
@@ -64,11 +63,7 @@ function ProjectReviewByCommitScreen:constructor(opts)
     base.commit_message_view = CommitMessageView(base.scene, {
       message = function()
         local active = base.list_view:get_active_commit()
-        if not active then return {} end
-        -- Preloaded at fetch; a miss reads it through git
-        local lines = base.model:get_commit_message(active.hash)
-        loop.free_textlock()
-        return lines or {}
+        return active and base.model:get_commit_message(active.hash) or {}
       end,
       -- End the list above the box. Its body starts a few rows down (app
       -- bar, header).

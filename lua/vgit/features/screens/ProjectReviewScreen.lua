@@ -28,11 +28,10 @@ local visual_selection = require('vgit.features.screens.visual_selection')
 
   Keys run as jobs through one queue (see enqueue).
 
-  Model calls that may run git (fetch, a mark or diff that loads contents,
-  reset) resume in a fast event context, where window and buffer calls
-  fail. Free the textlock right after them, at the call site; views don't,
-  except DiffView:get_diff, which wraps the diff prop (read diffs through
-  it).
+  Of the model's calls only fetch runs git; it resumes in a fast event
+  context, where window and buffer calls fail, so free the textlock right
+  after it. Views don't free it, except DiffView:get_diff, which wraps the
+  diff prop for screens whose diffs do run git.
 
   Subclasses set model, setting and list_view, then call init_views. They may
   override jump_section (J/K in the list), and the list width hooks
@@ -213,8 +212,6 @@ function ProjectReviewScreen:apply_mark(entry, mark_as_seen, selections)
   else
     self.model:unmark_selections(entry, selections)
   end
-  -- Marking may have loaded contents through git
-  loop.free_textlock()
   self.list_view:render()
 end
 
@@ -254,7 +251,6 @@ function ProjectReviewScreen:mark(mark_as_seen, selections)
   local remaining = self.model:lookup(entry.id)
   if remaining then
     local diff = self.model:get_diff_for(remaining)
-    loop.free_textlock()
     local hunk = diff and file_navigation.hunk_past_position(diff.marks, from_top)
     if hunk and self:select(entry.id, hunk) then return end
   end
@@ -306,7 +302,6 @@ function ProjectReviewScreen:reset_marks()
 
   local entry = self.model:get_entry()
   self.model:reset_marks()
-  loop.free_textlock()
   self.list_view:render()
 
   -- Everything is unseen again: stay on this file
@@ -571,7 +566,6 @@ function ProjectReviewScreen:source_entry_id(filepath, lnum)
       unseen = unseen or entry.id
       diffs = diffs + 1
       local diff = self.model:get_diff_for(entry)
-      loop.free_textlock()
       for _, mark in ipairs(diff and diff.marks or {}) do
         if lnum >= mark.top_relative and lnum <= mark.bot_relative then return entry.id end
       end
