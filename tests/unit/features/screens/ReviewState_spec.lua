@@ -85,4 +85,36 @@ describe('ReviewState', function()
       eq(#warnings, 1)
     end)
   end)
+
+  describe('failed writes:', function()
+    local console = require('vgit.core.console')
+    local fs = require('vgit.core.fs')
+    local warnings, warn, write_file_atomic
+
+    before_each(function()
+      warnings, warn, write_file_atomic = {}, console.warn, fs.write_file_atomic
+      console.warn = function(msg) warnings[#warnings + 1] = msg end
+    end)
+    after_each(function()
+      console.warn, fs.write_file_atomic = warn, write_file_atomic
+    end)
+
+    it('keeps the saved state when an object fails to write', function()
+      run(function()
+        local state = ReviewState({ branch_name = 'feature', review_type = 'by_file', repo_name = 'repo' })
+        state:set_approved('a.lua', { 'a' }, false, { 'old' })
+        state:save()
+
+        fs.write_file_atomic = function(path, lines)
+          if path:find('/objects/') then return nil, { 'No space left on device' } end
+          return write_file_atomic(path, lines)
+        end
+        state:set_approved('b.lua', { 'b' }, false, { 'old' })
+        state:save()
+      end)
+
+      eq(vim.tbl_keys(persistence.load('repo', 'feature', 'by_file').entries), { 'a.lua' })
+      eq(warnings, { 'Failed to save review state: No space left on device' })
+    end)
+  end)
 end)

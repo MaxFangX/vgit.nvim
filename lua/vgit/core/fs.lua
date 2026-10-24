@@ -42,12 +42,14 @@ function fs.write_file(filepath, lines)
   local fd = io.open(filepath, 'wb')
   if not fd then return nil, { 'no file descriptor found' } end
 
+  local ok, err = true, nil
   for i = 1, #lines do
-    fd:write(lines[i])
-    fd:write('\n')
+    ok, err = fd:write(lines[i], '\n')
+    if not ok then break end
   end
 
-  fd:close()
+  local closed, close_err = fd:close()
+  if not ok or not closed then return nil, { err or close_err } end
 end
 
 -- Write via a sibling temp file and rename, so a crash mid-write leaves the

@@ -307,8 +307,16 @@ local function write_to_disk(self, final)
     if change_id then entries[mark_key] = { change_id = change_id } end
   end
 
-  persistence.write_objects(self.repo_name, self.branch_name, objects)
-  persistence.save(self.repo_name, self.branch_name, self.review_type, { entries = entries })
+  -- Never write JSON referencing objects that failed to write
+  local _, err = persistence.write_objects(self.repo_name, self.branch_name, objects)
+  if not err then
+    _, err = persistence.save(self.repo_name, self.branch_name, self.review_type, { entries = entries })
+  end
+  if err then
+    console.warn(string.format('Failed to save review state: %s', err[1]))
+    return
+  end
+
   if final then
     persistence.sweep_objects(self.repo_name, self.branch_name)
     persistence.evict_lru(self.repo_name)

@@ -139,10 +139,10 @@ function ReviewPersistence.get_objects_dir(repo_name, branch_name)
   return string.format('%s/%s/objects', ReviewPersistence.get_state_dir(repo_name), encode_branch(branch_name))
 end
 
--- Ensure state directory exists
+-- Ensure state directory exists. Returns nil, err on failure.
 local function ensure_dir(dir)
-  if not fs.exists(dir) then
-    vim.fn.mkdir(dir, 'p')
+  if vim.fn.mkdir(dir, 'p') == 0 and vim.fn.isdirectory(dir) == 0 then
+    return nil, { string.format('Failed to create %s', dir) }
   end
 end
 
@@ -270,17 +270,19 @@ function ReviewPersistence.load_siblings(repo_name, branch_name, review_type)
   return siblings
 end
 
--- Save state to disk. Does not evict; see evict_lru.
+-- Save state to disk. Does not evict; see evict_lru. Returns nil, err on
+-- failure.
 function ReviewPersistence.save(repo_name, branch_name, review_type, state_data)
   local path = ReviewPersistence.get_state_path(repo_name, branch_name, review_type)
-  ensure_dir(fs.dirname(path))
+  local _, err = ensure_dir(fs.dirname(path))
+  if err then return nil, err end
 
   -- Add metadata
   state_data.version = CURRENT_VERSION
   state_data.lastUsed = os.time()
   state_data.branchName = branch_name
 
-  fs.write_file_atomic(path, { vim.fn.json_encode(state_data) })
+  return fs.write_file_atomic(path, { vim.fn.json_encode(state_data) })
 end
 
 -- Content hash used to address snapshot objects. Requires main-loop context
@@ -313,15 +315,17 @@ end
 -- Write snapshot objects: objects is a map of hash -> lines. Existing objects
 -- are left alone (content-addressed, so contents are immutable), which is
 -- only safe because writes are atomic: a truncated object would otherwise be
--- kept forever.
+-- kept forever. Stops at the first failure, returning nil, err.
 function ReviewPersistence.write_objects(repo_name, branch_name, objects)
   local dir = ReviewPersistence.get_objects_dir(repo_name, branch_name)
-  ensure_dir(dir)
+  local _, err = ensure_dir(dir)
+  if err then return nil, err end
 
   for hash, lines in pairs(objects) do
     local path = dir .. '/' .. hash
     if not fs.exists(path) then
-      fs.write_file_atomic(path, lines)
+      _, err = fs.write_file_atomic(path, lines)
+      if err then return nil, err end
     end
   end
 end
