@@ -828,10 +828,21 @@ function ProjectReviewScreen:reset_marks()
   if decision ~= 'yes' and decision ~= 'y' then return end
 
   self:with_mark_lock(function()
+    local entry = self.model:get_entry()
     self.model:reset_marks()
     -- reset_marks ran git commands; escape their fast event context
     loop.free_textlock()
     self.list_view:render()
+
+    -- Everything is unseen again: stay on this file, else take the first one
+    local found = entry and self:move_to_entry_expanding_commit(entry.filepath, entry.commit_hash, 'unseen')
+    if not found then
+      self:ensure_visible_file()
+      found = self.list_view:move_to_entry(function(e) return e.type == 'unseen' end)
+    end
+    if found then self.model:set_entry_id(found.id) end
+    self.diff_view:render()
+    self.diff_view:move_to_hunk(1, 'smart')
   end)
 end
 

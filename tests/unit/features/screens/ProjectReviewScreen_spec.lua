@@ -1,4 +1,5 @@
 local loop = require('vgit.core.loop')
+local console = require('vgit.core.console')
 local screen_manager = require('vgit.ui.screen_manager')
 local scene_setting = require('vgit.settings.scene')
 
@@ -179,7 +180,10 @@ end
 describe('ProjectReviewScreen', function()
   local repo, cwd, xdg
 
+  local input = console.input
+
   before_each(function()
+    console.input = function() return 'y' end
     cwd = vim.loop.cwd()
     xdg = vim.env.XDG_DATA_HOME
     vim.env.XDG_DATA_HOME = vim.fn.tempname()
@@ -193,6 +197,7 @@ describe('ProjectReviewScreen', function()
     vim.cmd.cd(cwd)
     vim.env.XDG_DATA_HOME = xdg
     vim.fn.delete(repo, 'rf')
+    console.input = input
   end)
 
   -- Walk `n` presses of `keys`, collecting the entry after each
@@ -342,6 +347,16 @@ describe('ProjectReviewScreen', function()
       H.assert_consistent()
     end)
 
+    it('R re-anchors on the current file, now unseen', function()
+      H.open('file')
+      H.keys('S')
+      H.keys('k')
+      eq('seen a/x.lua', H.entry())
+      H.keys('R')
+      eq({ 'unseen a/x.lua', '1/4 inside' }, { H.entry(), H.hunk() })
+      H.assert_consistent()
+    end)
+
     it('opens on the current buffer\'s file', function()
       vim.cmd.edit('src/b/y.lua')
       H.open('file')
@@ -422,6 +437,16 @@ describe('ProjectReviewScreen', function()
       H.keys('j')
       H.keys('j')
       eq(ORDER[2], H.entry())
+    end)
+
+    it('R re-anchors on the current file, now unseen', function()
+      H.open('commit')
+      H.keys('S')
+      H.keys('k')
+      eq('seen a/x.lua @feat: add core', H.entry())
+      H.keys('R')
+      eq({ ORDER[1], '1/2 inside' }, { H.entry(), H.hunk() })
+      H.assert_consistent()
     end)
 
     it('S marks the file and moves on; the commit shows up under Seen', function()
