@@ -461,3 +461,57 @@ async.describe('branch_for_head threshold:', function()
     cleanup(dir)
   end)
 end)
+
+async.describe('fetch_ref_if_stale:', function()
+  -- An `ssh` that records what it was run with, then fails like a denied login
+  local function fake_ssh(dir)
+    sh(dir, 'mkdir bin')
+    local script = dir .. '/bin/ssh'
+    vim.fn.writefile({
+      '#!/bin/sh',
+      string.format(
+        'echo "args=$* prompt=$GIT_TERMINAL_PROMPT askpass=[$GIT_ASKPASS] require=$SSH_ASKPASS_REQUIRE" > %s/ssh.log',
+        dir
+      ),
+      'exit 255',
+    }, script)
+    vim.fn.setfperm(script, 'rwxr-xr-x')
+    return script
+  end
+
+  local function fetch_log(dir)
+    git_branch.fetch_ref_if_stale(dir, 'origin/master')
+    loop.free_textlock()
+    vim.wait(5000, function()
+      return vim.loop.fs_stat(dir .. '/ssh.log') ~= nil
+    end)
+    return vim.fn.readfile(dir .. '/ssh.log')[1]
+  end
+
+  async.it('never prompts, and runs ssh in batch mode', function()
+    local dir = make_repo()
+    local script = fake_ssh(dir)
+    sh(dir, 'git remote add origin ssh://vgit.invalid/repo.git')
+    local path = vim.env.PATH
+    vim.env.GIT_SSH_COMMAND, vim.env.GIT_SSH = nil, nil
+    vim.env.PATH = vim.fs.dirname(script) .. ':' .. path
+
+    local log = fetch_log(dir)
+    vim.env.PATH = path
+    assert.is_truthy(log:find('-o BatchMode=yes', 1, true))
+    assert.is_truthy(log:find('prompt=0 askpass=[] require=never', 1, true))
+    cleanup(dir)
+  end)
+
+  async.it("keeps the user's own ssh command", function()
+    local dir = make_repo()
+    sh(dir, 'git remote add origin ssh://vgit.invalid/repo.git')
+    sh(dir, 'git config core.sshCommand ' .. fake_ssh(dir))
+    vim.env.GIT_SSH_COMMAND, vim.env.GIT_SSH = nil, nil
+
+    local log = fetch_log(dir)
+    eq(log:find('BatchMode', 1, true), nil)
+    assert.is_truthy(log:find('prompt=0', 1, true))
+    cleanup(dir)
+  end)
+end)

@@ -64,6 +64,7 @@ end
 -- `-z` output). By default any stderr output is a failure. `opts.by_exit_code`
 -- judges by the exit code instead, for read-only commands whose stderr can
 -- carry warnings on success (rename-limit, ambiguous refnames, signatures).
+-- `opts.env` replaces the environment (luv's `KEY=value` list).
 gitcli.run = loop.suspend(function(args, opts, callback)
   local cmd = git_setting:get('cmd')
 
@@ -78,6 +79,7 @@ gitcli.run = loop.suspend(function(args, opts, callback)
   Spawn({
     command = cmd,
     args = args,
+    env = opts.env,
     on_stderr = function(line)
       err[#err + 1] = line
     end,

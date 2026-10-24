@@ -1,4 +1,6 @@
 local jj = require('vgit.git.jj')
+local loop = require('vgit.core.loop')
+local console = require('vgit.core.console')
 local gitcli = require('vgit.git.gitcli')
 local utils = require('vgit.core.utils')
 local event = require('vgit.core.event')
@@ -372,80 +374,6 @@ function git_branch.merge_base(reponame, ref1, ref2)
   return result[1]
 end
 
--- Track fetch state per repo
-local fetch_state = {}  -- { last_success = timestamp, in_progress = bool }
-
--- Async fetch a remote ref if last fetch was over an hour ago.
--- Shows a notification only if the ref was actually updated.
-function git_branch.fetch_ref_if_stale(reponame, ref)
-  if not reponame or not ref then return end
-
-  local remote, branch = ref:match('^([^/]+)/(.+)$')
-  if not remote or not branch then return end
-
-  local state = fetch_state[reponame] or {}
-  fetch_state[reponame] = state
-
-  -- Skip if fetch in progress or succeeded within the last hour
-  if state.in_progress then return end
-  if state.last_success and (os.time() - state.last_success) < 3600 then return end
-
-  state.in_progress = true
-
-  -- Get current SHA before fetch
-  local old_sha_chunks = {}
-  local sha_stdout = vim.loop.new_pipe(false)
-  vim.loop.spawn('git', {
-    args = { '-C', reponame, 'rev-parse', ref },
-    stdio = { nil, sha_stdout, nil },
-  }, function()
-    sha_stdout:read_stop()
-    if not sha_stdout:is_closing() then sha_stdout:close() end
-
-    local old_sha = table.concat(old_sha_chunks):gsub('%s+', '')
-
-    -- Now fetch
-    vim.loop.spawn('git', {
-      args = { '-C', reponame, 'fetch', remote, branch },
-      stdio = { nil, nil, nil },
-    }, function(code)
-      state.in_progress = false
-      if code == 0 then
-        state.last_success = os.time()
-
-        -- Get new SHA after fetch
-        local new_sha_chunks = {}
-        local new_sha_stdout = vim.loop.new_pipe(false)
-        vim.loop.spawn('git', {
-          args = { '-C', reponame, 'rev-parse', ref },
-          stdio = { nil, new_sha_stdout, nil },
-        }, function()
-          new_sha_stdout:read_stop()
-          if not new_sha_stdout:is_closing() then new_sha_stdout:close() end
-
-          local new_sha = table.concat(new_sha_chunks):gsub('%s+', '')
-
-          -- Only notify if ref actually changed
-          if old_sha ~= new_sha then
-            vim.schedule(function()
-              vim.notify(
-                string.format('Fetched %s/%s — reopen to see updated diff', remote, branch),
-                vim.log.levels.INFO
-              )
-            end)
-          end
-        end)
-        new_sha_stdout:read_start(function(_, chunk)
-          if chunk then new_sha_chunks[#new_sha_chunks + 1] = chunk end
-        end)
-      end
-    end)
-  end)
-  sha_stdout:read_start(function(_, chunk)
-    if chunk then old_sha_chunks[#old_sha_chunks + 1] = chunk end
-  end)
-end
-
 -- The local trunk branch (main/master) that HEAD sits on — i.e. HEAD is at or
 -- behind its tip. This identifies "working on the trunk itself", including in
 -- jj-colocated repos where HEAD is detached at the working-copy parent, as
@@ -470,6 +398,64 @@ local function rev_parse(reponame, ref)
   local result, err = gitcli.run({ '-C', reponame, 'rev-parse', '--verify', ref })
   if err then return nil end
   return result[1]
+end
+
+local FETCH_INTERVAL_SECS = 3600
+
+-- Per `<reponame>|<ref>`: { last_success = os.time(), in_progress = bool }
+local fetch_state = {}
+
+-- The environment for a background fetch, which must never prompt: git's
+-- terminal prompt and every askpass helper are off (an empty GIT_ASKPASS
+-- makes git skip core.askPass and SSH_ASKPASS too), and ssh runs in batch
+-- mode unless the user configured their own ssh command.
+local function no_prompt_env(reponame)
+  local env = vim.loop.os_environ()
+  env.GIT_TERMINAL_PROMPT = '0'
+  env.GIT_ASKPASS = ''
+  env.SSH_ASKPASS = ''
+  env.SSH_ASKPASS_REQUIRE = 'never'
+  if not env.GIT_SSH_COMMAND and not env.GIT_SSH then
+    local configured = gitcli.run({ '-C', reponame, 'config', '--get', 'core.sshCommand' })
+    if not configured or #configured == 0 then env.GIT_SSH_COMMAND = 'ssh -o BatchMode=yes' end
+  end
+
+  local list = {}
+  for name, value in pairs(env) do
+    list[#list + 1] = name .. '=' .. value
+  end
+  return list
+end
+
+-- Fetch a remote-tracking ref in the background if it wasn't fetched in the
+-- last FETCH_INTERVAL_SECS. Notifies only if the ref moved.
+function git_branch.fetch_ref_if_stale(reponame, ref)
+  if not reponame or not ref then return end
+
+  local remote, branch = ref:match('^([^/]+)/(.+)$')
+  if not remote then return end
+
+  local key = reponame .. '|' .. ref
+  local state = fetch_state[key] or {}
+  fetch_state[key] = state
+  if state.in_progress then return end
+  if state.last_success and os.time() - state.last_success < FETCH_INTERVAL_SECS then return end
+
+  state.in_progress = true
+  loop.coroutine(function()
+    local old_tip = rev_parse(reponame, ref)
+    local _, err = gitcli.run(
+      { '-C', reponame, 'fetch', remote, branch },
+      { by_exit_code = true, env = no_prompt_env(reponame) }
+    )
+    state.in_progress = false
+    if err then return end
+
+    state.last_success = os.time()
+    if rev_parse(reponame, ref) ~= old_tip then
+      console.info(string.format('Fetched %s — reopen to see updated diff', ref))
+    end
+  end)()
 end
 
 -- The local trunk branch (main/master) sitting strictly behind HEAD, when the
