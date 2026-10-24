@@ -3,9 +3,9 @@ local dimensions = require('vgit.ui.dimensions')
 local PresentationalComponent = require('vgit.ui.components.PresentationalComponent')
 
 --[[
-  The expanded commit's message, under the commit list: its subject heads
-  the box and its body fills it, the box growing to fit (up to half the
-  screen) from the bottom of the screen.
+  The expanded commit's message, under the commit list. Its subject titles
+  the box, which grows up from the bottom of the screen to fit the body, up
+  to half the screen.
 
   props:
     message() - the message lines
@@ -53,12 +53,12 @@ function CommitMessageView:mount()
   self.scene:get('commit_message'):mount()
 end
 
--- Configured width from plot (stable, not runtime state)
+-- The width from the plot, not the window's current width
 function CommitMessageView:get_configured_width()
   return self.plot.width and dimensions.convert(self.plot.width) or dimensions.convert('25vw')
 end
 
--- Calculate display height accounting for word wrap
+-- Display height of `lines` once wrapped
 function CommitMessageView:get_wrapped_height(lines)
   local width = self:get_configured_width()
   local height = 0
@@ -86,8 +86,8 @@ function CommitMessageView:resize(height)
     header.window:set_win_plot({ relative = 'editor', row = row, col = col, width = width, height = 1 })
   end
 
-  -- A float must be at least 1 row, which would overflow the usable area
-  -- when the message has no body (header only): hide it instead
+  -- A float must be at least 1 row, so with no body (header only) it would
+  -- overflow the usable area. Hide it instead.
   local window = component.window
   if window:is_valid() then
     if height == 1 then
@@ -130,9 +130,8 @@ function CommitMessageView:render()
   body[#body + 1] = ''
   component:unlock():set_lines(body):lock()
 
-  -- `set_lines` leaves the reused, wrapped buffer scrolled wherever the previous
-  -- (longer) message left it, hiding the first lines until the user interacts.
-  -- Pin the view to the top so the box always renders from the start.
+  -- set_lines leaves the window scrolled wherever the previous, longer
+  -- message left it, so pin the view to the top
   if component.window:is_valid() then component.window:set_cursor({ 1, 0 }) end
 end
 

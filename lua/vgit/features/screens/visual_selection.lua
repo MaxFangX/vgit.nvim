@@ -38,8 +38,8 @@ end
 -- Map a visual line range to per-hunk pair-row selections:
 -- { index = hunk_index, rows = set-of-rows | nil }, rows == nil meaning the
 -- whole hunk. Row r pairs removed line r with added line r, the way split
--- renders them side by side; in unified, which stacks a hunk's removed
--- lines above its added lines, both halves map onto the same pair row.
+-- renders them side by side. In unified, which stacks a hunk's removed lines
+-- above its added lines, both halves map onto the same pair row.
 function visual_selection.for_range(diff, layout_type, top, bot)
   return select_hunks(diff, top, bot, function(index, mark, lo, hi)
     local removed = layout_type == 'unified' and removed_count(diff, index) or 0
@@ -55,7 +55,7 @@ end
 -- Map a visual line range in a unified diff to per-hunk line selections, as
 -- precise as `git add -p` line editing: { index = hunk_index, lines = {
 -- removed = set, added = set } }, sets of 1-based indices into the hunk's
--- removed and added lines; a whole hunk has no `lines`.
+-- removed and added lines. A whole hunk has no `lines`.
 function visual_selection.lines_for_range(diff, top, bot)
   return select_hunks(diff, top, bot, function(index, mark, lo, hi)
     local removed = removed_count(diff, index)
@@ -74,8 +74,8 @@ end
 
 -- Wrap a range consumer in a visual-mode keymap handler. The selection
 -- endpoints must be read while still in visual mode, so they are captured
--- synchronously before leaving visual mode; `run(top, bot)` may then defer
--- (e.g. to a job queue).
+-- synchronously before leaving it. `run(top, bot)` may then defer (e.g. to a
+-- job queue).
 function visual_selection.make_handler(run)
   return function()
     local top = vim.fn.line('v')

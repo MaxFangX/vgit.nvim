@@ -1,9 +1,9 @@
 --[[
   Section heading detection for StatusListView-based J/K navigation.
 
-  Given a StatusListView fold tree, returns a set of folder nodes that
-  should be jump targets. Used by ProjectDiffScreen and the by-file
-  variant of the project review screen. The rule:
+  Given a StatusListView fold tree, returns the set of folder nodes that
+  are jump targets. Used by ProjectDiffScreen and ProjectReviewByFileScreen.
+  The rule:
 
   - Top-level folds (e.g. "Staged Changes", "Changes", "Seen", "Unseen")
     are section wrappers, never headings themselves.
@@ -43,9 +43,7 @@ local function classify_children(folder)
   return folders, has_file
 end
 
--- Collect headings for one top-level folder subtree by walking the
--- single-folder chain, then marking branch-point children (or the entry
--- folder if the chain bottoms out at a leaf folder).
+-- Collect the headings under one folder directly below a top-level fold
 local function collect_for(entry_folder, headings)
   local cur = entry_folder
   while true do

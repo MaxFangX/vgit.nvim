@@ -8,17 +8,18 @@ local file_navigation = require('vgit.features.screens.file_navigation')
 
 local ProjectReviewByCommitScreen = ProjectReviewScreen:extend()
 
--- Initial height of the commit message box (vh); it then fits its message
+-- Initial height of the commit message box (vh), after which it fits its
+-- message
 local MSG_HEIGHT = 14
 
--- Narrowest list column in left/right layouts: the message box below it
--- shows convention-wrapped (72-column) commit bodies unwrapped
+-- Narrowest list column in left/right layouts, so the message box below it
+-- fits 72-column commit bodies without wrapping
 local MIN_LIST_WIDTH = 72
 
 -- Plots for the list, the commit message box and the diff. Left/right
--- layouts get a `cols`-wide list column with the message box below it, and
--- in left layout the boundary is draggable: list_cols, the clamped width.
--- Top/bottom layouts have no message box.
+-- layouts get a `cols`-wide list column with the message box below it. In
+-- left layout the boundary is draggable, so the clamped width is returned as
+-- list_cols. Top/bottom layouts have no message box.
 local function plots_for(position, cols)
   if position == 'top' then
     return { row = 1, height = '25vh', width = '100vw' }, nil, { row = '25vh', height = '75vh', width = '100vw' }
@@ -91,8 +92,8 @@ end
 
 -- Auto-size the list column to the widest commit row when list_width is
 -- auto (0, the default), clamped to [MIN_LIST_WIDTH, 45% of the editor]. The
--- cap keeps one over-long commit subject from squeezing the diff (subjects
--- past it truncate). A positive list_width (user config, or a boundary drag
+-- cap truncates an over-long commit subject rather than squeezing the diff.
+-- A positive list_width (user config, or a boundary drag
 -- earlier this session) is used as-is. Called after fetch, before windows
 -- are defined.
 function ProjectReviewByCommitScreen:resolve_list_width()

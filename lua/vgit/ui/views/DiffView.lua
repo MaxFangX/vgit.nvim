@@ -28,7 +28,6 @@ function DiffView:constructor(scene, props, plot, config)
   }
 end
 
--- Capture viewport state from a component's window
 local function capture_viewport(component)
   if not component or not component.window then return nil end
   local viewport = {}
@@ -306,8 +305,8 @@ end
 
 -- Neovim disables regex syntax for a buffer once a redraw exceeds
 -- 'redrawtime' (easy under heavy system load), and only a syntax reset
--- re-enables it. Called on every render so it self-heals; not on hunk
--- jumps, where re-sourcing the syntax cost more than the jump itself.
+-- re-enables it. So this runs on every render, to self-heal, but not on hunk
+-- jumps, where re-sourcing the syntax costs more than the jump itself.
 function DiffView:reset_syntax()
   local filetype = self.props.filetype()
   if not filetype then return end
@@ -502,9 +501,9 @@ function DiffView:notify(msg)
   self.scene:get('current'):notify(msg)
 end
 
--- Fetch the diff prop, then land back on the main loop: computing an
--- uncached diff suspends on a git spawn and resumes in a fast event
--- context, where window/option API calls are disallowed (E5560).
+-- Computing an uncached diff can suspend on a git spawn and resume in a fast
+-- event context, where window and option API calls fail (E5560). So free the
+-- textlock after fetching the diff prop.
 function DiffView:get_diff()
   local diff = self.props.diff()
   loop.free_textlock()
@@ -581,8 +580,8 @@ end
 
 -- Returns the file line number for the cursor row. A removed row (absent
 -- from the file) maps to the first numbered row below it, which in a change
--- is the line that replaced it; a removal at the end of the file maps to
--- the last numbered row above.
+-- is the line that replaced it. A removal at the end of the file maps to the
+-- last numbered row above.
 function DiffView:get_file_lnum()
   local lines_changes = self.state.current_lines_changes
   if not lines_changes or #lines_changes == 0 then return nil end
@@ -618,7 +617,6 @@ function DiffView:set_lnum(lnum, position)
   local current = self.scene:get('current')
   local previous = self.props.layout_type() == 'split' and self.scene:get('previous') or nil
 
-  -- For non-smart positioning, use simple path
   if position ~= 'smart' then
     if previous then previous:set_lnum(lnum):position_cursor(position) end
     current:set_lnum(lnum):position_cursor(position)
@@ -626,22 +624,19 @@ function DiffView:set_lnum(lnum, position)
   end
 
   -- Smart positioning: center only if target line is off-screen
-
-  -- Determine visibility using saved viewport (from before render) or current
   local saved = self._saved_viewport or {}
   self._saved_viewport = nil
   local current_viewport, is_visible = check_visibility(current, lnum, saved.current)
   local previous_viewport = previous and (saved.previous or capture_viewport(previous))
 
-  -- If off-screen, just center both windows
   if not is_visible then
     if previous then previous:set_lnum(lnum):position_cursor('center') end
     current:set_lnum(lnum):position_cursor('center')
     return
   end
 
-  -- Target is visible: move cursor without changing scroll position
-  -- Disable scrollbind temporarily so windows don't interfere
+  -- Move the cursors without scrolling, with scrollbind off so the windows
+  -- don't scroll each other
   local had_scrollbind_current, had_scrollbind_previous
   current.window:call(function()
     had_scrollbind_current = vim.wo.scrollbind
@@ -654,7 +649,6 @@ function DiffView:set_lnum(lnum, position)
     end)
   end
 
-  -- Move cursors while preserving scroll positions
   if previous and previous_viewport then
     move_cursor_preserving_scroll(previous, lnum, previous_viewport.topline)
   elseif previous then
@@ -662,7 +656,6 @@ function DiffView:set_lnum(lnum, position)
   end
   move_cursor_preserving_scroll(current, lnum, current_viewport.topline)
 
-  -- Restore scrollbind
   if had_scrollbind_current then
     current.window:call(function() vim.wo.scrollbind = true end)
   end
@@ -701,14 +694,13 @@ function DiffView:find_diff_line_for_source(source_lnum)
   return best_lnum
 end
 
--- Set cursor to the diff line corresponding to a source file line
--- source_winline: cursor's position relative to window top (from vim.fn.winline())
+-- Move the cursor to the diff row of source line `source_lnum`, on window row
+-- `source_winline` (from vim.fn.winline())
 function DiffView:set_source_lnum(source_lnum, source_col, source_winline)
   local diff_lnum = self:find_diff_line_for_source(source_lnum)
   if diff_lnum then
     local component = self.scene:get('current')
     component:set_cursor({ diff_lnum, source_col and (source_col - 1) or 0 })
-    -- Restore scroll position so cursor is at same relative position in window
     if source_winline then
       local win_id = component.window and component.window.win_id
       if win_id and vim.api.nvim_win_is_valid(win_id) then

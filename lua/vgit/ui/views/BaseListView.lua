@@ -6,11 +6,9 @@ local fold_tree = require('vgit.ui.fold_tree')
 local FoldableListComponent = require('vgit.ui.components.FoldableListComponent')
 
 --[[
-  BaseListView provides the shared functionality for list views that display
-  hierarchical, foldable content (StatusListView, CommitListView, etc.).
-
-  Subclasses must implement:
-    - render() - builds and sets the fold structure
+  BaseListView is the base of the foldable list views (StatusListView and
+  CommitListView). Subclasses implement render(), which builds the fold tree
+  and passes it to sync_folds.
 ]]
 
 local BaseListView = Object:extend()
@@ -75,7 +73,7 @@ function BaseListView:find_list_item(callback)
   return self.scene:get('list'):find_list_item(callback)
 end
 
--- Put the cursor on the first row matching pred(item, lnum); returns the item
+-- Put the cursor on the first row matching pred(item, lnum), returning the item
 function BaseListView:move_to_item(pred)
   local item, lnum = self:find_list_item(pred)
   if item then self:set_lnum(lnum) end
@@ -104,8 +102,8 @@ function BaseListView:scroll_to(edge)
   end)
 end
 
--- File nodes in display order, collapsed folds included. Cached per folds
--- tree: every render builds a new one.
+-- File nodes in display order, collapsed folds included. Every render builds
+-- a new folds tree, so this is cached per tree.
 function BaseListView:file_nodes()
   local folds = self.state.folds
   if self._file_nodes_of ~= folds then
@@ -160,7 +158,7 @@ function BaseListView:move(direction)
   if direction == 'down' then lnum = lnum + 1 end
   if direction == 'up' then lnum = lnum - 1 end
 
-  -- Only wrap when navigating (direction specified), not when cursor is programmatically set
+  -- Wrap only when stepping in a direction. A plain move (CursorMoved) clamps.
   if direction then
     if lnum < 1 then
       lnum = count
@@ -168,7 +166,6 @@ function BaseListView:move(direction)
       lnum = 1
     end
   else
-    -- Clamp to valid range without wrapping
     if lnum < 1 then lnum = 1 end
     if lnum > count then lnum = count end
   end
@@ -213,7 +210,6 @@ function BaseListView:mount(opts)
   end)
 end
 
--- Subclasses must override this method
 function BaseListView:render()
   error('BaseListView:render() must be implemented by subclass')
 end

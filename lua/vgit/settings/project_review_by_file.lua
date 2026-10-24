@@ -2,7 +2,7 @@ local Config = require('vgit.core.Config')
 
 return Config({
   -- Width of the file list column in columns. The boundary is also
-  -- mouse-draggable; a drag updates this value for the rest of the session.
+  -- mouse-draggable, and a drag sets this for the rest of the session.
   list_width = 80,
   keymaps = {
     toggle_focus = {

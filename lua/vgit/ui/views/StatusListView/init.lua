@@ -26,8 +26,8 @@ function StatusListView:render()
   self:sync_folds(folds)
 end
 
--- Move the cursor to the next/prev crate-level folder heading (see
--- section_headings for the rule), wrapping. Returns its row.
+-- Move the cursor to the next/prev folder heading (see section_headings),
+-- wrapping. Returns its item.
 function StatusListView:jump_to_heading(direction)
   local component = self.scene:get('list')
   local current_lnum = component:get_lnum()

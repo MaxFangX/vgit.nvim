@@ -2,11 +2,10 @@ local Config = require('vgit.core.Config')
 
 return Config({
   list_position = 'left',
-  -- Width of the file list column (left/right layouts). 0 = auto: size to
-  -- the widest commit row, clamped to [72, 45% of the editor]. Set a
-  -- positive number for a fixed width instead. The boundary is also
-  -- mouse-draggable in left layout; a drag pins the dragged width for the
-  -- rest of the session.
+  -- Width of the file list column in left/right layouts. 0 = auto: size to
+  -- the widest commit row, clamped to [72, 45% of the editor]. A positive
+  -- number is a fixed width. In left layout the boundary is mouse-draggable,
+  -- and a drag pins the dragged width for the rest of the session.
   list_width = 0,
   keymaps = {
     toggle_focus = {

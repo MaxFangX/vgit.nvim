@@ -4,9 +4,8 @@
   attach() installs global normal-mode <LeftMouse>/<LeftDrag>/<LeftRelease>
   mappings for the lifetime of a screen. A press on the 2-column grab zone at
   the boundary starts a drag; any other click falls through to the default
-  mouse behavior. The handlers are expr mappings (they only read the mouse
-  position), so the actual window reconfiguration is vim.schedule'd out of
-  the expr context.
+  mouse behavior. The handlers are expr mappings, which can't change windows,
+  so they only read the mouse position and schedule the resize.
 
   opts:
     boundary()          -> current boundary column: 1-based screen column of

@@ -18,7 +18,6 @@ local visual_selection = require('vgit.features.screens.visual_selection')
 
 local ProjectDiffScreen = Object:extend()
 
--- Entry-type predicates for find_adjacent_files / navigate_after_op.
 local function is_unstaged(t) return t == 'unstaged' end
 local function is_staged(t) return t == 'staged' end
 local function is_unstaged_or_unmerged(t) return t == 'unstaged' or t == 'unmerged' end
@@ -28,7 +27,6 @@ function ProjectDiffScreen:constructor(opts)
 
   local scene = Scene()
   local model = Model(opts)
-  -- List column is a fixed list_width characters wide
   local list_pct, diff_pct = dimensions.fixed_split(project_diff_preview_setting:get('list_width'))
 
   return {
@@ -96,19 +94,17 @@ function ProjectDiffScreen:move_to(query_fn)
   return self.status_list_view:move_to(query_fn)
 end
 
--- Find adjacent files matching `type_predicate` (function(entry_type) -> bool)
--- in display order (independent of which folders are expanded).
--- Returns next_file, prev_file, first_file as { filepath } tables (or nil),
--- where first_file enables wrap-around to the start of the section.
+-- The files around `filepath` in display order, collapsed folders included,
+-- whose entry type passes `type_predicate`. Returns next_file, prev_file and
+-- first_file (for wrapping) as { filepath } tables or nil.
 function ProjectDiffScreen:find_adjacent_files(filepath, type_predicate)
   return file_navigation.find_adjacent_files(self.status_list_view:file_nodes(), filepath, function(node)
     return type_predicate(node.entry.type)
   end)
 end
 
--- Render variant for hunk operations that maintains cursor position.
--- If still on the same file/entry after the operation, restores viewport and
--- moves to the same hunk index. Otherwise, renders normally with first hunk.
+-- Re-render after a hunk operation. If the same entry is still selected,
+-- keep its viewport and hunk index, else land on the first hunk.
 function ProjectDiffScreen:render_stable(on_status_list_render, filepath, entry_type, hunk_index)
   local entries = self.model:fetch()
   loop.free_textlock()
@@ -127,7 +123,6 @@ function ProjectDiffScreen:render_stable(on_status_list_render, filepath, entry_
     and new_entry.status.filepath == filepath
 
   if same_file then
-    -- Save viewport before render so we can restore scroll position
     self.diff_view:save_viewport()
     self.diff_view:render()
     local diff = self.model:get_diff()
@@ -210,16 +205,15 @@ function ProjectDiffScreen:unstage_hunk()
   end, filepath, 'staged', hunk_index)
 end
 
--- Visual s/u: stage (unstage) only the selected lines. Each intersecting
--- hunk contributes a sub-hunk of its selected pair rows (whole hunks pass
--- through unchanged) that flows through the normal patch pipeline. Applied
--- bottom-up so earlier hunks' index line numbers stay valid.
+-- Visual s/u: stage (unstage) only the selected lines, as a sub-hunk of each
+-- intersecting hunk. They are applied bottom-up so earlier hunks' index line
+-- numbers stay valid.
 function ProjectDiffScreen:apply_visual_stage_change(stage, top, bot)
   local entry = self.model:get_entry()
   if not entry then return end
 
-  -- s only acts on unstaged entries, u only on staged entries (matching
-  -- which diffs their hunks come from); elsewhere they're no-ops.
+  -- s acts only on unstaged entries and u only on staged ones, whose diffs
+  -- their hunks come from
   local expected_type = stage and 'unstaged' or 'staged'
   if entry.type ~= expected_type then return end
 
@@ -408,8 +402,8 @@ function ProjectDiffScreen:handle_list_move()
   local list_item = self.status_list_view:move()
   if not list_item then return end
 
-  -- Skip re-render when selection didn't change (preserves diff cursor across
-  -- tab toggles when CursorMoved fires spuriously on focus transitions).
+  -- CursorMoved fires spuriously on focus changes, so skip re-rendering an
+  -- unchanged selection, which would reset the diff cursor
   if list_item.id == self.model.state.id then return end
 
   local hunk_alignment = project_diff_preview_setting:get('hunk_alignment')
@@ -484,7 +478,7 @@ function ProjectDiffScreen:jump_to_file_edge(direction)
     return self:move_to_adjacent_file(direction)
   end
 
-  -- Not at the edge yet: jump to this file's last (next, 0) / first (prev, 1) hunk.
+  -- Not at the edge yet: jump to it (0 is the last hunk)
   local hunk_alignment = project_diff_preview_setting:get('hunk_alignment')
   self.diff_view:move_to_hunk(direction == 'next' and 0 or 1, hunk_alignment)
 end
@@ -534,14 +528,15 @@ function ProjectDiffScreen:prev_hunk()
   end
 end
 
--- Returns true if current buffer is in the diff, false otherwise
+-- Select the current buffer's file, preferring the entry type it was last
+-- quit from (see on_quit), then unstaged, then any. Without it, select the
+-- first unstaged entry, else the first entry. Returns whether the buffer's
+-- file was found.
 function ProjectDiffScreen:focus_relative_buffer_entry(buffer)
   local filepath = buffer:get_relative_name()
   local last_entry_type = vim.b[buffer.bufnr].vgit_last_entry_type
 
-  -- Try to find current buffer's file
   if filepath ~= '' then
-    -- If we have a hint from last quit, prefer that entry type
     if last_entry_type then
       local list_item = self:move_to(function(status, entry_type)
         return status.filepath == filepath and entry_type == last_entry_type
@@ -549,20 +544,17 @@ function ProjectDiffScreen:focus_relative_buffer_entry(buffer)
       if list_item then return true end
     end
 
-    -- Otherwise prefer unstaged
     local list_item = self:move_to(function(status, entry_type)
       return status.filepath == filepath and entry_type == 'unstaged'
     end)
     if list_item then return true end
 
-    -- Fall back to any entry for this file
     list_item = self:move_to(function(status)
       return status.filepath == filepath
     end)
     if list_item then return true end
   end
 
-  -- Fallback: prefer unstaged entries, then any entry
   local found = self:move_to(function(_, entry_type)
     return entry_type == 'unstaged'
   end)
@@ -589,8 +581,8 @@ function ProjectDiffScreen:setup_list_keymaps()
   local keymaps = project_diff_preview_setting:get('keymaps')
 
   self.status_list_view:set_keymap({
-    -- `stage_hunk` (`s`) has no target in the list pane, so bind it to an explicit
-    -- no-op to keep it from falling through to a global mapping.
+    -- `stage_hunk` has no target in the list, but a no-op keeps it from
+    -- falling through to a global mapping
     {
       mode = 'n',
       mapping = { key = keymaps.stage_hunk.key, desc = 'No-op (stage hunk is diff-pane only)' },
@@ -697,9 +689,6 @@ function ProjectDiffScreen:setup_diff_keymaps()
     prev_hunk = loop.debounce_coroutine(function()
       self:prev_hunk()
     end, 15),
-    -- In the diff pane, J/K jump to the last/first hunk in the current file,
-    -- then cross into the next/prev FILE once already on that hunk (not the
-    -- list's section headers, which only make sense in the list pane). Wraps.
     jump_file_next = loop.debounce_coroutine(function()
       self:jump_to_file_edge('next')
     end, 15),
@@ -786,11 +775,9 @@ function ProjectDiffScreen:setup_diff_keymaps()
   self:setup_visual_keymaps(keymaps)
 end
 
--- Visual-mode s/u: line-level staging. The selection endpoints are captured
--- while still in visual mode (visual_selection.make_handler) before deferring
--- to a coroutine. In split layout only the current (right) pane accepts
--- selections; the previous pane notifies instead (its rows show old content,
--- and every change is addressable from the current pane).
+-- Visual-mode s/u: line-level staging. In split layout, the previous pane's
+-- rows show old content, and every change is addressable from the current
+-- pane, so only the current pane accepts selections.
 function ProjectDiffScreen:setup_visual_keymaps(keymaps)
   local current_component = self.scene:get('current')
 
@@ -836,7 +823,7 @@ end
 
 function ProjectDiffScreen:create()
   local buffer = Buffer(0)
-  -- Capture cursor position and window BEFORE mounting any views
+  -- Capture the source position before mounting any views
   local source_cursor_lnum = vim.fn.line('.')
   local source_cursor_col = vim.fn.col('.')
   local source_winline = vim.fn.winline()
@@ -885,14 +872,13 @@ function ProjectDiffScreen:create()
   self:handle_list_move()
   self:toggle_focus()
 
-  -- Position cursor at source file line (must be after handle_list_move which resets to first hunk)
+  -- After handle_list_move, which resets the diff to its first hunk
   if found_current_buffer then
     vim.schedule(function()
       self.diff_view:set_source_lnum(source_cursor_lnum, source_cursor_col, source_winline)
     end)
   end
 
-  -- Store source window for returning on quit
   self.source_win_id = source_win_id
 
   return true
@@ -918,21 +904,20 @@ function ProjectDiffScreen:on_quit()
   local source_win_id = self.source_win_id
   self:destroy()
 
-  -- Return to the original window if it still exists
   if source_win_id and vim.api.nvim_win_is_valid(source_win_id) then
     vim.api.nvim_set_current_win(source_win_id)
   end
 
   fs.open(abs_filepath)
 
-  -- Store entry type so re-opening returns to same entry
+  -- Reopening prefers this entry type
   if entry then
     vim.b.vgit_last_entry_type = entry.type
   end
 
   if file_lnum then
     Window(0):set_lnum(file_lnum)
-    -- Restore scroll position so cursor is at same relative position in window
+    -- Keep the cursor on the same window row
     local target_top = file_lnum - diff_winline + 1
     if target_top >= 1 then
       vim.fn.winrestview({ topline = target_top })

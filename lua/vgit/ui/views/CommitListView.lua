@@ -14,10 +14,8 @@ local StatusFolds = require('vgit.ui.views.StatusListView.StatusFolds')
     ▼ Seen
       ...
 
-  Each section (Unseen/Seen) contains commits, and each commit contains files.
-
-  Commits are collapsed by default and expand dynamically when the cursor
-  enters them (via navigation or clicking).
+  At most one commit is expanded: the one holding the selected file, or the
+  one Enter last expanded. Plain cursor movement doesn't change it.
 ]]
 
 local CommitListView = BaseListView:extend()
@@ -111,10 +109,9 @@ function CommitListView:max_row_width()
   return ROW_DECORATION_WIDTH + index_width + 3 + id_width + 3 + message_width
 end
 
--- The file tree for a commit row's `files`. Rebuilding every commit's tree
--- on each render dominated marks and commit changes on long stacks, so a
--- tree is reused while the row's files (their ids) stay the same; it keeps
--- its folders' open state too.
+-- The file tree for a commit row's `files`. Rebuilding every commit's tree on
+-- each render is slow on long stacks, so a tree is reused while the row's
+-- file ids stay the same, which also keeps its folders' open state.
 local function file_tree(trees, next_trees, files)
   local ids = {}
   for i, file in ipairs(files) do

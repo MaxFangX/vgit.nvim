@@ -16,10 +16,10 @@ local visual_selection = require('vgit.features.screens.visual_selection')
 
 --[[
   ProjectReviewScreen is the base class for the review screens
-  (ProjectReviewByFileScreen and ProjectReviewByCommitScreen). Marks are edits
-  to an approved content snapshot (see ReviewModel), so hunk
-  indices in a section shift as hunks are marked, and s/u also work on visual
-  selections (line-level marking, current pane only in split layout).
+  (ProjectReviewByFileScreen and ProjectReviewByCommitScreen). Marking edits
+  the approved snapshot (see ReviewModel), so a section's hunks shift as
+  hunks are marked. s/u also mark visual selections line by line, in split
+  layout from the current pane only.
 
   Every motion picks a target entry id, then select(id) reveals its list row
   (expanding its commit and folders) and shows it in the diff. Navigation
@@ -28,10 +28,10 @@ local visual_selection = require('vgit.features.screens.visual_selection')
 
   Keys run as jobs through one queue (see enqueue).
 
-  Of the model's calls only fetch runs git; it resumes in a fast event
-  context, where window and buffer calls fail, so free the textlock right
-  after it. Views don't free it, except DiffView:get_diff, which wraps the
-  diff prop for screens whose diffs do run git.
+  Of the model's calls, only fetch runs git. It resumes in a fast event
+  context, where window and buffer calls fail, so the screen frees the
+  textlock right after it. Views don't free it, except DiffView:get_diff,
+  which wraps the diff prop for screens whose diffs do run git.
 
   Subclasses set model, setting and list_view, then call init_views. They may
   override jump_section (J/K in the list), and the list width hooks
@@ -59,7 +59,6 @@ function ProjectReviewScreen:constructor()
   }
 end
 
--- Initialize views (called by subclass after setting model and setting)
 function ProjectReviewScreen:init_views(diff_plot)
   local model = self.model
   local setting = self.setting
@@ -192,8 +191,8 @@ function ProjectReviewScreen:jump_to_file_edge(direction)
   self.diff_view:move_to_hunk(direction == 'next' and 0 or 1, 'smart')
 end
 
--- J/K in the list: jump between crate-level folder headings. The by-commit
--- screen jumps between commits instead.
+-- J/K in the list: jump between folder headings (see section_headings). The
+-- by-commit screen jumps between commits instead.
 function ProjectReviewScreen:jump_section(direction)
   self.list_view:jump_to_heading(direction)
 end
@@ -260,8 +259,8 @@ function ProjectReviewScreen:mark(mark_as_seen, selections)
 end
 
 -- s/u act only on the section their hunks come from. `selections` is a
--- visual range's, else the hunk under the cursor; a hunkless diff (a marked
--- pure rename) has none and marks the whole file.
+-- visual range's, else the hunk under the cursor. A hunkless diff (e.g. a
+-- marked pure rename) has no hunk there, so s/u mark the whole file.
 function ProjectReviewScreen:mark_hunk(mark_as_seen, selections)
   local entry = self.model:get_entry()
   if not entry or entry.type ~= (mark_as_seen and 'unseen' or 'seen') then return end
@@ -304,7 +303,7 @@ function ProjectReviewScreen:reset_marks()
   self.model:reset_marks()
   self.list_view:render()
 
-  -- Everything is unseen again: stay on this file
+  -- Everything is unseen again, so stay on this file's unseen entry
   local id = entry and (entry.type == 'unseen' and entry.id or self.model:sibling_id(entry))
   if not self:select(id, 1) then self:select(self:first_entry_id(), 1) end
 end
@@ -395,8 +394,8 @@ function ProjectReviewScreen:setup_keymaps()
 
   self.list_view:set_keymap({
     { mode = 'n', mapping = keymaps.toggle_focus, handler = toggle_focus },
-    -- `mark_hunk` (`s`) has no target in the list pane, so bind it to an explicit
-    -- no-op to keep it from falling through to a global mapping.
+    -- `mark_hunk` has no target in the list, but a no-op keeps it from falling
+    -- through to a global mapping
     {
       mode = 'n',
       mapping = { key = keymaps.mark_hunk.key, desc = 'No-op (mark hunk is diff-pane only)' },
@@ -431,9 +430,6 @@ function ProjectReviewScreen:setup_keymaps()
     { mode = 'n', mapping = keymaps.toggle_focus, handler = toggle_focus },
     { mode = 'n', mapping = keymaps.next, handler = job(function() self:step_hunk('next') end) },
     { mode = 'n', mapping = keymaps.previous, handler = job(function() self:step_hunk('prev') end) },
-    -- In the diff pane, J/K jump to the last/first hunk in the current file,
-    -- then cross into the next/prev FILE once already on that hunk (not the
-    -- list's section headers, which only make sense in the list pane). Wraps.
     { mode = 'n', mapping = keymaps.jump_section_next, handler = job(function() self:jump_to_file_edge('next') end) },
     { mode = 'n', mapping = keymaps.jump_section_prev, handler = job(function() self:jump_to_file_edge('prev') end) },
     {
@@ -446,11 +442,9 @@ function ProjectReviewScreen:setup_keymaps()
   self:setup_visual_keymaps(keymaps, job)
 end
 
--- Visual-mode s/u: line-level marking. The selection endpoints must be read
--- while still in visual mode, so the handlers capture them before
--- enqueueing. In split layout only the current (right) pane accepts
--- selections; the previous pane notifies instead (its rows show old
--- content, and every change is addressable from the current pane).
+-- Visual-mode s/u: line-level marking. In split layout, the previous pane's
+-- rows show old content, and every change is addressable from the current
+-- pane, so only the current pane accepts selections.
 function ProjectReviewScreen:setup_visual_keymaps(keymaps, job)
   local current_component = self.scene:get('current')
   local mark_lines = job(function(top, bot) self:mark_range(true, top, bot) end)
@@ -497,10 +491,9 @@ function ProjectReviewScreen:replot_column(name, col, width)
   end
 end
 
--- Reconfigure all width-dependent windows for a new list column width
--- (mouse drag on the list/diff boundary, left-list layout only). Cheap:
--- window re-plots only; content re-renders once on release. Returns
--- whether the width changed.
+-- Re-plot every width-dependent window for a new list column width, while
+-- the list/diff boundary is dragged. Content re-renders once on release
+-- (finish_list_resize). Returns whether the width changed.
 function ProjectReviewScreen:apply_list_width(cols)
   cols = dimensions.clamp_list_cols(cols)
   if cols == self.list_cols then return false end
@@ -673,7 +666,7 @@ end
 
 -- The quit key, which screen_manager binds: quit once the keys pressed
 -- before it have run. If the screen is destroyed first, the job is dropped
--- and this coroutine never resumes; nothing waits on it.
+-- and this coroutine never resumes, which is fine since nothing waits on it.
 function ProjectReviewScreen:on_quit()
   loop.suspend(function(done)
     self:enqueue(function()
