@@ -712,10 +712,6 @@ function ProjectReviewScreen:apply_seen_change(mark_as_seen, selections)
     -- The mark ran git commands; escape their fast event context before UI work
     loop.free_textlock()
 
-    -- Clear active commit before render when unmarking (it may no longer exist)
-    if not mark_as_seen and self.list_view.set_active_commit then
-      self.list_view:set_active_commit(nil)
-    end
     self.list_view:render()
 
     self:move_to_next_target(expected_type, current_filepath, current_commit, from_top, next_file, first_file)
@@ -781,10 +777,6 @@ function ProjectReviewScreen:set_file_seen_state_locked(mark_as_seen)
     self.model:mark_file(entry)
   else
     self.model:unmark_file(entry)
-    -- Clear active commit before render (it may no longer exist)
-    if self.list_view.set_active_commit then
-      self.list_view:set_active_commit(nil)
-    end
   end
 
   -- The mark ran git commands; escape their fast event context before UI work
@@ -793,17 +785,10 @@ function ProjectReviewScreen:set_file_seen_state_locked(mark_as_seen)
 
   -- If we were on the same state entry (seen for mark, unseen for unmark), stay on same file and hunk
   if current_type == same_state_type then
-    local found_entry = self.list_view:move_to_entry(function(e)
-      if e.type ~= same_state_type then return false end
-      if not e.status or e.status.filepath ~= current_filepath then return false end
-      if current_commit and e.commit_hash ~= current_commit then return false end
-      return true
-    end)
-    if found_entry then
-      self.model:set_entry_id(found_entry.id)
-      self.diff_view:render()
-      self.diff_view:move_to_hunk(saved_hunk_index, hunk_alignment)
-    end
+    local found_entry = self:move_to_entry_expanding_commit(current_filepath, current_commit, same_state_type)
+    if found_entry then self.model:set_entry_id(found_entry.id) end
+    self.diff_view:render()
+    self.diff_view:move_to_hunk(saved_hunk_index, hunk_alignment)
     return
   end
 
