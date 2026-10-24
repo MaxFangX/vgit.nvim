@@ -172,6 +172,30 @@ function H.hunk()
   return string.format('%d/%d %s', index, total, position)
 end
 
+-- The entry labelled `label` (see H.describe), or nil
+function H.find(label)
+  local screen = H.screen()
+  for _, node in ipairs(screen.list_view:file_nodes()) do
+    local entry = screen.model:lookup(node.id)
+    if H.describe(entry) == label then return entry end
+  end
+end
+
+-- The hunks of entry `label` as { removed lines, added lines } pairs
+function H.hunks(label)
+  local entry = H.find(label)
+  if not entry then return nil end
+  return vim.tbl_map(function(hunk)
+    return { hunk:parse_diff() }
+  end, H.screen().model:get_diff_for(entry).hunks)
+end
+
+-- Show entry `label` at hunk `hunk`
+function H.select(label, hunk)
+  local entry = assert(H.find(label), label)
+  H.async(function() H.screen():select(entry.id, hunk) end)
+end
+
 -- Collect the diff pane's notifications from now on
 function H.notifications()
   local notes = {}
@@ -326,6 +350,37 @@ describe('ProjectReviewScreen', function()
         eq({}, errors)
       end)
     end
+
+    it('marks and unmarks single lines of a change in unified layout', function()
+      H.open('file')
+      local x5 = { { 'x line 5' }, { 'x line 5 CHANGED' } }
+      local x20 = { { 'x line 20' }, { 'x line 20 C4' } }
+
+      -- Only the removed line: approve the deletion, not its replacement
+      H.keys('Vs')
+      eq({ { { 'x line 5' }, {} } }, H.hunks('seen a/x.lua'))
+      eq({ {}, { 'x line 5 CHANGED' } }, H.hunks('unseen a/x.lua')[1])
+
+      -- Only the added line: approve the insertion, keeping the old line
+      H.select('unseen a/x.lua', 2)
+      H.keys('<Down>')
+      H.keys('Vs')
+      eq({ { { 'x line 5' }, {} }, { {}, { 'x line 20 C4' } } }, H.hunks('seen a/x.lua'))
+      eq({ { 'x line 20' }, {} }, H.hunks('unseen a/x.lua')[2])
+
+      -- Unmarking mirrors both
+      H.select('seen a/x.lua', 1)
+      H.keys('Vu')
+      eq({ { {}, { 'x line 20 C4' } } }, H.hunks('seen a/x.lua'))
+      eq(x5, H.hunks('unseen a/x.lua')[1])
+
+      H.select('seen a/x.lua', 1)
+      H.keys('Vu')
+      eq(nil, H.hunks('seen a/x.lua'))
+      eq(x20, H.hunks('unseen a/x.lua')[2])
+      eq(4, #H.hunks('unseen a/x.lua'))
+      eq({}, errors)
+    end)
 
     it('S marks the file and moves to the next unseen file', function()
       H.open('file')
