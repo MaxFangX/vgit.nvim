@@ -111,27 +111,6 @@ function StatusFolds:create_node(entry)
   }
 end
 
--- Finds the parent from the tree for a given path
--- (path obj will contain it's parent path string).
-function StatusFolds:find_parent(entry)
-  local function _find(tree)
-    if not tree then return nil end
-
-    for i = 1, #tree do
-      local node = tree[i]
-
-      if node.entry.path == entry.parent then
-        return node.items
-      else
-        local found = _find(node.items)
-        if found then return found end
-      end
-    end
-  end
-
-  return _find(self.tree)
-end
-
 function StatusFolds:normalize_entries(entries)
   local normalized_entries = {}
 
@@ -191,17 +170,21 @@ function StatusFolds:normalize_entries(entries)
 end
 
 function StatusFolds:generate_tree(normalized_entries)
+  -- Folder path -> its items. Entries come shallowest first, so a parent is
+  -- always in place before its children.
+  local folder_items = {}
+
   for i = 1, #normalized_entries do
     -- As we now, each element in the normalized_entries is a list of entries.
     local entries = normalized_entries[i]
     for j = 1, #entries do
       local entry = entries[j]
-      -- Given a entry self:find_parent will find the parent list from the tree.
-      -- NOTE: entry is an object which contains metadata on it's own path, parent path, etc.
-      -- If we are in the root depth, self:find_parent(entry) will return nil, so we just point to the root list.
-      local parent = self:find_parent(entry) or self.tree
+      -- In the root depth there is no parent folder, so we just point to the root list.
+      local parent = folder_items[entry.parent] or self.tree
       -- We create a node which can be a file entry or a folder entry to the parent list we found.
-      parent[#parent + 1] = self:create_node(entry)
+      local node = self:create_node(entry)
+      parent[#parent + 1] = node
+      if node.items then folder_items[entry.path] = node.items end
     end
   end
 end

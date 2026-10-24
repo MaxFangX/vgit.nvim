@@ -2,6 +2,8 @@ describe('icons', function()
   local icons
 
   before_each(function()
+    -- icons caches the devicons module it first requires
+    package.loaded['vgit.core.icons'] = nil
     icons = require('vgit.core.icons')
   end)
 
