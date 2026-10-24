@@ -63,12 +63,38 @@ end
 
 -- For each item with no state under its key, plans a move from the held key
 -- with the same change id and file path. `held_keys` is the set of keys
--- holding state. Returns `{ from, to }` pairs.
+-- holding state. A held key whose recorded change id is another current
+-- item's (subjects shifted or swapped) is that item's to move, not this
+-- one's to keep. Returns `{ from, to }` pairs, each `from` used once; apply
+-- them together, reading every `from` before writing any `to`.
 function change_id_rekey.plan(items, held_keys, change_ids)
-  local moves = {}
-  local unheld = change_id_rekey.unheld(items, held_keys)
-  for _, match in ipairs(change_id_rekey.find(unheld, held_keys, change_ids)) do
-    moves[#moves + 1] = { from = match.key, to = match.item.key }
+  local current = {}
+  for _, item in ipairs(items) do
+    current[item.change_id .. ':' .. item.filepath] = true
+  end
+
+  local kept, unheld = {}, {}
+  for _, item in ipairs(items) do
+    local recorded = change_ids[item.key]
+    local claimed = recorded and recorded ~= item.change_id and current[recorded .. ':' .. item.filepath]
+    if held_keys[item.key] and not claimed then
+      kept[item.key] = true
+    else
+      unheld[#unheld + 1] = item
+    end
+  end
+
+  local sources = {}
+  for key in pairs(held_keys) do
+    if not kept[key] then sources[key] = true end
+  end
+
+  local moves, taken = {}, {}
+  for _, match in ipairs(change_id_rekey.find(unheld, sources, change_ids)) do
+    if not taken[match.key] then
+      taken[match.key] = true
+      moves[#moves + 1] = { from = match.key, to = match.item.key }
+    end
   end
   return moves
 end

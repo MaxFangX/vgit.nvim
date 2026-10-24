@@ -222,12 +222,16 @@ end
 function ReviewState:reconcile_change_ids(items)
   local state = get_state(self)
 
-  -- Tombstones move with their key too
+  -- Moves can chain or swap, so read every source before writing. Tombstones
+  -- move with their key too.
   local moves = change_id_rekey.plan(items, held_keys(state), state.change_ids)
-  for _, move in ipairs(moves) do
-    state.approved[move.to], state.approved[move.from] = state.approved[move.from], nil
-    state.removed[move.to], state.removed[move.from] = state.removed[move.from], nil
-    state.change_ids[move.from] = nil
+  local moved = {}
+  for i, move in ipairs(moves) do
+    moved[i] = { record = state.approved[move.from], removed = state.removed[move.from] }
+    state.approved[move.from], state.removed[move.from], state.change_ids[move.from] = nil, nil, nil
+  end
+  for i, move in ipairs(moves) do
+    state.approved[move.to], state.removed[move.to] = moved[i].record, moved[i].removed
   end
 
   local adopted = adopt_from_siblings(self, state, change_id_rekey.unheld(items, held_keys(state)))

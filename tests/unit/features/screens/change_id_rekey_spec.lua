@@ -69,6 +69,47 @@ describe('change_id_rekey', function()
       eq(state:get_approved('subj:src/a.lua').lines, { 'approved' })
     end)
 
+    -- Session 1 records `before` ({ key, change id } per item, each item
+    -- approved as its change id), session 2 sees `after`
+    local function rekeyed(before, after)
+      local state = review.fresh_review_state()({ review_type = 'by_commit', branch_name = 'shift' })
+      local items = {}
+      for i, key in ipairs(before) do
+        items[i] = item(key[1], 'f', key[2])
+        state:set_approved(key[1], { key[2] }, false, { 'base' })
+      end
+      state:reconcile_change_ids(items)
+
+      items = {}
+      for i, key in ipairs(after) do
+        items[i] = item(key[1], 'f', key[2])
+      end
+      state:reconcile_change_ids(items)
+      return function(key)
+        local record = state:get_approved(key)
+        return record and record.lines[1]
+      end
+    end
+
+    it('follows subjects renumbered by an inserted commit', function()
+      local approved = rekeyed({ { 'step2:f', 'X' }, { 'step3:f', 'Y' } }, { { 'step3:f', 'X' }, { 'step4:f', 'Y' } })
+      eq(approved('step3:f'), 'X')
+      eq(approved('step4:f'), 'Y')
+      eq(approved('step2:f'), nil)
+    end)
+
+    it('follows swapped subjects', function()
+      local approved = rekeyed({ { 'A:f', 'X' }, { 'B:f', 'Y' } }, { { 'B:f', 'X' }, { 'A:f', 'Y' } })
+      eq(approved('B:f'), 'X')
+      eq(approved('A:f'), 'Y')
+    end)
+
+    it("does not move a divergent commit's record to its twin", function()
+      local approved = rekeyed({ { 'A:f', 'X' } }, { { 'A:f', 'X' }, { 'B:f', 'X' } })
+      eq(approved('A:f'), 'X')
+      eq(approved('B:f'), nil)
+    end)
+
     it('rekeys a record approved in an earlier session', function()
       run(function()
         local opts = { review_type = 'by_commit', branch_name = 'reload', repo_name = 'repo' }
