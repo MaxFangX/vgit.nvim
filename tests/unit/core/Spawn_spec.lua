@@ -109,3 +109,27 @@ async.describe('Spawn lifecycle:', function()
     assert.are.same(process_handles(), before)
   end)
 end)
+
+async.describe('Spawn io:', function()
+  local run_raw = loop.suspend(function(spec, callback)
+    local raw
+    spec.on_stdout_raw = function(output)
+      raw = output
+    end
+    spec.on_exit = function(code)
+      callback(code, raw)
+    end
+    Spawn(spec):start()
+  end, 2)
+
+  async.it('writes stdin and hands back raw stdout', function()
+    local code, raw = run_raw({ command = 'cat', args = {}, stdin = 'a\0b\n\nc\n' })
+    assert.are.same(code, 0)
+    assert.are.same(raw, 'a\0b\n\nc\n')
+  end)
+
+  async.it('runs with the given environment', function()
+    local _, raw = run_raw({ command = 'sh', args = { '-c', 'printf %s "$VGIT_X"' }, env = { 'VGIT_X=1' } })
+    assert.are.same(raw, '1')
+  end)
+end)
