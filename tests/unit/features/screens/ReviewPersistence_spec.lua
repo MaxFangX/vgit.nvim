@@ -219,7 +219,7 @@ describe('ReviewPersistence name migration:', function()
     fs.write_file_atomic = write_file_atomic
     assert(ok, err)
     eq(writes, { dir .. '/by_commit.json' })
-    eq(exists('by_commit.json.tmp'), false)
+    eq(vim.fn.glob(dir .. '/*.tmp'), '')
   end)
 
   it('copies again once a pre-rename session rewrites the _indexed file', function()

@@ -54,17 +54,21 @@ end
 local function get_state(self)
   local key = self:get_state_key()
   if not state_store[key] then
-    state_store[key] = { approved = {}, change_ids = {}, removed = {}, position = { section = 'unseen' } }
+    state_store[key] = {
+      approved = {},
+      change_ids = {},
+      removed = {},
+      -- Keys changed since the last write: they win over the file's version
+      -- when another session wrote it meanwhile (sync_from_disk)
+      dirty = {},
+      position = { section = 'unseen' },
+    }
   end
   return state_store[key]
 end
 
--- Mtime of the on-disk state file, or nil if absent. Used to detect writes
--- by other sessions.
-local function state_file_mtime(self)
-  local path = persistence.get_state_path(self.repo_name, self.branch_name, self.review_type)
-  local stat = vim.loop.fs_stat(path)
-  return stat and string.format('%d.%d', stat.mtime.sec, stat.mtime.nsec) or nil
+local function state_stamp(self)
+  return persistence.state_stamp(self.repo_name, self.branch_name, self.review_type)
 end
 
 -- An entry's approved record, materialized from `branch_name`'s object store,
@@ -85,70 +89,80 @@ local function read_record(repo_name, branch_name, entry)
   }
 end
 
+-- Merge the state file into the store if another session wrote (or deleted)
+-- it since this one last read or wrote it: every key this session hasn't
+-- changed since (see `dirty`) takes the file's version. Returns nil, err if
+-- the file must not be overwritten; then this session stops saving.
+local function sync_from_disk(self, state)
+  local disk_stamp = state_stamp(self)
+  if disk_stamp == state.disk_stamp then return end
+
+  -- Never prompt or delete: other sessions, possibly on other vgit
+  -- versions, share the file. Leave a newer or unreadable file alone; a
+  -- corrupt one is replaced by the next save.
+  local data, err = persistence.load(self.repo_name, self.branch_name, self.review_type)
+  if err and (err.newer or err.unreadable) then
+    console.warn(string.format('%s; review progress will not be saved this session', err[1]))
+    self._skip_persistence = true
+    return nil, err
+  end
+  state.disk_stamp = disk_stamp
+  if err then
+    console.warn(string.format('Ignoring review state: %s', err[1]))
+    return
+  end
+
+  -- No file means it was never saved, or deleted since: nothing is approved
+  local entries, keys = data and data.entries or {}, {}
+  for _, map in ipairs({ entries, state.approved, state.removed }) do
+    for key in pairs(map) do
+      if not state.dirty[key] then keys[key] = true end
+    end
+  end
+
+  local missing = 0
+  for key in pairs(keys) do
+    local entry, record = entries[key], state.approved[key]
+    if type(entry) == 'table' and entry.approved then
+      local same = record
+        and record.hash == entry.approved
+        and record.base_hash == entry.base
+        and record.deleted == (entry.deleted == true)
+      if not same then
+        -- A missing object means the snapshot was lost (the file reverts to
+        -- unseen), unless this session still holds one
+        record = read_record(self.repo_name, self.branch_name, entry) or record
+        if not record then missing = missing + 1 end
+      end
+      state.approved[key], state.removed[key] = record, nil
+      state.change_ids[key] = state.change_ids[key] or entry.change_id
+    elseif type(entry) == 'table' and entry.change_id then
+      state.approved[key], state.removed[key] = nil, true
+      state.change_ids[key] = state.change_ids[key] or entry.change_id
+    else
+      state.approved[key], state.removed[key] = nil, nil
+    end
+  end
+  if missing > 0 then
+    console.warn(string.format('Review state: %d approved snapshot(s) missing, files reset to unseen', missing))
+  end
+end
+
 -- Load state from disk (call explicitly from coroutine context). Every save
 -- goes through the in-session store, so it is the source of truth within a
 -- session, and re-entering a review skips re-reading the object store,
--- unless the state file's mtime shows another session wrote it since we
+-- unless the state file's stamp shows another session wrote it since we
 -- last touched it.
 function ReviewState:load_from_disk()
   if not self.repo_name or self._loaded then return end
   self._loaded = true
 
   local state = get_state(self)
-  local mtime = state_file_mtime(self)
-  if state.loaded and state.disk_mtime == mtime then return end
+  if state.disk_stamp == state_stamp(self) then return end
 
   -- Escape luv callback context to main Vim loop (required for vim.fn calls)
   loop.free_textlock()
-  local data, err = persistence.load(self.repo_name, self.branch_name, self.review_type)
-
-  -- Never prompt or delete: other sessions, possibly on other vgit
-  -- versions, share the file. Leave a newer or unreadable file alone; a
-  -- corrupt one is replaced by the next save.
-  if err and (err.newer or err.unreadable) then
-    console.warn(string.format('%s; review progress will not be saved this session', err[1]))
-    self._skip_persistence = true
-    return
-  end
-  if err then console.warn(string.format('Ignoring review state: %s', err[1])) end
-
-  -- No file (never saved, or deleted since): nothing is approved
-  if not data or type(data.entries) ~= 'table' then
-    state.approved, state.change_ids, state.removed = {}, {}, {}
-    state.loaded = true
-    state.disk_mtime = mtime
-    return
-  end
-
-  -- Materialize approved snapshots from the object store. A missing object
-  -- means the snapshot was lost; drop the entry (file reverts to unseen).
-  local approved, change_ids, removed, missing = {}, {}, {}, 0
-  for mark_key, entry in pairs(data.entries) do
-    if type(entry) == 'table' and entry.approved then
-      local record = read_record(self.repo_name, self.branch_name, entry)
-      if record then
-        approved[mark_key], change_ids[mark_key] = record, entry.change_id
-      else
-        missing = missing + 1
-      end
-    elseif type(entry) == 'table' and entry.change_id then
-      removed[mark_key], change_ids[mark_key] = true, entry.change_id
-    end
-  end
-  if missing > 0 then
-    console.warn(string.format('Review state: %d approved snapshot(s) missing, files reset to unseen', missing))
-  end
-
-  local key = self:get_state_key()
-  local existing = state_store[key]
-  state_store[key] = {
-    approved = approved,
-    change_ids = change_ids,
-    removed = removed,
-    position = existing and existing.position or { section = 'unseen' },
-    loaded = true,
-    disk_mtime = mtime,
-  }
+  sync_from_disk(self, state)
 end
 
 -- Get the approved snapshot for a mark_key: { lines, deleted, base_lines }
@@ -163,13 +177,13 @@ end
 function ReviewState:set_approved(mark_key, lines, deleted, base_lines)
   local state = get_state(self)
   state.approved[mark_key] = { lines = lines, deleted = deleted == true, base_lines = base_lines }
-  state.removed[mark_key] = nil
+  state.removed[mark_key], state.dirty[mark_key] = nil, true
   self:schedule_save()
 end
 
 function ReviewState:remove_approved(mark_key)
   local state = get_state(self)
-  state.approved[mark_key], state.removed[mark_key] = nil, true
+  state.approved[mark_key], state.removed[mark_key], state.dirty[mark_key] = nil, true, true
   self:schedule_save()
 end
 
@@ -206,7 +220,9 @@ local function adopt_from_siblings(self, state, items)
 
     for _, match in ipairs(change_id_rekey.find(items, change_ids, change_ids)) do
       local record = read_record(self.repo_name, sibling.branch_name, entries[match.key])
-      if record then state.approved[match.item.key], adopted = record, true end
+      if record then
+        state.approved[match.item.key], state.dirty[match.item.key], adopted = record, true, true
+      end
     end
 
     items = change_id_rekey.unheld(items, state.approved)
@@ -233,6 +249,7 @@ function ReviewState:reconcile_change_ids(items)
   end
   for i, move in ipairs(moves) do
     state.approved[move.to], state.removed[move.to] = moved[i].record, moved[i].removed
+    state.dirty[move.from], state.dirty[move.to] = true, true
   end
 
   local adopted = adopt_from_siblings(self, state, change_id_rekey.unheld(items, held_keys(state)))
@@ -246,11 +263,11 @@ end
 -- Reset the index for the current session (everything back to unseen)
 function ReviewState:reset()
   local state = get_state(self)
-  for key in pairs(state.approved) do
-    state.removed[key] = true
+  for key in pairs(held_keys(state)) do
+    state.removed[key], state.dirty[key] = true, true
   end
   for key in pairs(state.change_ids) do
-    state.removed[key] = true
+    state.removed[key], state.dirty[key] = true, true
   end
   state.approved = {}
   self:schedule_save()
@@ -278,6 +295,18 @@ end
 -- Write snapshot objects, then the JSON referencing them. The final save also
 -- sweeps unreferenced objects and evicts stale branches; objects are immutable
 -- and content-addressed, so unreferenced ones are harmless in between.
+--
+-- Interleavings. Within one nvim, this yields once, at free_textlock, before
+-- it reads the store, and never after, so marks can't interleave with a
+-- write: a write-behind save racing the final save() writes the current
+-- store whichever runs first. Other sessions may write the same file at any
+-- time, so right before writing the JSON, the file is merged in if it
+-- changed since this session last read or wrote it (sync_from_disk). Each
+-- writer renames its own temp file into place, and the stamp recorded is
+-- that of the file this session wrote, so a write landing just after ours is
+-- merged next time rather than overwritten. Two sessions writing within the
+-- same few milliseconds can still lose one's changes; that isn't worth a lock
+-- for interactive use.
 local function write_to_disk(self, final)
   if not self.repo_name or self._skip_persistence then return end
 
@@ -287,20 +316,34 @@ local function write_to_disk(self, final)
 
   -- Records are immutable once set (set_approved replaces them wholesale),
   -- so cached hashes stay valid; only records new this session get hashed.
-  local entries, objects = {}, {}
-  for mark_key, record in pairs(state.approved) do
+  local objects = {}
+  for _, record in pairs(state.approved) do
     record.hash = record.hash or persistence.hash_lines(record.lines)
+    objects[record.hash] = record.lines
     if record.base_lines then
       record.base_hash = record.base_hash or persistence.hash_lines(record.base_lines)
       objects[record.base_hash] = record.base_lines
     end
+  end
+
+  -- Never write JSON referencing objects that failed to write. Records merged
+  -- in from the file have their objects on disk already.
+  local _, err = persistence.write_objects(self.repo_name, self.branch_name, objects)
+  if err then
+    console.warn(string.format('Failed to save review state: %s', err[1]))
+    return
+  end
+  _, err = sync_from_disk(self, state)
+  if err then return end
+
+  local entries = {}
+  for mark_key, record in pairs(state.approved) do
     entries[mark_key] = {
       approved = record.hash,
       deleted = record.deleted or nil,
       base = record.base_hash,
       change_id = state.change_ids[mark_key],
     }
-    objects[record.hash] = record.lines
   end
   -- Tombstones only matter for adoption, which goes by change id
   for mark_key in pairs(state.removed) do
@@ -308,24 +351,18 @@ local function write_to_disk(self, final)
     if change_id then entries[mark_key] = { change_id = change_id } end
   end
 
-  -- Never write JSON referencing objects that failed to write
-  local _, err = persistence.write_objects(self.repo_name, self.branch_name, objects)
-  if not err then
-    _, err = persistence.save(self.repo_name, self.branch_name, self.review_type, { entries = entries })
-  end
+  local written
+  written, err = persistence.save(self.repo_name, self.branch_name, self.review_type, { entries = entries })
   if err then
     console.warn(string.format('Failed to save review state: %s', err[1]))
     return
   end
+  state.dirty, state.disk_stamp = {}, written
 
   if final then
     persistence.sweep_objects(self.repo_name, self.branch_name)
     persistence.evict_lru(self.repo_name)
   end
-
-  -- Our own write shouldn't trigger a reload on the next entry
-  state.loaded = true
-  state.disk_mtime = state_file_mtime(self)
 end
 
 -- Queue a write-behind save; mark mutators call this so approvals reach disk

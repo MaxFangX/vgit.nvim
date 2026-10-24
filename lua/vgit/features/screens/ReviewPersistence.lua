@@ -139,6 +139,19 @@ function ReviewPersistence.get_objects_dir(repo_name, branch_name)
   return string.format('%s/%s/objects', ReviewPersistence.get_state_dir(repo_name), encode_branch(branch_name))
 end
 
+-- Identifies one version of a file: a rewrite creates a new inode, so this
+-- tells apart even writes within one mtime tick.
+local function stamp(stat)
+  return string.format('%d.%d:%d', stat.mtime.sec, stat.mtime.nsec, stat.ino)
+end
+
+-- The stamp of a review's state file, or nil if it has none. Compared to tell
+-- whether another session wrote it.
+function ReviewPersistence.state_stamp(repo_name, branch_name, review_type)
+  local stat = vim.loop.fs_stat(ReviewPersistence.get_state_path(repo_name, branch_name, review_type))
+  return stat and stamp(stat)
+end
+
 -- Ensure state directory exists. Returns nil, err on failure.
 local function ensure_dir(dir)
   if vim.fn.mkdir(dir, 'p') == 0 and vim.fn.isdirectory(dir) == 0 then
@@ -270,8 +283,8 @@ function ReviewPersistence.load_siblings(repo_name, branch_name, review_type)
   return siblings
 end
 
--- Save state to disk. Does not evict; see evict_lru. Returns nil, err on
--- failure.
+-- Save state to disk. Does not evict; see evict_lru. Returns the written
+-- file's stamp (see state_stamp), or nil, err on failure.
 function ReviewPersistence.save(repo_name, branch_name, review_type, state_data)
   local path = ReviewPersistence.get_state_path(repo_name, branch_name, review_type)
   local _, err = ensure_dir(fs.dirname(path))
@@ -282,7 +295,10 @@ function ReviewPersistence.save(repo_name, branch_name, review_type, state_data)
   state_data.lastUsed = os.time()
   state_data.branchName = branch_name
 
-  return fs.write_file_atomic(path, { vim.fn.json_encode(state_data) })
+  local stat
+  stat, err = fs.write_file_atomic(path, { vim.fn.json_encode(state_data) })
+  if err then return nil, err end
+  return stamp(stat)
 end
 
 -- Content hash used to address snapshot objects. Requires main-loop context

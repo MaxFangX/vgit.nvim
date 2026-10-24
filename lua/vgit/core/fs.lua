@@ -53,17 +53,20 @@ function fs.write_file(filepath, lines)
 end
 
 -- Write via a sibling temp file and rename, so a crash mid-write leaves the
--- previous file intact instead of a truncated one.
+-- previous file intact instead of a truncated one. The temp file is this
+-- process's own, so concurrent writers can't truncate each other's. Returns
+-- the stat of the file written, taken before the rename, so it describes
+-- this write even if another writer replaces the file right after.
 function fs.write_file_atomic(filepath, lines)
-  local tmp = filepath .. '.tmp'
+  local tmp = string.format('%s.%d.tmp', filepath, vim.loop.os_getpid())
   local _, err = fs.write_file(tmp, lines)
-  if err then return nil, err end
-
-  local ok, rename_err = os.rename(tmp, filepath)
+  local stat = not err and vim.loop.fs_stat(tmp)
+  local ok, rename_err = stat and os.rename(tmp, filepath)
   if not ok then
     os.remove(tmp)
-    return nil, { rename_err }
+    return nil, err or { rename_err or 'failed to stat ' .. tmp }
   end
+  return stat
 end
 
 function fs.remove_file(filepath)

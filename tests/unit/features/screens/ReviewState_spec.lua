@@ -136,4 +136,89 @@ describe('ReviewState', function()
       run(function() state:save() end)
     end)
   end)
+
+  describe('concurrent sessions:', function()
+    -- One nvim session's review of the shared state file
+    local function session()
+      local state = review.fresh_review_state()({ branch_name = 'feature', review_type = 'by_file', repo_name = 'repo' })
+      state:load_from_disk()
+      return state
+    end
+
+    local function saved_lines()
+      local lines = {}
+      for key, entry in pairs(persistence.load('repo', 'feature', 'by_file').entries) do
+        lines[key] = persistence.read_object('repo', 'feature', entry.approved)[1]
+      end
+      return lines
+    end
+
+    it("keeps another session's marks made while this one was open", function()
+      run(function()
+        local this = session()
+        local other = session()
+        other:set_approved('g.lua', { 'g' }, false, { 'old' })
+        other:save()
+
+        this:set_approved('f.lua', { 'f' }, false, { 'old' })
+        this:save()
+      end)
+      -- The final save's sweep kept the other session's object too
+      eq(saved_lines(), { ['f.lua'] = 'f', ['g.lua'] = 'g' })
+    end)
+
+    it("takes another session's changes to keys this one didn't change", function()
+      run(function()
+        local first = session()
+        first:set_approved('a.lua', { 'a' }, false, { 'old' })
+        first:set_approved('b.lua', { 'b' }, false, { 'old' })
+        first:save()
+
+        local this, other = session(), session()
+        other:remove_approved('a.lua')
+        other:set_approved('b.lua', { 'b2' }, false, { 'old' })
+        other:save()
+
+        this:set_approved('c.lua', { 'c' }, false, { 'old' })
+        this:save()
+        eq(this:get_approved('a.lua'), nil)
+      end)
+      eq(saved_lines(), { ['b.lua'] = 'b2', ['c.lua'] = 'c' })
+    end)
+
+    it('keeps its own changes over the other session', function()
+      run(function()
+        local this, other = session(), session()
+        other:set_approved('a.lua', { 'theirs' }, false, { 'old' })
+        other:save()
+
+        this:set_approved('a.lua', { 'mine' }, false, { 'old' })
+        this:save()
+      end)
+      eq(saved_lines(), { ['a.lua'] = 'mine' })
+    end)
+
+    it("merges another session's write into a pending write-behind save", function()
+      local this, path
+      run(function()
+        this = session()
+        path = persistence.get_state_path('repo', 'feature', 'by_file')
+        this:set_approved('f.lua', { 'f' }, false, { 'old' })
+
+        local other = session()
+        other:set_approved('g.lua', { 'g' }, false, { 'old' })
+        other:save()
+      end)
+      local before = vim.loop.fs_stat(path).ino
+      assert(vim.wait(2000, function() return vim.loop.fs_stat(path).ino ~= before end, 10), 'no write-behind save')
+      eq(saved_lines(), { ['f.lua'] = 'f', ['g.lua'] = 'g' })
+
+      -- Then a later change of this session's own doesn't undo the merge
+      run(function()
+        this:set_approved('h.lua', { 'h' }, false, { 'old' })
+        this:save()
+      end)
+      eq(saved_lines(), { ['f.lua'] = 'f', ['g.lua'] = 'g', ['h.lua'] = 'h' })
+    end)
+  end)
 end)
