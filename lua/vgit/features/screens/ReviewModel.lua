@@ -12,8 +12,8 @@ local ReviewState = require('vgit.features.screens.ReviewState')
 local persistence = require('vgit.features.screens.review_persistence')
 
 --[[
-  ReviewModel holds what the review models (ProjectReviewByFileScreen and
-  ProjectReviewByCommitScreen) share. A review is a list of items, each one
+  ReviewModel is the base of the review models (ProjectReviewByFileScreen
+  and ProjectReviewByCommitScreen). A review is a list of items, each one
   reviewable (revision, file) pair, with three contents:
 
     base     - what the review diffs against (merge-base / commit parent)
@@ -27,10 +27,8 @@ local persistence = require('vgit.features.screens.review_persistence')
   of the seen diff. Diffs are computed in-process from the contents loaded at
   fetch, so marking never shells out.
 
-  Records also store the base they were approved against. When the live base
-  differs (commits inserted/reordered below), the approved delta is rebased
-  onto the new base hunk by hunk before use (reconcile_record); otherwise
-  ancestor drift would pollute both views with phantom hunks.
+  A record also stores the base it was approved against, and is rebased onto
+  the live base when that changes (see reconcile_record).
 
   An item is
     { id, record_key, filepath, old_filepath, status, commit?, base_spec,
@@ -44,15 +42,13 @@ local persistence = require('vgit.features.screens.review_persistence')
 
 local ReviewModel = Object:extend()
 
--- Object contents by spec ('<hash>:<path>' / '<hash>^:<path>', full hashes
--- only). Specs name immutable objects, so these never go stale; each fetch
--- keeps only the specs it asked for, bounding this to one review per type.
--- Line arrays are shared between items and with git_show, so nothing may
+-- Object contents by spec ('<hash>:<path>' or '<hash>^:<path>', full hashes
+-- only), per review type. Specs name immutable objects, so these never go
+-- stale. Each fetch keeps only the specs it asked for, which bounds this to
+-- one review per type. Line arrays are shared between items, so nothing may
 -- modify them.
 local session_objects = { by_file = {}, by_commit = {} }
 
--- Minimum shared commit subjects for a stored review to be "the review for
--- HEAD": guards against a coincidental one-commit overlap between branches.
 local MIN_SUBJECT_OVERLAP = 2
 
 function ReviewModel:constructor(opts)
@@ -77,23 +73,24 @@ end
 
 -- The stored by-commit review (its branch key) that best covers HEAD's
 -- commits, given the set of their subject keys (see record_keys). Subjects
--- survive rebases, like the record keys, so a review is followed across
--- rebases regardless of where the branch bookmark sits. A review qualifies
--- with `MIN_SUBJECT_OVERLAP` matching subjects; below that (a single-commit
--- stack can otherwise never match) it qualifies only if *all* its stored
--- subjects match AND they cover at least half of HEAD's stack: one stray
--- subject (e.g. records saved under a misresolved key) must not claim a
--- larger stack away from its bookmark. Returns the qualifying branch with
--- the most overlap (ties break toward the most recently used), or nil. Safe
--- in the fast event contexts where the branch resolver runs.
+-- survive rebases, so this follows a review across rebases wherever the
+-- branch bookmark sits.
+--
+-- A review qualifies with `MIN_SUBJECT_OVERLAP` matching subjects, so a
+-- coincidental one-commit overlap between branches doesn't count. A
+-- single-commit stack could then never match, so a review also qualifies if
+-- *all* its stored subjects match and they cover at least half of HEAD's
+-- stack. The half-stack rule keeps one stray subject (e.g. records saved under a
+-- misresolved key) from claiming a larger stack away from its bookmark.
+--
+-- Returns the qualifying branch with the most overlap, ties going to the most
+-- recently used, or nil. Safe in fast event contexts.
 function ReviewModel.branch_by_subjects(repo_key, head_subjects)
   local head_count = vim.tbl_count(head_subjects)
   if head_count == 0 then return nil end
 
   local best_key, best_overlap, best_mtime = nil, 0, 0
   for state_file, mtime in persistence.each_branch_state(repo_key, 'by_commit') do
-    -- Count the review's distinct stored subjects too, to scale the
-    -- threshold to reviews smaller than the absolute minimum
     local overlap, stored, counted = 0, 0, {}
     for key in pairs(state_file.records) do
       local subject = record_keys.split(key)
@@ -115,9 +112,8 @@ end
 
 -- Resolve what to review (git_branch.review_target) and the repo key the
 -- review persists under. For a detached jj HEAD no bookmark claims, the
--- branch is resolved by which stored review covers HEAD's commits
--- (rebase-stable), so the review follows the stack across rebases.
--- Returns target, repo_key, or nil, err.
+-- branch is the stored review that covers HEAD's commits (see
+-- branch_by_subjects). Returns target, repo_key, or nil, err.
 local function resolve_target(reponame, base_arg)
   local repo_key = git_repo.get_name(reponame)
   local target, err = git_branch.review_target(reponame, base_arg, function(base, head)
@@ -185,7 +181,6 @@ function ReviewModel:fetch(base_arg)
   self.state.branch_key = target.branch_key
   self.state.unpushed_count = target.unpushed_count
 
-  -- Async fetch if stale — notifies user to reopen if base was updated
   git_branch.fetch_ref_if_stale(reponame, target.base)
 
   self.review_state = ReviewState({
@@ -223,11 +218,12 @@ function ReviewModel:item_of(entry)
 end
 
 -- The approved record for `item`, rebased onto its live base if the base
--- changed since approval (e.g. commits inserted or reordered below it):
--- hunk_apply.rebase re-plays the approved delta hunk by hunk, dropping the
--- ones that no longer apply, which reverts just their delta to unseen. The
--- rebased record replaces the stored one, so this runs once per base
--- change. Every read of a record goes through here.
+-- changed since approval (e.g. commits inserted or reordered below it).
+-- Otherwise the base's changes would show as hunks in both views.
+-- hunk_apply.rebase re-plays the approved delta hunk by hunk and drops the
+-- hunks that no longer apply, which reverts just their delta to unseen. The
+-- rebased record replaces the stored one, so this runs once per base change.
+-- Every read of a record goes through here.
 function ReviewModel:reconcile_record(item)
   local record = self.review_state:get_record(item.record_key)
   local base = item.contents.base
@@ -247,11 +243,9 @@ function ReviewModel:reconcile_record(item)
 end
 
 -- Whether `item` has seen content (approved != base) and unseen content
--- (approved != current). Compares lines only: presence flags (deleted /
--- missing) could differ only for empty contents, where every reachable
--- pairing (rolled-back add vs absent base, approved deletion vs deleted
--- current, empty file) is rightly "equal", as an empty diff has nothing left
--- to review.
+-- (approved != current). Presence flags (deleted or missing) can differ only
+-- for empty contents, whose diff has nothing left to review, so this compares
+-- lines only.
 local function seen_flags(self, item)
   if item.cache.flags then return item.cache.flags end
 
@@ -260,8 +254,9 @@ local function seen_flags(self, item)
   if record then
     local eq_base = hunk_apply.lines_equal(record.lines, item.contents.base)
     local eq_current = hunk_apply.lines_equal(record.lines, item.contents.current)
-    -- A record equal to base only survives when base == current (e.g. a pure
-    -- rename) was marked seen; keep it in Seen so it can be unmarked
+    -- A record equal to base survives only if a file with base == current
+    -- (e.g. a pure rename) was marked seen. Keep it in Seen so it can be
+    -- unmarked.
     flags = { has_seen = not eq_base or eq_current, has_unseen = not eq_current }
   end
 
@@ -488,10 +483,10 @@ function ReviewModel:get_reponame()
   return self.state.reponame
 end
 
--- Header for the review list: the branch key the review persists under,
--- plus the base it's diffed against. A trunk review also shows how many
--- unpushed commits it covers — the branch key names the trunk there, not the
--- ref diffed (the diff runs to HEAD, past the lagging trunk ref).
+-- Header for the review list: the branch key the review persists under, and
+-- the base it's diffed against. A trunk review's branch key names the trunk,
+-- but its diff runs past the trunk ref to HEAD, so the header also counts the
+-- unpushed commits.
 function ReviewModel:get_list_title()
   local state, count = self.state, self.state.unpushed_count
   if count then

@@ -10,7 +10,7 @@ local fs = require('vgit.core.fs')
 
   with / in branch keys encoded as --. Sessions on different vgit versions
   share these files, so the format only grows compatibly (see the v1 pin in
-  the spec). Everything here that reads is libuv/io/vim.json only, so safe
+  the spec). Every read here uses only libuv, io and vim.json, so it is safe
   in fast event contexts.
 ]]
 
@@ -19,7 +19,7 @@ local review_persistence = {}
 local CURRENT_VERSION = 1
 local MAX_BRANCHES = 128
 
--- Both review types share the branch's object store; sweeping must honor
+-- Both review types share the branch's object store, so sweeping must honor
 -- references from each.
 local REVIEW_TYPES = { 'by_file', 'by_commit' }
 
@@ -41,14 +41,16 @@ local function encode_branch(name)
 end
 
 -- Migration (added 2026-10-23): review state moved from <type>_indexed.json
--- to <type>.json, replacing any file there in the retired classic format.
--- The _indexed file is copied, not moved: sessions still running pre-rename
--- code sweep objects by its references alone, so removing it would let them
--- delete the snapshots of that review. Such a session can also keep writing
--- the _indexed file, so it is copied again whenever it is newer. libuv/io
--- only (safe in fast event contexts). Delete this block, its call in
--- get_state_dir, and the _indexed refs in referenced_hashes once no session
--- runs pre-rename code; delete leftover _indexed files then too.
+-- to <type>.json, replacing any file there in the old marks format, which
+-- has no `entries`. Sessions still running pre-rename code sweep objects by
+-- the _indexed file's references alone, so removing it would let them
+-- delete that review's snapshots. Thus it is copied, not moved. Such a
+-- session can also keep writing the _indexed file, so it is copied again
+-- whenever it is newer. Uses libuv and io only, so it is safe in fast event
+-- contexts.
+-- Delete this block, its call in get_state_dir, and the _indexed refs in
+-- referenced_hashes once no session runs pre-rename code; delete leftover
+-- _indexed files then too.
 
 -- Whether stat result `a` has a newer mtime than `b`
 local function is_newer(a, b)
@@ -165,7 +167,7 @@ end
 ]]
 local function decode(data)
   local state_file = { branch_key = data.branchName, records = {}, removed = {} }
-  -- A file in the retired classic format has no entries
+  -- A file in the old marks format has no entries
   local entries = type(data.entries) == 'table' and data.entries or {}
   for key, entry in pairs(entries) do
     if type(entry) == 'table' and type(entry.approved) == 'string' then
@@ -242,10 +244,11 @@ end
 
 -- Content hash used to address snapshot objects. Requires main-loop context
 -- (vim.fn).
--- NUL bytes (binary snapshots, e.g. .age secrets) are escaped first: nvim
--- converts a Lua string containing NULs to a Blob at the vim.fn boundary,
--- which sha256() rejects (E976). The escape (\1 -> \1\1, \0 -> \1\2) is
--- injective, so distinct contents still hash distinctly.
+--
+-- nvim converts a Lua string containing NULs (e.g. a binary snapshot) to a
+-- Blob at the vim.fn boundary, which sha256() rejects (E976). So NUL bytes
+-- are escaped first, as \1 -> \1\1 and \0 -> \1\2. The escape is injective,
+-- so distinct contents still hash distinctly.
 function review_persistence.hash_lines(lines)
   local content = table.concat(lines, '\n')
   -- Most content has neither byte, and scanning for them is far cheaper than
@@ -256,10 +259,10 @@ function review_persistence.hash_lines(lines)
   return vim.fn.sha256(content)
 end
 
--- Read a snapshot's lines by hash. Returns nil if missing (e.g. object lost).
--- Raw io rather than fs.read_file (vim.fn.readfile), which silently rewrites
--- NUL bytes and would corrupt binary snapshots on the round-trip; must mirror
--- fs.write_file's raw format (each line followed by '\n').
+-- Read a snapshot's lines by hash, or nil if the object is missing.
+-- fs.read_file (vim.fn.readfile) rewrites NUL bytes, which would corrupt
+-- binary snapshots, so this reads raw bytes, mirroring fs.write_file's format
+-- (each line followed by '\n').
 function review_persistence.read_object(repo_key, branch_key, hash)
   local fd = io.open(get_objects_dir(repo_key, branch_key) .. '/' .. hash, 'rb')
   if not fd then return nil end
@@ -283,12 +286,11 @@ function review_persistence.read_record(repo_key, branch_key, ref)
   return { lines = lines, deleted = ref.deleted, base_lines = base_lines, hash = ref.hash, base_hash = ref.base_hash }
 end
 
--- Write the objects of `records` (a map of records), hashing each record
--- that isn't yet and caching the hashes on it; records are never modified
--- once set, so the hashes stay valid. Existing objects are left alone
--- (content-addressed, so contents are immutable), which is only safe because
--- writes are atomic: a truncated object would otherwise be kept forever.
--- Stops at the first failure, returning nil, err.
+-- Write the objects of `records` (a map of records), caching each record's
+-- hashes on it. Records are never modified once set, so the hashes stay
+-- valid. Objects are content-addressed and written atomically, so an
+-- existing one is complete and is left alone. Stops at the first failure,
+-- returning nil, err.
 function review_persistence.write_records(repo_key, branch_key, records)
   local dir = get_objects_dir(repo_key, branch_key)
   local _, err = ensure_dir(dir)
@@ -310,10 +312,10 @@ function review_persistence.write_records(repo_key, branch_key, records)
 end
 
 -- Save a review's state file: `records` (written by write_records), with
--- their `change_ids`, and the tombstones of `removed` (a set) that have a
--- change id; tombstones only matter for adoption, which goes by change id.
--- Does not evict; see evict_lru. Returns the written file's stamp (see
--- state_stamp), or nil, err on failure.
+-- their `change_ids`, and the tombstones of `removed` (a set). Tombstones only
+-- matter for adoption, which goes by change id, so those without one are
+-- dropped. Does not evict (see evict_lru). Returns the written file's stamp
+-- (see state_stamp), or nil, err on failure.
 function review_persistence.save(repo_key, branch_key, review_type, records, change_ids, removed)
   local entries = {}
   for key, record in pairs(records) do
@@ -332,7 +334,7 @@ function review_persistence.save(repo_key, branch_key, review_type, records, cha
   local _, err = ensure_dir(fs.dirname(path))
   if err then return nil, err end
 
-  -- Readers order branches by mtime now, but older sessions still read lastUsed
+  -- lastUsed is for older vgit versions, and this one orders branches by mtime
   local data = { version = CURRENT_VERSION, lastUsed = os.time(), branchName = branch_key, entries = entries }
   local stat
   stat, err = fs.write_file_atomic(path, { vim.fn.json_encode(data) })
@@ -372,8 +374,8 @@ function review_persistence.sweep_objects(repo_key, branch_key)
 end
 
 -- Mtime (seconds) of the newest state file directly in `dir`, or nil if it
--- holds none. Stat only; save() writes lastUsed and the file at the same
--- instant, so mtime orders branches identically without parsing JSON.
+-- holds none. save() writes lastUsed along with the file, so mtime orders
+-- branches as lastUsed would, without parsing JSON.
 local function newest_state_mtime(dir)
   local newest
   for name, entry_type in each_dir_entry(dir) do
@@ -407,12 +409,12 @@ local function list_branches(state_dir)
 end
 
 -- Evict least-recently-used branches until the repo is within capacity.
--- Called from the quit-time save (never the write-behind one): the current
--- branch was just saved, so it sorts newest and is never a candidate.
+-- Called only from the final save, after which the current branch sorts
+-- newest, so it is never evicted.
 function review_persistence.evict_lru(repo_key)
   local branches = list_branches(get_state_dir(repo_key))
   for i = 1, #branches - MAX_BRANCHES do
-    vim.fn.delete(branches[i].dir, 'rf') -- Remove the branch dir and all its state files
+    vim.fn.delete(branches[i].dir, 'rf')
   end
 end
 

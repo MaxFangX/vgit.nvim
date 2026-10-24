@@ -241,11 +241,7 @@ function Model:unstage_hunk(filepath, hunk)
   if err then return nil, err end
 
   if file and (file:has('D ') or file:has(' D')) then return git_file:unstage() end
-  -- Unstage by forward-applying the inverse patch. This model's staged hunks
-  -- are numbered by HEAD on the old side, and git positions patches by their
-  -- old-side numbers even under `apply --reverse` - which mislocates the
-  -- change in the index whenever earlier staged hunks shifted line counts.
-  -- The inverse hunk is numbered by the index side, the actual target.
+  -- Unstage by staging the inverse hunk (see GitHunk:invert)
   return git_file:stage_hunk(hunk:invert())
 end
 
@@ -253,7 +249,7 @@ function Model:reset_hunk(filepath, hunk)
   local abs_filepath = self.state.reponame .. '/' .. filepath
   local git_file = GitFile(abs_filepath)
 
-  -- A deleted file's one hunk is the whole deletion; there's no file to patch
+  -- A deleted file's one hunk is the whole deletion, with no file to patch
   local file, err = git_file:status()
   if err then return nil, err end
   if file and file:has(' D') then return self:reset_file(filepath) end

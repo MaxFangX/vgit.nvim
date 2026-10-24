@@ -15,8 +15,7 @@ local record_keys = {}
 
   Stacked branches share commits, so a (commit, file) with no state in this
   review also adopts the record another branch's review holds for the same
-  change id. ReviewState applies the results of these lookups to
-  its storage.
+  change id. ReviewState applies these lookups to its records.
 ]]
 
 -- The subject key of a commit subject. Every stored key depends on
@@ -80,7 +79,7 @@ end
 -- with the same change id and file path. `held_keys` is the set of keys
 -- holding state. A held key whose recorded change id is another current
 -- item's (subjects shifted or swapped) is that item's to move, not this
--- one's to keep. Returns `{ from, to }` pairs, each `from` used once; apply
+-- one's to keep. Returns `{ from, to }` pairs, each `from` used once. Apply
 -- them together, reading every `from` before writing any `to`.
 function record_keys.plan(items, held_keys, change_ids)
   local current = {}

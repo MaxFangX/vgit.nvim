@@ -6,30 +6,29 @@ local record_keys = require('vgit.features.screens.record_keys')
 
 --[[
   ReviewState holds a review's records: the approved snapshot of each
-  reviewed file, by record key. It is keyed by (repo_key, branch_key,
-  review_type), the identity of its state file, where review_type is
-  'by_file' or 'by_commit'.
+  reviewed file, by record key. Like its state file, it is identified by
+  (repo_key, branch_key, review_type), where review_type is 'by_file' or
+  'by_commit'.
 
-  A record is { lines = {...}, deleted = bool, base_lines = {...} } where
-  base_lines is the base the approval was made against (used to rebase the
-  snapshot when the base changes). No record means approved == base
-  (nothing seen). Records persist to disk as content-addressed objects
-  referenced from the review-type JSON file, each with the jj change id of
-  its commit when known (see record_keys).
+  A record is { lines, deleted, base_lines }, where base_lines is the base
+  the approval was made against, so the snapshot can be rebased when the base
+  changes. No record means approved == base, i.e. nothing seen. Records
+  persist as content-addressed objects referenced from the state file, each
+  with the jj change id of its commit when known (see record_keys).
 
   A key whose record was removed (unmarked, reset, or rebased away) keeps a
-  tombstone, persisted with its change id, so the record isn't adopted
-  from another branch's review again.
+  tombstone with its change id, so the record isn't adopted from another
+  branch's review again.
 ]]
 
 local ReviewState = Object:extend()
 
--- Write-behind delay: the first change after a save starts the timer and
--- later changes ride along, so a crash or kill mid-review loses at most this
+-- Write-behind delay. The first change after a save starts the timer, and
+-- later changes don't restart it, so a crash mid-review loses at most this
 -- much work, even while marks keep coming.
 local SAVE_DELAY_MS = 1000
 
--- Global state storage (persists across screen instances within a Vim session)
+-- State by review, shared by every screen instance in this session
 local state_store = {}
 
 -- Without a repo_key, the state lives in memory only
@@ -51,8 +50,8 @@ local function get_state(self)
       records = {},
       change_ids = {},
       removed = {},
-      -- Keys changed since the last write: they win over the file's version
-      -- when another session wrote it meanwhile (sync_from_disk)
+      -- Keys changed since the last write, which win over the file's version
+      -- in sync_from_disk
       dirty = {},
       position = { type = 'unseen' },
     }
@@ -65,16 +64,16 @@ local function state_stamp(self)
 end
 
 -- Merge the state file into the store if another session wrote (or deleted)
--- it since this one last read or wrote it: every key this session hasn't
+-- it since this one last read or wrote it. Every key this session hasn't
 -- changed since (see `dirty`) takes the file's version. Returns nil, err if
--- the file must not be overwritten; then this session stops saving.
+-- the file must not be overwritten, and this session then stops saving.
 local function sync_from_disk(self, state)
   local disk_stamp = state_stamp(self)
   if disk_stamp == state.disk_stamp then return end
 
-  -- Never prompt or delete: other sessions, possibly on other vgit
-  -- versions, share the file. Leave a newer or unreadable file alone; a
-  -- corrupt one is replaced by the next save.
+  -- Other sessions, possibly on other vgit versions, share the file, so never
+  -- prompt or delete. Leave a newer or unreadable file alone, but let the
+  -- next save replace a corrupt one.
   local state_file, err = persistence.load(self.repo_key, self.branch_key, self.review_type)
   if err and (err.newer or err.unreadable) then
     console.warn(string.format('%s; review progress will not be saved this session', err[1]))
@@ -123,18 +122,16 @@ local function sync_from_disk(self, state)
   end
 end
 
--- Load state from disk (call explicitly from coroutine context). Every save
--- goes through the in-session store, so it is the source of truth within a
--- session, and re-entering a review skips re-reading the object store,
--- unless the state file's stamp shows another session wrote it since we
--- last touched it.
+-- Load state from disk. Must run in a coroutine. Every save goes through the
+-- in-session store, so it is the source of truth within a session, and
+-- re-entering a review skips the disk unless the state file's stamp shows
+-- another session wrote it since.
 function ReviewState:load_from_disk()
   if not self.persist then return end
 
   local state = get_state(self)
   if state.disk_stamp == state_stamp(self) then return end
 
-  -- Escape luv callback context to main Vim loop (required for vim.fn calls)
   loop.free_textlock()
   sync_from_disk(self, state)
 end
@@ -145,13 +142,11 @@ function ReviewState:get_record(record_key)
   return get_state(self).records[record_key]
 end
 
--- base_lines: the base content the approval was made against; lets the model
--- rebase the snapshot when the base later changes (stack restructuring).
 -- Records are never modified once set, which lets saves cache their hashes.
 function ReviewState:set_record(record_key, lines, deleted, base_lines)
   local state = get_state(self)
   -- Marking again against the same base keeps its hash, saving a rehash of
-  -- the whole base on every save
+  -- the whole base
   local previous = state.records[record_key]
   local base_hash = previous and rawequal(previous.base_lines, base_lines) and previous.base_hash or nil
   state.records[record_key] = {
@@ -201,7 +196,6 @@ end
 local function adopt_from_siblings(self, state, items)
   if #items == 0 or not self.persist then return false end
 
-  -- Escape luv callback context to main Vim loop (required for vim.fn calls)
   loop.free_textlock()
 
   local adopted = false
@@ -283,21 +277,20 @@ end
 -- sweeps unreferenced objects and evicts stale branches; objects are immutable
 -- and content-addressed, so unreferenced ones are harmless in between.
 --
--- Interleavings. Within one nvim, this yields once, at free_textlock, before
--- it reads the store, and never after, so marks can't interleave with a
--- write: a write-behind save racing the final save() writes the current
--- store whichever runs first. Other sessions may write the same file at any
--- time, so right before writing the JSON, the file is merged in if it
--- changed since this session last read or wrote it (sync_from_disk). Each
--- writer renames its own temp file into place, and the stamp recorded is
--- that of the file this session wrote, so a write landing just after ours is
--- merged next time rather than overwritten. Two sessions writing within the
--- same few milliseconds can still lose one's changes; that isn't worth a lock
--- for interactive use.
+-- Interleavings. Within one nvim, this yields only at free_textlock, before
+-- it reads the store, so marks can't interleave with a write, and a
+-- write-behind save racing the final save() writes the current store
+-- whichever runs first. Other sessions may write the same file at any time,
+-- so right before writing the JSON, the file is merged in if it changed since
+-- this session last read or wrote it (sync_from_disk). Each writer renames
+-- its own temp file into place, and the stamp recorded is that of the file
+-- this session wrote, so a write landing just after ours is merged next time
+-- rather than overwritten. Two sessions writing within the same few
+-- milliseconds can still lose one's changes, but that isn't worth a lock for
+-- interactive use.
 local function write_to_disk(self, final)
   if not self.persist then return end
 
-  -- Escape luv callback context to main Vim loop (required for vim.fn calls)
   loop.free_textlock()
   local state = get_state(self)
 
@@ -332,8 +325,8 @@ local function write_to_disk(self, final)
   end
 end
 
--- Queue a write-behind save; mark mutators call this so approvals reach disk
--- without waiting for the screen to close.
+-- Queue a write-behind save, so approvals reach disk without waiting for the
+-- screen to close
 function ReviewState:schedule_save()
   if self._save_timer then return end
   self._save_timer = vim.defer_fn(loop.coroutine(function()

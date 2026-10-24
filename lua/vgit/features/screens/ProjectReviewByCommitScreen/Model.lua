@@ -8,11 +8,11 @@ local ReviewModel = require('vgit.features.screens.ReviewModel')
   the commit's parent, with id `<commit hash>|<path>` and record key
   `<subject key>:<path>`.
 
-  Commit hashes change on rebase but subjects typically survive, so the
-  approved snapshot follows the commit across rebases/absorbs — which is the
-  whole point: after a fixup is absorbed, diff(approved, new commit content)
-  shows only the delta beyond what was already approved. Commits repeating a
-  subject key apart by their order (see record_keys.subject_keys).
+  Commit hashes change on rebase, but subjects usually survive, so a record
+  follows its commit across rebases. Thus after a fixup is absorbed, the
+  unseen diff shows only the change beyond what was already approved.
+  Commits repeating a subject are keyed apart by their order (see
+  record_keys.subject_keys).
 ]]
 
 local Model = ReviewModel:extend()

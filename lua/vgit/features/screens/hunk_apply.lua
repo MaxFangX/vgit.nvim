@@ -1,7 +1,6 @@
 --[[
-  hunk_apply applies GitHunks (produced by diffing two in-memory contents,
-  e.g. git_hunks.live) onto line arrays. This is the patch engine behind the
-  review screens: marking hunks/lines "seen" advances the approved
+  hunk_apply applies GitHunks onto line arrays. This is the patch engine
+  behind the review screens: marking hunks/lines "seen" advances the approved
   snapshot by applying hunks of diff(approved -> current); unmarking rolls it
   back by reverse-applying hunks of diff(base -> approved).
 
@@ -134,12 +133,12 @@ end
 -- proximity to the original position. min_pos enforces ordering against
 -- previously matched hunks. Returns the matched position or nil.
 --
--- For replacements/deletions (c > 0), position p means the region occupies
--- new_base[p .. p+c-1]. For pure insertions (c == 0), position q means
--- "insert after line q" and at least one context line must match — except
--- for an empty old_base, which only maps onto an equally empty new_base.
--- An insertion whose lines new_base already has between its context (say it
--- was squashed into the parent) matches as applied, the second return value.
+-- For a replacement or deletion (c > 0), position p means the region occupies
+-- new_base[p .. p+c-1]. For a pure insertion (c == 0), position q means
+-- "insert after line q", and at least one context line must match, unless
+-- old_base is empty, which only maps onto an empty new_base. An insertion
+-- whose lines new_base already has between its context (e.g. it was squashed
+-- into the parent) matches as already applied, the second return value.
 local function locate_region(old_base, new_base, s, c, removed, added, min_pos)
   local best_pos, best_score, best_applied
   local function consider(pos, score, applied)
@@ -178,12 +177,12 @@ local function locate_region(old_base, new_base, s, c, removed, added, min_pos)
   return best_pos, best_applied
 end
 
--- Re-play diff(old_base -> approved) onto new_base: the index analog of a
--- rebase. Each hunk is located in new_base by content + context and applied
--- there; hunks whose region can't be found (the new base changed those very
--- lines) are dropped individually, reverting just their delta to unseen.
--- hunks must be in ascending old-side order (as git_hunks.live returns them).
--- Returns the rebased line array and the number of dropped hunks.
+-- Re-play diff(old_base -> approved) onto new_base, as a rebase would. Each
+-- hunk is located in new_base by content and context and applied there. A
+-- hunk whose region can't be found, because the new base changed those very
+-- lines, is dropped, reverting just its delta to unseen. `hunks` must be in
+-- ascending old-side order, as git_hunks.live returns them. Returns the
+-- rebased line array and the number of dropped hunks.
 function hunk_apply.rebase(hunks, old_base, new_base)
   local matched = {}
   local dropped = 0
@@ -372,10 +371,10 @@ local function invert_all(hunks)
 end
 
 -- The diff left over after apply_selections: diff(old' -> new) for 'apply',
--- diff(old -> new') for 'reverse'. Derived from the existing hunks rather
--- than re-diffed, so marked lines stay where they were marked: a fresh diff
--- may align repeated content (say a closing `'';` / `};` pair) with a
--- different copy and show the mark on the wrong instance.
+-- diff(old -> new') for 'reverse'. A fresh diff may align repeated content
+-- (e.g. a closing `'';` / `};` pair) with a different copy than the one
+-- marked, so this derives the rest from the existing hunks instead, keeping
+-- marked lines where they were.
 function hunk_apply.remaining(hunks, selections, direction)
   local picks_by_hunk = {}
   for _, selection in ipairs(selections) do
