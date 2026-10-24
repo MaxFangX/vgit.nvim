@@ -1,5 +1,6 @@
 -- Not a module path: plenary runs specs without the repo root on package.path
 local review = dofile('tests/helpers/review.lua')
+local loop = require('vgit.core.loop')
 local ReviewState = require('vgit.features.screens.ReviewState')
 local persistence = require('vgit.features.screens.review_persistence')
 
@@ -8,6 +9,55 @@ local run = review.run
 
 describe('ReviewState', function()
   review.use_temp_homes()
+
+  describe('main-loop turns:', function()
+    -- README.md's record as a new session reads it from disk
+    local function saved_lines(repo_key)
+      local Fresh = review.fresh_review_state()
+      local reopened = Fresh({ branch_key = 'main', review_type = 'by_file', repo_key = repo_key })
+      reopened:load_from_disk()
+      local record = reopened:get_record('README.md')
+      return record and record.lines
+    end
+
+    local function review_of(repo_key)
+      return ReviewState({ branch_key = 'main', review_type = 'by_file', repo_key = repo_key })
+    end
+
+    it('loads and saves without yielding when on the main loop', function()
+      -- Outside any coroutine, where a yield would throw
+      local state = review_of('repo')
+      state:load_from_disk()
+      state:set_record('README.md', { 'approved' }, false, { 'old' })
+      state:save()
+      eq({ 'approved' }, saved_lines('repo'))
+    end)
+
+    it('leaves a fast event context to save', function()
+      run(function()
+        local state = review_of('repo')
+        state:set_record('README.md', { 'approved' }, false, { 'old' })
+        -- Resume in a libuv callback, as after a git spawn
+        loop.suspend(function(resume)
+          local timer = vim.uv.new_timer()
+          timer:start(0, 0, function()
+            timer:close()
+            resume()
+          end)
+        end, 1)()
+        eq(vim.in_fast_event(), true)
+        state:save()
+      end)
+      eq({ 'approved' }, saved_lines('repo'))
+    end)
+
+    it('writes behind from its timer', function()
+      local state = review_of('repo')
+      state:set_record('README.md', { 'approved' }, false, { 'old' })
+      assert(vim.wait(5000, function() return saved_lines('repo') ~= nil end, 50), 'no write-behind save')
+      eq({ 'approved' }, saved_lines('repo'))
+    end)
+  end)
 
   describe('session store:', function()
     local function trunk_review(repo_key)

@@ -33,8 +33,8 @@ function review.use_temp_homes()
   return homes
 end
 
--- Save and load yield through free_textlock, so run `fn` in a vgit coroutine
--- and block until it finishes.
+-- Save and load may yield (leave a fast event context), so run `fn` in a
+-- vgit coroutine and block until it finishes.
 function review.run(fn)
   local done, ok, err = false, true, nil
   loop.coroutine(function()

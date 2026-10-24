@@ -132,7 +132,7 @@ function ReviewState:load_from_disk()
   local state = get_state(self)
   if state.disk_stamp == state_stamp(self) then return end
 
-  loop.free_textlock()
+  loop.leave_fast_event()
   sync_from_disk(self, state)
 end
 
@@ -196,7 +196,7 @@ end
 local function adopt_from_siblings(self, state, items)
   if #items == 0 or not self.persist then return false end
 
-  loop.free_textlock()
+  loop.leave_fast_event()
 
   local adopted = false
   for _, sibling in ipairs(sibling_states(self)) do
@@ -277,10 +277,10 @@ end
 -- sweeps unreferenced objects and evicts stale branches; objects are immutable
 -- and content-addressed, so unreferenced ones are harmless in between.
 --
--- Interleavings. Within one nvim, this yields only at free_textlock, before
--- it reads the store, so marks can't interleave with a write, and a
--- write-behind save racing the final save() writes the current store
--- whichever runs first. Other sessions may write the same file at any time,
+-- Interleavings. Within one nvim, this yields only when called from a fast
+-- event context (leave_fast_event), before it reads the store, so marks
+-- can't interleave with a write, and a write-behind save racing the final
+-- save() writes the current store whichever runs first. Other sessions may write the same file at any time,
 -- so right before writing the JSON, the file is merged in if it changed since
 -- this session last read or wrote it (sync_from_disk). Each writer renames
 -- its own temp file into place, and the stamp recorded is that of the file
@@ -291,7 +291,7 @@ end
 local function write_to_disk(self, final)
   if not self.persist then return end
 
-  loop.free_textlock()
+  loop.leave_fast_event()
   local state = get_state(self)
 
   -- Never write JSON referencing objects that failed to write. Records merged

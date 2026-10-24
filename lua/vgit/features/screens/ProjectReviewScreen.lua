@@ -30,8 +30,8 @@ local visual_selection = require('vgit.features.screens.visual_selection')
   main-loop turn: it never yields, so no typed input lands mid-job and each
   job sees the state the keys before it left. Of the model's calls only fetch
   runs git, outside any job; the screen frees the textlock right after it.
-  The views leave a fast event context only when in one (loop.leave_fast_event).
-  Destroying the screen does yield, saving state, but ends the queue.
+  The views and the review state's saves leave a fast event context only when
+  in one (loop.leave_fast_event).
 
   Subclasses set model, setting and list_view, then call init_views. They may
   override jump_section (J/K in the list), and the list width hooks

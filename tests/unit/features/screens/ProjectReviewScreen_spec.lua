@@ -29,6 +29,15 @@ describe('ProjectReviewScreen keypress queue', function()
     end)
   end
 
+  it('quits, saving, within one main-loop turn', function()
+    H.open('file')
+    local screen = H.screen()
+    H.keys('S')
+    screen:enqueue(function() screen:quit() end)
+    eq({ false, true }, { screen._running, screen._destroyed })
+    eq({}, H.errors)
+  end)
+
   it('shows a list row the cursor reached while a job ran', function()
     H.open('file')
     H.focus('list')
