@@ -51,3 +51,31 @@ async.describe('dirname:', function()
     vim.fn.delete(root, 'rf')
   end)
 end)
+
+async.describe('get_name:', function()
+  async.it('names a repo by its origin URL, else its directory', function()
+    local loop = require('vgit.core.loop')
+    for url, name in pairs({
+      ['git@github.com:user/api.git'] = 'api',
+      ['git@host:api.git'] = 'api',
+      ['https://github.com/user/api.git'] = 'api',
+      ['https://github.com/user/api'] = 'api',
+      ['/srv/git/api.git'] = 'api',
+    }) do
+      loop.free_textlock()
+      local dir = vim.fn.tempname()
+      vim.fn.mkdir(dir, 'p')
+      vim.fn.system(string.format('cd %s && git init -q && git remote add origin %s', dir, url))
+      eq(git_repo.get_name(dir), name)
+      loop.free_textlock()
+      vim.fn.delete(dir, 'rf')
+    end
+
+    local dir = vim.fn.tempname() .. '/plain-repo'
+    vim.fn.mkdir(dir, 'p')
+    vim.fn.system(string.format('cd %s && git init -q', dir))
+    eq(git_repo.get_name(dir), 'plain-repo')
+    loop.free_textlock()
+    vim.fn.delete(dir, 'rf')
+  end)
+end)

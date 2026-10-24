@@ -1,3 +1,4 @@
+local event = require('vgit.core.event')
 local gitcli = require('vgit.git.gitcli')
 
 local git_repo = {}
@@ -123,28 +124,23 @@ function git_repo.clean(reponame, filepath)
   })
 end
 
--- Get repo name from origin URL, or fall back to directory name
+-- The repo's name: origin's URL basename (`git@h:u/repo.git`,
+-- `https://h/u/repo`), or the directory name without one. It names the
+-- review state dir, and every review open asks, so it is cached per repo
+-- until the git dir changes.
+local names = {}
+event.custom_on('VGitSync', function(args)
+  if args and args.data then names = {} end
+end)
+
 function git_repo.get_name(reponame)
-  if not reponame then
-    reponame = git_repo.discover()
-    if not reponame then return nil end
-  end
+  if names[reponame] then return names[reponame] end
 
-  -- Try to get origin URL
-  local result, _ = gitcli.run({ '-C', reponame, 'config', '--get', 'remote.origin.url' })
-  if result and result[1] and result[1] ~= '' then
-    local url = result[1]
-    -- Extract repo name from URL (handles git@, https://, etc.)
-    -- git@github.com:user/repo.git -> repo
-    -- https://github.com/user/repo.git -> repo
-    -- https://github.com/user/repo -> repo
-    local name = url:match('/([^/]+)%.git$') or url:match(':([^/]+)%.git$')
-      or url:match('/([^/]+)$') or url:match(':([^/]+)$')
-    if name then return name end
-  end
-
-  -- Fall back to directory name
-  return vim.fn.fnamemodify(reponame, ':t')
+  local result = gitcli.run({ '-C', reponame, 'config', '--get', 'remote.origin.url' })
+  local url = result and result[1]
+  local name = url and (url:gsub('%.git$', '')):match('([^/:]+)$')
+  names[reponame] = name or vim.fs.basename(reponame)
+  return names[reponame]
 end
 
 return git_repo
