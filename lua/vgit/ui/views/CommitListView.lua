@@ -78,21 +78,26 @@ function CommitListView:toggle_current_list_item()
   self:move_to_item(function(node) return is_commit_row(node, hash, section) end)
 end
 
+-- The id a commit row shows: the jj change id in jj repos, else the git
+-- short hash (either can vary in length)
+local function display_id(commit)
+  return commit.change_id_short or commit.short_hash
+end
+
 -- Column widths shared by every commit row, so the same commit aligns across
 -- the Seen/Unseen sections: the widest stable `index` (set by the model, min
--- 2 digits) and the widest displayed id (jj change id in jj repos, git short
--- hash otherwise; either can vary in length).
+-- 2 digits), the widest displayed id, and the widest message.
 local function column_widths(entries)
-  local max_index = 0
-  local id_width = 0
+  local max_index, id_width, message_width = 0, 0, 0
   for _, section in ipairs(entries) do
     for _, commit_data in ipairs(section.commits or {}) do
-      max_index = math.max(max_index, commit_data.index or 0)
       local commit = commit_data.commit
-      id_width = math.max(id_width, #(commit.change_id_short or commit.short_hash))
+      max_index = math.max(max_index, commit_data.index or 0)
+      id_width = math.max(id_width, #display_id(commit))
+      message_width = math.max(message_width, #commit.message)
     end
   end
-  return math.max(2, #tostring(max_index)), id_width
+  return math.max(2, #tostring(max_index)), id_width, message_width
 end
 
 -- Cells rendered before a commit row's text: indent + fold symbol + space +
@@ -102,16 +107,7 @@ local ROW_DECORATION_WIDTH = 6
 -- Width in cells of the widest commit row as rendered ('NN - id - message'
 -- plus fold decoration), for auto-sizing the list column.
 function CommitListView:max_row_width()
-  local entries = self.props.entries()
-  local index_width, id_width = column_widths(entries)
-
-  local message_width = 0
-  for _, section in ipairs(entries) do
-    for _, commit_data in ipairs(section.commits or {}) do
-      message_width = math.max(message_width, #commit_data.commit.message)
-    end
-  end
-
+  local index_width, id_width, message_width = column_widths(self.props.entries())
   return ROW_DECORATION_WIDTH + index_width + 3 + id_width + 3 + message_width
 end
 
@@ -149,7 +145,7 @@ function CommitListView:render()
       commit_items[#commit_items + 1] = {
         node_type = 'commit',
         open = active ~= nil and active.hash == commit.hash and active.section == section.type,
-        value = string.format(row_format, index_label, commit.change_id_short or commit.short_hash, commit.message),
+        value = string.format(row_format, index_label, display_id(commit), commit.message),
         items = file_tree(self.trees, trees, commit_data.files),
         section_type = section.type,
         commit_hash = commit.hash,
