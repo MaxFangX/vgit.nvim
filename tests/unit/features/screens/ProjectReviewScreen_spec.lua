@@ -180,10 +180,15 @@ end
 describe('ProjectReviewScreen', function()
   local repo, cwd, xdg
 
-  local input = console.input
+  local input, error = console.input, console.error
+  local errors
 
   before_each(function()
     console.input = function() return 'y' end
+    errors = {}
+    console.error = function(msg)
+      errors[#errors + 1] = msg
+    end
     cwd = vim.loop.cwd()
     xdg = vim.env.XDG_DATA_HOME
     vim.env.XDG_DATA_HOME = vim.fn.tempname()
@@ -197,7 +202,7 @@ describe('ProjectReviewScreen', function()
     vim.cmd.cd(cwd)
     vim.env.XDG_DATA_HOME = xdg
     vim.fn.delete(repo, 'rf')
-    console.input = input
+    console.input, console.error = input, error
   end)
 
   -- Walk `n` presses of `keys`, collecting the entry after each
@@ -388,6 +393,67 @@ describe('ProjectReviewScreen', function()
       H.open('file')
       eq('unseen src/b/y.lua', H.entry())
       H.assert_consistent()
+    end)
+  end)
+
+  describe('keypress queue', function()
+    it('runs every key of a burst, in order', function()
+      H.open('file')
+      H.keys('jjj')
+      eq({ 'unseen a/x.lua', '4/4 inside' }, { H.entry(), H.hunk() })
+      -- x.lua's last hunk, then README and y.lua whole
+      H.keys('sss')
+      eq({ 'unseen src/c/z.lua', '1/1 inside' }, { H.entry(), H.hunk() })
+      H.assert_consistent()
+      eq({}, errors)
+    end)
+
+    it('marks the hunk the previous key landed on', function()
+      H.open('file')
+      H.keys('j')
+      H.keys('j')
+      H.keys('j')
+      H.keys('j')
+      eq('unseen docs/README.md', H.entry())
+      -- k leaves README for x.lua's last hunk; s marks that hunk and moves
+      -- on to the next unseen file, README
+      H.keys('ks')
+      eq({ 'unseen docs/README.md', '1/1 inside' }, { H.entry(), H.hunk() })
+      H.focus('list')
+      H.keys('gg')
+      H.keys('j')
+      eq({ 'seen a/x.lua', '1/1 inside' }, { H.entry(), H.hunk() })
+      H.keys('j')
+      eq('unseen a/x.lua', H.entry())
+      H.keys('j')
+      eq('unseen docs/README.md', H.entry())
+      eq({}, errors)
+    end)
+
+    it('runs keys pressed just before quit, then quits', function()
+      H.open('file')
+      H.focus('list')
+      H.keys('S<esc>')
+      eq(nil, H.screen())
+      -- S moved on to README before the quit
+      eq(repo .. '/docs/README.md', vim.api.nvim_buf_get_name(0))
+      eq({}, errors)
+
+      H.open('file')
+      H.focus('list')
+      H.keys('gg')
+      H.keys('j')
+      eq('seen a/x.lua', H.entry())
+      eq({}, errors)
+    end)
+
+    it('drops the queue when the screen goes away', function()
+      H.open('file')
+      local screen = H.screen()
+      H.keys('jjj', 0)
+      H.close()
+      eq({}, screen._jobs)
+      eq({}, errors)
     end)
   end)
 

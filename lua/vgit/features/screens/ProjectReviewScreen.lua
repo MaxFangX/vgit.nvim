@@ -40,11 +40,11 @@ function ProjectReviewScreen:constructor(opts)
     setting = nil,    -- Set by subclass
     list_view = nil,  -- Set by subclass
     list_cols = nil,  -- Set by subclass when the list/diff boundary is draggable
-    diff_keymaps = {},
     app_bar_view = nil,
     diff_view = nil,
-    _marking = false,     -- Lock to prevent concurrent mark operations
-    _navigating = false,  -- Lock to prevent concurrent commit navigation
+    -- Keypress jobs not yet run, and whether the runner is draining them
+    _jobs = {},
+    _running = false,
   }
 end
 
@@ -121,9 +121,6 @@ function ProjectReviewScreen:get_current_mark_index()
 end
 
 function ProjectReviewScreen:move_to_next_file()
-  -- Drop keypresses while a navigation is mid-flight (see jump_section) —
-  -- falling through to lnum-based navigation would read a stale cursor.
-  if self._navigating then return nil end
   loop.free_textlock()
 
   -- Try commit-aware navigation first (handles cross-commit navigation)
@@ -154,7 +151,6 @@ function ProjectReviewScreen:move_to_next_file()
 end
 
 function ProjectReviewScreen:move_to_prev_file()
-  if self._navigating then return nil end
   loop.free_textlock()
 
   -- Try commit-aware navigation first (handles cross-commit navigation)
@@ -202,9 +198,6 @@ end
 -- current file. If already on that hunk, cross into the next / previous file's
 -- first / last hunk.
 function ProjectReviewScreen:jump_to_file_edge(direction)
-  -- Skip if we're in the middle of a mark operation
-  if self._marking then return end
-
   local current_index, total_hunks, position = self:get_mark_at_cursor()
   if file_navigation.should_cross_file(direction, current_index, total_hunks, position) then
     return self:move_to_adjacent_file(direction)
@@ -326,8 +319,6 @@ end
 -- Switch to the commit owning target_info (if needed), expand its folders, and
 -- move the list cursor onto that file. Returns the list_item, or nil.
 function ProjectReviewScreen:goto_logical_file(target_info)
-  self._navigating = true
-
   -- Change active commit if needed (by-commit mode only)
   if self.list_view.get_active_commit then
     local active = self.list_view:get_active_commit()
@@ -342,9 +333,7 @@ function ProjectReviewScreen:goto_logical_file(target_info)
   end
 
   -- Navigate to the specific target file, expanding folders if needed
-  local result = self:navigate_to_file_by_id(target_info.file.id)
-  self._navigating = false
-  return result
+  return self:navigate_to_file_by_id(target_info.file.id)
 end
 
 -- Navigate to a specific file by ID, expanding parent folders if needed
@@ -406,11 +395,6 @@ end
 -- between crate-level folder headings (see
 -- vgit.ui.views.StatusListView.section_headings for the rule).
 function ProjectReviewScreen:jump_section(direction)
-  -- Drop keypresses while a navigation or mark is mid-flight: its commit
-  -- expand/collapse has re-rendered the list but not yet repositioned the
-  -- cursor, so reading the cursor now resolves to the wrong file.
-  if self._navigating or self._marking then return end
-
   if self.list_view.get_active_commit then
     return self:jump_to_adjacent_commit(direction)
   end
@@ -519,9 +503,6 @@ function ProjectReviewScreen:move_to_entry_expanding_commit(filepath, commit_has
 end
 
 function ProjectReviewScreen:next_hunk()
-  -- Skip if we're in the middle of a mark operation
-  if self._marking then return end
-
   local current_index, total_hunks, position = self:get_mark_at_cursor()
 
   -- Move to next file only when: no hunks, inside the last hunk, or below all hunks
@@ -541,9 +522,6 @@ function ProjectReviewScreen:next_hunk()
 end
 
 function ProjectReviewScreen:prev_hunk()
-  -- Skip if we're in the middle of a mark operation
-  if self._marking then return end
-
   local current_index, total_hunks, position = self:get_mark_at_cursor()
 
   -- Move to prev file only when: no hunks, inside the first hunk, or above all hunks
@@ -655,67 +633,55 @@ end
 -- Shared mark/unmark driver. selections: array of { index, rows } into the
 -- current entry's diff. mark_as_seen: true applies (s), false reverses (u).
 -- Falls back to file-level ops on hunkless diffs (e.g. a marked pure rename).
--- Serialize mark operations. The lock always clears, even if fn errors --
--- a dead coroutine must not leave the screen ignoring input forever.
-function ProjectReviewScreen:with_mark_lock(fn)
-  if self._marking then return end
-  self._marking = true
-  local ok, err = pcall(fn)
-  self._marking = false
-  if not ok then error(err, 0) end
-end
-
 function ProjectReviewScreen:apply_seen_change(mark_as_seen, selections)
-  self:with_mark_lock(function()
-    local entry = self.model:get_entry()
-    if not entry then return end
+  local entry = self.model:get_entry()
+  if not entry then return end
 
-    -- s only acts on unseen entries, u only on seen entries (matching which
-    -- diffs their hunks come from); on the opposite section they're no-ops.
-    local expected_type = mark_as_seen and 'unseen' or 'seen'
-    if entry.type ~= expected_type then return end
+  -- s only acts on unseen entries, u only on seen entries (matching which
+  -- diffs their hunks come from); on the opposite section they're no-ops.
+  local expected_type = mark_as_seen and 'unseen' or 'seen'
+  if entry.type ~= expected_type then return end
 
-    -- Save context before marking (entry may be removed after render)
-    local current_filepath = entry.filepath
-    local current_commit = entry.commit_hash
+  -- Save context before marking (entry may be removed after render)
+  local current_filepath = entry.filepath
+  local current_commit = entry.commit_hash
 
-    -- New-side line where the marked region begins (from the last selection,
-    -- the bottom of a visual range). Navigation lands on the first hunk past
-    -- this position after the rebuild; index arithmetic alone would land back
-    -- on the leading remainder of a partially marked hunk.
-    local from_top = 0
-    local last_selection = selections and selections[#selections]
-    if last_selection then
-      local diff = self.model:get_diff_for(entry)
-      local mark = diff and diff.marks and diff.marks[last_selection.index]
-      if mark then from_top = mark.top_relative end
-    end
+  -- New-side line where the marked region begins (from the last selection,
+  -- the bottom of a visual range). Navigation lands on the first hunk past
+  -- this position after the rebuild; index arithmetic alone would land back
+  -- on the leading remainder of a partially marked hunk.
+  local from_top = 0
+  local last_selection = selections and selections[#selections]
+  if last_selection then
+    local diff = self.model:get_diff_for(entry)
+    local mark = diff and diff.marks and diff.marks[last_selection.index]
+    if mark then from_top = mark.top_relative end
+  end
 
-    -- Find adjacent files in this section BEFORE rebuilding (includes files in
-    -- collapsed commits)
-    local section_title = mark_as_seen and 'Unseen' or 'Seen'
-    local next_file, _, first_file = self:find_adjacent_files(section_title, current_filepath, current_commit)
+  -- Find adjacent files in this section BEFORE rebuilding (includes files in
+  -- collapsed commits)
+  local section_title = mark_as_seen and 'Unseen' or 'Seen'
+  local next_file, _, first_file = self:find_adjacent_files(section_title, current_filepath, current_commit)
 
-    if not selections then
-      -- Hunkless diff: treat as whole-file operation
-      if mark_as_seen then
-        self.model:mark_file(entry)
-      else
-        self.model:unmark_file(entry)
-      end
-    elseif mark_as_seen then
-      self.model:mark_selections(entry, selections)
+  if not selections then
+    -- Hunkless diff: treat as whole-file operation
+    if mark_as_seen then
+      self.model:mark_file(entry)
     else
-      self.model:unmark_selections(entry, selections)
+      self.model:unmark_file(entry)
     end
+  elseif mark_as_seen then
+    self.model:mark_selections(entry, selections)
+  else
+    self.model:unmark_selections(entry, selections)
+  end
 
-    -- The mark ran git commands; escape their fast event context before UI work
-    loop.free_textlock()
+  -- The mark ran git commands; escape their fast event context before UI work
+  loop.free_textlock()
 
-    self.list_view:render()
+  self.list_view:render()
 
-    self:move_to_next_target(expected_type, current_filepath, current_commit, from_top, next_file, first_file)
-  end)
+  self:move_to_next_target(expected_type, current_filepath, current_commit, from_top, next_file, first_file)
 end
 
 -- Build the selection for the hunk under the cursor, or nil for hunkless diffs
@@ -743,12 +709,6 @@ end
 -- Unified mark/unmark file operation
 -- mark_as_seen: true = mark all hunks as seen, false = unmark all hunks
 function ProjectReviewScreen:set_file_seen_state(mark_as_seen)
-  self:with_mark_lock(function()
-    self:set_file_seen_state_locked(mark_as_seen)
-  end)
-end
-
-function ProjectReviewScreen:set_file_seen_state_locked(mark_as_seen)
   local entry = self.model:get_entry()
   if not entry then return end
 
@@ -821,29 +781,25 @@ function ProjectReviewScreen:unmark_file()
 end
 
 function ProjectReviewScreen:reset_marks()
-  if self._marking then return end
-
   loop.free_textlock()
   local decision = console.input('Reset all marks? (y/N) '):lower()
   if decision ~= 'yes' and decision ~= 'y' then return end
 
-  self:with_mark_lock(function()
-    local entry = self.model:get_entry()
-    self.model:reset_marks()
-    -- reset_marks ran git commands; escape their fast event context
-    loop.free_textlock()
-    self.list_view:render()
+  local entry = self.model:get_entry()
+  self.model:reset_marks()
+  -- reset_marks ran git commands; escape their fast event context
+  loop.free_textlock()
+  self.list_view:render()
 
-    -- Everything is unseen again: stay on this file, else take the first one
-    local found = entry and self:move_to_entry_expanding_commit(entry.filepath, entry.commit_hash, 'unseen')
-    if not found then
-      self:ensure_visible_file()
-      found = self.list_view:move_to_entry(function(e) return e.type == 'unseen' end)
-    end
-    if found then self.model:set_entry_id(found.id) end
-    self.diff_view:render()
-    self.diff_view:move_to_hunk(1, 'smart')
-  end)
+  -- Everything is unseen again: stay on this file, else take the first one
+  local found = entry and self:move_to_entry_expanding_commit(entry.filepath, entry.commit_hash, 'unseen')
+  if not found then
+    self:ensure_visible_file()
+    found = self.list_view:move_to_entry(function(e) return e.type == 'unseen' end)
+  end
+  if found then self.model:set_entry_id(found.id) end
+  self.diff_view:render()
+  self.diff_view:move_to_hunk(1, 'smart')
 end
 
 function ProjectReviewScreen:toggle_focus()
@@ -862,11 +818,15 @@ function ProjectReviewScreen:focused_pane()
   return self.scene:get('list'):is_focused() and 'list' or 'diff'
 end
 
+-- CursorMoved in the list. Moves while a job runs are that job's own.
 function ProjectReviewScreen:handle_list_move()
-  -- Skip if we're in the middle of a mark operation
-  if self._marking then return end
+  if self._running then return end
+  self:enqueue(function() self:show_list_item() end)
+end
 
-  local list_item = self.list_view:move()
+-- Show the entry under the list cursor
+function ProjectReviewScreen:show_list_item()
+  local list_item = self.list_view:get_current_list_item()
   if not list_item then return end
 
   -- Plain list movement (arrows, mouse clicks) never changes which commit is
@@ -1020,17 +980,43 @@ function ProjectReviewScreen:render(on_list_render)
   self.diff_view:move_to_hunk(nil, hunk_alignment)
 end
 
-function ProjectReviewScreen:setup_list_keymaps()
+-- Run fn(...) after every job queued before it. Keymap callbacks only
+-- enqueue, so presses run one at a time and in order however fast they
+-- arrive, and each job reads cursor and model state when it runs. Jobs
+-- still queued when the screen is destroyed are dropped.
+function ProjectReviewScreen:enqueue(fn, ...)
+  if self._destroyed then return end
+  self._jobs[#self._jobs + 1] = { fn = fn, args = { n = select('#', ...), ... } }
+  if self._running then return end
+
+  self._running = true
+  loop.coroutine(function()
+    while #self._jobs > 0 and not self._destroyed do
+      local job = table.remove(self._jobs, 1)
+      local ok, err = pcall(job.fn, unpack(job.args, 1, job.args.n))
+      -- A job cut short by destroy() fails on the closed windows
+      if not ok and not self._destroyed then console.error(tostring(err)) end
+    end
+    self._jobs = {}
+    self._running = false
+  end)()
+end
+
+function ProjectReviewScreen:setup_keymaps()
   local keymaps = self.setting:get('keymaps')
+  local function job(fn)
+    return function(...)
+      self:enqueue(fn, ...)
+    end
+  end
+
+  local toggle_focus = job(function() self:toggle_focus() end)
+  local mark_file = job(function() self:mark_file() end)
+  local unmark_file = job(function() self:unmark_file() end)
+  local reset = job(function() self:reset_marks() end)
 
   self.list_view:set_keymap({
-    {
-      mode = 'n',
-      mapping = keymaps.toggle_focus,
-      handler = function()
-        self:toggle_focus()
-      end,
-    },
+    { mode = 'n', mapping = keymaps.toggle_focus, handler = toggle_focus },
     -- `mark_hunk` (`s`) has no target in the list pane, so bind it to an explicit
     -- no-op to keep it from falling through to a global mapping.
     {
@@ -1038,194 +1024,68 @@ function ProjectReviewScreen:setup_list_keymaps()
       mapping = { key = keymaps.mark_hunk.key, desc = 'No-op (mark hunk is diff-pane only)' },
       handler = function() end,
     },
+    { mode = 'n', mapping = keymaps.mark_file, handler = mark_file },
+    { mode = 'n', mapping = keymaps.unmark_file, handler = unmark_file },
+    { mode = 'n', mapping = keymaps.reset, handler = reset },
+    { mode = 'n', mapping = keymaps.next, handler = job(function() self:move_to_adjacent_file('next') end) },
+    { mode = 'n', mapping = keymaps.previous, handler = job(function() self:move_to_adjacent_file('prev') end) },
+    { mode = 'n', mapping = keymaps.jump_section_next, handler = job(function() self:jump_section('next') end) },
+    { mode = 'n', mapping = keymaps.jump_section_prev, handler = job(function() self:jump_section('prev') end) },
+    -- Replaces BaseListView's Enter, so the fold toggle runs in order too
     {
       mode = 'n',
-      mapping = keymaps.mark_file,
-      handler = loop.debounce_coroutine(function()
-        self:mark_file()
-      end, 15),
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.unmark_file,
-      handler = loop.debounce_coroutine(function()
-        self:unmark_file()
-      end, 15),
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.reset,
-      handler = loop.coroutine(function()
-        self:reset_marks()
+      mapping = { key = '<enter>', desc = 'Enter item' },
+      handler = job(function()
+        local item = self.list_view:get_current_list_item()
+        if not item then return end
+        self.list_view:toggle_current_list_item()
+        self:handle_list_enter(item)
       end),
     },
-    {
-      mode = 'n',
-      mapping = keymaps.next,
-      handler = loop.debounce_coroutine(function()
-        self:move_to_adjacent_file('next')
-      end, 15),
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.previous,
-      handler = loop.debounce_coroutine(function()
-        self:move_to_adjacent_file('prev')
-      end, 15),
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.jump_section_next,
-      handler = loop.debounce_coroutine(function()
-        self:jump_section('next')
-      end, 15),
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.jump_section_prev,
-      handler = loop.debounce_coroutine(function()
-        self:jump_section('prev')
-      end, 15),
-    },
   })
-end
 
-function ProjectReviewScreen:setup_diff_keymaps()
-  local keymaps = self.setting:get('keymaps')
-
-  local handlers = {
-    mark_hunk = loop.debounce_coroutine(function()
-      self:mark_hunk()
-    end, 15),
-    unmark_hunk = loop.debounce_coroutine(function()
-      self:unmark_hunk()
-    end, 15),
-    mark_file = loop.debounce_coroutine(function()
-      self:mark_file()
-    end, 15),
-    unmark_file = loop.debounce_coroutine(function()
-      self:unmark_file()
-    end, 15),
-    reset = loop.coroutine(function()
-      self:reset_marks()
-    end),
-    next_hunk = loop.debounce_coroutine(function()
-      self:next_hunk()
-    end, 15),
-    prev_hunk = loop.debounce_coroutine(function()
-      self:prev_hunk()
-    end, 15),
-    enter = loop.coroutine(function()
-      self:open_file()
-    end),
+  self.diff_view:set_keymap({
+    { mode = 'n', mapping = keymaps.mark_hunk, handler = job(function() self:mark_hunk() end) },
+    { mode = 'n', mapping = keymaps.unmark_hunk, handler = job(function() self:unmark_hunk() end) },
+    { mode = 'n', mapping = keymaps.mark_file, handler = mark_file },
+    { mode = 'n', mapping = keymaps.unmark_file, handler = unmark_file },
+    { mode = 'n', mapping = keymaps.reset, handler = reset },
+    { mode = 'n', mapping = keymaps.toggle_focus, handler = toggle_focus },
+    { mode = 'n', mapping = keymaps.next, handler = job(function() self:next_hunk() end) },
+    { mode = 'n', mapping = keymaps.previous, handler = job(function() self:prev_hunk() end) },
     -- In the diff pane, J/K jump to the last/first hunk in the current file,
     -- then cross into the next/prev FILE once already on that hunk (not the
     -- list's section headers, which only make sense in the list pane). Wraps.
-    jump_file_next = loop.debounce_coroutine(function()
-      self:jump_to_file_edge('next')
-    end, 15),
-    jump_file_prev = loop.debounce_coroutine(function()
-      self:jump_to_file_edge('prev')
-    end, 15),
-  }
-
-  self.diff_keymaps = handlers
-
-  self.diff_view:set_keymap({
+    { mode = 'n', mapping = keymaps.jump_section_next, handler = job(function() self:jump_to_file_edge('next') end) },
+    { mode = 'n', mapping = keymaps.jump_section_prev, handler = job(function() self:jump_to_file_edge('prev') end) },
     {
       mode = 'n',
-      mapping = keymaps.mark_hunk,
-      handler = handlers.mark_hunk,
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.unmark_hunk,
-      handler = handlers.unmark_hunk,
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.mark_file,
-      handler = handlers.mark_file,
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.unmark_file,
-      handler = handlers.unmark_file,
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.reset,
-      handler = handlers.reset,
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.toggle_focus,
-      handler = function()
-        self:toggle_focus()
-      end,
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.next,
-      handler = handlers.next_hunk,
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.previous,
-      handler = handlers.prev_hunk,
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.jump_section_next,
-      handler = handlers.jump_file_next,
-    },
-    {
-      mode = 'n',
-      mapping = keymaps.jump_section_prev,
-      handler = handlers.jump_file_prev,
-    },
-    {
-      mode = 'n',
-      mapping = {
-        key = '<enter>',
-        desc = 'Open buffer',
-      },
-      handler = handlers.enter,
+      mapping = { key = '<enter>', desc = 'Open buffer' },
+      handler = job(function() self:open_file() end),
     },
   })
 
-  self:setup_visual_keymaps(keymaps)
+  self:setup_visual_keymaps(keymaps, job)
 end
 
 -- Visual-mode s/u: line-level marking. The selection endpoints must be read
--- while still in visual mode, so the handlers capture them synchronously
--- before deferring to a coroutine. In split layout only the current (right)
--- pane accepts selections; the previous pane notifies instead (its rows show
--- old content, and every change is addressable from the current pane).
-function ProjectReviewScreen:setup_visual_keymaps(keymaps)
+-- while still in visual mode, so the handlers capture them before
+-- enqueueing. In split layout only the current (right) pane accepts
+-- selections; the previous pane notifies instead (its rows show old
+-- content, and every change is addressable from the current pane).
+function ProjectReviewScreen:setup_visual_keymaps(keymaps, job)
   local current_component = self.scene:get('current')
-
-  -- Keep the debounced coroutines (not the wrappers) so destroy can close them
-  self.visual_keymaps = {
-    mark_lines = loop.debounce_coroutine(function(top, bot)
-      self:apply_visual_seen_change_range(true, top, bot)
-    end, 15),
-    unmark_lines = loop.debounce_coroutine(function(top, bot)
-      self:apply_visual_seen_change_range(false, top, bot)
-    end, 15),
-  }
-
-  local mark_lines_handler = visual_selection.make_handler(self.visual_keymaps.mark_lines)
-  local unmark_lines_handler = visual_selection.make_handler(self.visual_keymaps.unmark_lines)
+  local mark_lines = job(function(top, bot) self:apply_visual_seen_change_range(true, top, bot) end)
+  local unmark_lines = job(function(top, bot) self:apply_visual_seen_change_range(false, top, bot) end)
 
   current_component:set_keymap({
     mode = 'x',
     mapping = { key = keymaps.mark_hunk.key, desc = 'Mark selected lines seen' },
-  }, mark_lines_handler)
+  }, visual_selection.make_handler(mark_lines))
   current_component:set_keymap({
     mode = 'x',
     mapping = { key = keymaps.unmark_hunk.key, desc = 'Unmark selected lines' },
-  }, unmark_lines_handler)
+  }, visual_selection.make_handler(unmark_lines))
 
   if self.model:get_layout_type() == 'split' then
     local previous_component = self.scene:get('previous')
@@ -1243,7 +1103,7 @@ function ProjectReviewScreen:setup_visual_keymaps(keymaps)
   end
 end
 
--- Coroutine body for visual s/u once the range has been captured
+-- Job body for visual s/u once the range has been captured
 function ProjectReviewScreen:apply_visual_seen_change_range(mark_as_seen, top, bot)
   local selections = self:selections_for_range(top, bot)
   if not selections then
@@ -1252,11 +1112,6 @@ function ProjectReviewScreen:apply_visual_seen_change_range(mark_as_seen, top, b
   end
 
   self:apply_seen_change(mark_as_seen, selections)
-end
-
-function ProjectReviewScreen:setup_keymaps()
-  self:setup_list_keymaps()
-  self:setup_diff_keymaps()
 end
 
 -- Reconfigure all width-dependent windows for a new list column width
@@ -1330,9 +1185,9 @@ function ProjectReviewScreen:setup_drag_resize()
     on_drag = function(boundary)
       if self._drag_detach then self:apply_list_width(boundary - 1) end
     end,
-    on_release = loop.coroutine(function()
-      if self._drag_detach then self:finish_list_resize() end
-    end),
+    on_release = function()
+      self:enqueue(function() self:finish_list_resize() end)
+    end,
   })
 end
 
@@ -1425,9 +1280,6 @@ function ProjectReviewScreen:create(args)
   self.app_bar_view:mount()
   self.list_view:mount({
     event_handlers = {
-      on_enter = function(item)
-        self:handle_list_enter(item)
-      end,
       on_move = function()
         self:handle_list_move()
       end,
@@ -1450,7 +1302,7 @@ function ProjectReviewScreen:create(args)
   self:setup_drag_resize()
   self:ensure_visible_file()
   local found_current_buffer = self:focus_relative_buffer_entry(buffer)
-  self:handle_list_move()
+  self:show_list_item()
 
   -- Set focus explicitly based on saved state (default to diff for bias towards action)
   -- Don't use toggle_focus() here since commit_message_view may have stolen focus during mount
@@ -1477,7 +1329,21 @@ function ProjectReviewScreen:create(args)
   return true
 end
 
+-- The quit key, which screen_manager binds: quit once the keys pressed
+-- before it have run. If the screen is destroyed first, the job is dropped
+-- and this coroutine never resumes; nothing waits on it.
 function ProjectReviewScreen:on_quit()
+  loop.suspend(function(done)
+    self:enqueue(function()
+      self:quit()
+      done()
+    end)
+  end, 1)()
+  return true
+end
+
+-- Close the screen, back onto the source file at the diff cursor's line
+function ProjectReviewScreen:quit()
   local is_diff_focused = self:focused_pane() == 'diff'
 
   -- State is saved by destroy() below
@@ -1495,7 +1361,7 @@ function ProjectReviewScreen:on_quit()
   if not filepath or not fs.exists(filepath) then
     loop.free_textlock()
     self:destroy()
-    return true
+    return
   end
 
   loop.free_textlock()
@@ -1519,7 +1385,6 @@ function ProjectReviewScreen:on_quit()
   end
 
   event.emit('VGitSync')
-  return true
 end
 
 function ProjectReviewScreen:destroy()
@@ -1551,12 +1416,6 @@ function ProjectReviewScreen:destroy()
     console.warn(string.format('Failed to save review state: %s', tostring(err)))
   end
 
-  loop.close_debounced_handlers(self.diff_keymaps)
-  self.diff_keymaps = {}
-  if self.visual_keymaps then
-    loop.close_debounced_handlers(self.visual_keymaps)
-    self.visual_keymaps = nil
-  end
   if self._drag_detach then
     self._drag_detach()
     self._drag_detach = nil
