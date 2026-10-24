@@ -103,83 +103,71 @@ gitcli.run = loop.suspend(function(args, opts, callback)
   }):start()
 end, 3)
 
+-- Mirror `git show` line semantics ('' -> {}, trailing newline dropped)
+local function to_lines(content)
+  if content == '' then return {} end
+  if content:sub(-1) == '\n' then content = content:sub(1, -2) end
+  return vim.split(content, '\n', { plain = true })
+end
+
+-- Parse `cat-file --batch` output for `count` requests. Each response is a
+-- '<oid> <type> <size>' header plus content, or '<request> missing' (also
+-- 'ambiguous'). Only blobs count as found: a tree (file <-> dir change) or a
+-- gitlink (submodule) isn't file content.
+local function parse_batch(output, count)
+  local results = {}
+  local pos = 1
+  for i = 1, count do
+    local nl = output:find('\n', pos, true)
+    if not nl then return nil, { 'git cat-file: output ended early' } end
+
+    local type, size = output:sub(pos, nl - 1):match('^%x+ (%a+) (%d+)$')
+    if not size then
+      results[i] = { missing = true }
+      pos = nl + 1
+    else
+      size = tonumber(size)
+      if nl + size + 1 > #output then return nil, { 'git cat-file: output ended early' } end
+      results[i] = type == 'blob' and { lines = to_lines(output:sub(nl + 1, nl + size)) } or { missing = true }
+      pos = nl + size + 2 -- skip content and its separator newline
+    end
+  end
+  return results
+end
+
 -- Fetch many objects' contents through one `git cat-file --batch` process.
 -- `requests` is a list of object names (e.g. '<rev>:<path>'); returns a list
--- aligned with it: { lines = {...} } or { missing = true } per request.
--- Responses are framed by byte-length headers, so any content (including
--- binary) parses safely.
+-- aligned with it: { lines = {...} } or { missing = true } per request, or
+-- nil, err if git fails. Responses are framed by byte-length headers, so any
+-- content (including binary) parses safely.
 gitcli.cat_file_batch = loop.suspend(function(reponame, requests, callback)
   if #requests == 0 then return callback({}) end
 
-  local cmd = git_setting:get('cmd')
-  local stdin = vim.loop.new_pipe(false)
-  local stdout = vim.loop.new_pipe(false)
-  local stderr = vim.loop.new_pipe(false)
-  local chunks = {}
+  local output = ''
+  local err = {}
 
-  -- Mirror `git show` line semantics ('' -> {}, trailing newline dropped)
-  local function to_lines(content)
-    if content == '' then return {} end
-    if content:sub(-1) == '\n' then content = content:sub(1, -2) end
-    return vim.split(content, '\n', { plain = true })
-  end
-
-  local function parse(output)
-    local results = {}
-    local pos = 1
-    for i = 1, #requests do
-      -- Header is '<oid> <type> <size>', or the request + ' missing'
-      local nl = output:find('\n', pos, true)
-      local header = nl and output:sub(pos, nl - 1)
-      local size = header and not header:find(' missing', 1, true) and tonumber(header:match('(%d+)$'))
-      if not size then
-        results[i] = { missing = true }
-        pos = nl and (nl + 1) or pos
-      else
-        results[i] = { lines = to_lines(output:sub(nl + 1, nl + size)) }
-        pos = nl + size + 2 -- skip content and its separator newline
-      end
-    end
-    return results
-  end
-
-  local handle
-  handle = vim.loop.spawn(cmd, {
+  Spawn({
+    command = git_setting:get('cmd'),
     args = { '-C', reponame, 'cat-file', '--batch' },
-    stdio = { stdin, stdout, stderr },
-  }, function()
-    stdout:read_stop()
-    stderr:read_stop()
-    for _, pipe in ipairs({ stdin, stdout, stderr }) do
-      if not pipe:is_closing() then pipe:close() end
-    end
-    if handle and not handle:is_closing() then handle:close() end
-
-    local results = parse(table.concat(chunks))
-    vim.schedule(function()
-      callback(results)
-    end)
-  end)
-
-  if not handle then
-    for _, pipe in ipairs({ stdin, stdout, stderr }) do
-      pipe:close()
-    end
-    local results = {}
-    for i = 1, #requests do
-      results[i] = { missing = true }
-    end
-    return callback(results)
-  end
-
-  stdout:read_start(function(_, chunk)
-    if chunk then chunks[#chunks + 1] = chunk end
-  end)
-  stderr:read_start(function() end)
-
-  stdin:write(table.concat(requests, '\n') .. '\n', function()
-    stdin:shutdown()
-  end)
+    stdin = table.concat(requests, '\n') .. '\n',
+    on_stdout_raw = function(raw)
+      output = raw
+    end,
+    on_stderr = function(line)
+      err[#err + 1] = line
+    end,
+    on_exit = function(code)
+      local results, parse_err
+      if code ~= 0 then
+        parse_err = #err > 0 and err or { string.format('git cat-file exited with code %d', code) }
+      else
+        results, parse_err = parse_batch(output, #requests)
+      end
+      vim.schedule(function()
+        callback(results, parse_err)
+      end)
+    end,
+  }):start()
 end, 3)
 
 -- Run multiple git commands in parallel with concurrency limit
