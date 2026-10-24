@@ -58,25 +58,16 @@ function FoldableListComponent:get_list_item(lnum)
   return self.state.shadow_list[lnum]
 end
 
+-- shadow_list is rebuilt densely on every generate_lines, so ipairs walks
+-- the rows in display order
 function FoldableListComponent:each_list_item(callback)
-  local lnums = {}
-  for lnum in pairs(self.state.shadow_list) do
-    lnums[#lnums + 1] = lnum
-  end
-  table.sort(lnums)
-  for _, lnum in ipairs(lnums) do
-    callback(self.state.shadow_list[lnum], lnum)
+  for lnum, item in ipairs(self.state.shadow_list) do
+    callback(item, lnum)
   end
 end
 
 function FoldableListComponent:find_list_item(callback)
-  local lnums = {}
-  for lnum in pairs(self.state.shadow_list) do
-    lnums[#lnums + 1] = lnum
-  end
-  table.sort(lnums)
-  for _, lnum in ipairs(lnums) do
-    local item = self.state.shadow_list[lnum]
+  for lnum, item in ipairs(self.state.shadow_list) do
     if callback(item, lnum) then return item, lnum end
   end
 end
