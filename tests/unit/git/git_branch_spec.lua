@@ -561,7 +561,9 @@ async.describe('review head:', function()
     local dir = make_repo()
     sh(dir, 'mkdir .jj')
     sh(dir, 'git checkout -q -b feature && git commit -q --allow-empty -m F1 && git commit -q --allow-empty -m F2')
-    sh(dir, 'git checkout -q --detach master && git commit -q --allow-empty -m F1 && git commit -q --allow-empty -m F2x')
+    -- Mid-stack amend: F1 rewritten, F2 rebased onto it
+    sh(dir, 'git checkout -q --detach master && printf "x\\n" >> f.txt && git commit -q -am F1')
+    sh(dir, 'git commit -q --allow-empty -m F2')
 
     local t = target(dir)
     eq({ t.branch_key, t.head_ref, t.head_hash }, { 'feature', 'HEAD', rev(dir, 'HEAD') })
@@ -616,6 +618,46 @@ async.describe('stored-review fallback:', function()
     sh(dir, 'git checkout -q -b feature && git commit -q --allow-empty -m F1')
     eq(target(dir, 'HEAD~1').base, 'HEAD~1')
     eq(target(dir, '').base, 'master')
+    cleanup(dir)
+  end)
+end)
+
+async.describe('review_commits:', function()
+  async.it('lists commits with subjects, bodies and files from one log', function()
+    local dir = make_repo()
+    sh(dir, 'git commit -q --allow-empty --allow-empty-message -m ""')
+    sh(dir, [[printf "b\n" >> f.txt && printf "x\n" > "sp ace.txt" && git add -A]])
+    sh(dir, [[git commit -q -m "Two line" -m "first paragraph" -m "Body line" -m "" ]])
+    sh(dir, 'git mv f.txt g.txt && git commit -q -m "Move"')
+
+    local commits = git_branch.review_commits(dir, 'HEAD~3', 'HEAD')
+    eq(#commits, 3)
+    eq({ commits[1].message, commits[1].body, commits[1].files }, { '', {}, {} })
+    eq(commits[2].message, 'Two line')
+    eq(commits[2].body, { 'Two line', '', 'first paragraph', '', 'Body line' })
+    eq(commits[2].files, { { status = 'M', filepath = 'f.txt' }, { status = 'A', filepath = 'sp ace.txt' } })
+    eq(commits[3].files, { { status = 'R', filepath = 'g.txt', old_filepath = 'f.txt' } })
+
+    -- Same commits, subjects and order as commits_in_range
+    local listed = git_branch.commits_in_range(dir, 'HEAD~3', 'HEAD')
+    for n, commit in ipairs(listed) do
+      local got = commits[n]
+      eq({ got.hash, got.short_hash, got.message }, { commit.hash, commit.short_hash, commit.message })
+    end
+    cleanup(dir)
+  end)
+
+  async.it('keeps a multi-line first paragraph joined in the subject', function()
+    local dir = make_repo()
+    sh(dir, [[git commit -q --allow-empty -F - <<'MSG'
+Subject that
+wraps
+
+Body
+MSG]])
+    local commits = git_branch.review_commits(dir, 'HEAD~1', 'HEAD')
+    eq(commits[1].message, 'Subject that wraps')
+    eq(commits[1].body, { 'Subject that', 'wraps', '', 'Body' })
     cleanup(dir)
   end)
 end)

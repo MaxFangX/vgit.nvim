@@ -552,6 +552,48 @@ function git_branch.commits_in_range(reponame, base_ref, head_ref)
   return commits
 end
 
+-- The by-commit review's commits in `merge_base..head`, oldest first, from one
+-- git log: { hash, short_hash, message, body, files }. `message` is the
+-- subject (%s, which joins a multi-line first paragraph; record keys hash
+-- it), `body` the full message as lines (like `git show -s --format=%B`),
+-- `files` the name-status list.
+function git_branch.review_commits(reponame, merge_base, head)
+  -- Per commit: '\1<hash>', short hash, subject, body, then name-status records
+  local output, err = gitcli.run({
+    '-C',
+    reponame,
+    '--no-pager',
+    'log',
+    '--reverse',
+    '--name-status',
+    '-z',
+    '--format=%x01%H%x00%h%x00%s%x00%B',
+    merge_base .. '..' .. head,
+  }, { by_exit_code = true, raw = true })
+  if err then return nil, err end
+
+  local commits = {}
+  local tokens = split_nul(output)
+  local i = 1
+  while tokens[i] do
+    local hash = tokens[i]:match('^\1(%x+)$')
+    if hash then
+      local body = vim.split(tokens[i + 3], '\n', { plain = true })
+      while #body > 0 and body[#body] == '' do
+        body[#body] = nil
+      end
+
+      local commit = { hash = hash, short_hash = tokens[i + 1], message = tokens[i + 2], body = body, files = {} }
+      commits[#commits + 1] = commit
+      i = parse_name_status(tokens, i + 4, commit.files)
+    else
+      i = i + 1
+    end
+  end
+
+  return commits
+end
+
 -- Get full commit messages for every commit in a range (batched into one git
 -- command instead of one `git show` per commit). Returns a table mapping
 -- commit_hash -> message lines (matching `git_show.commit_message`'s output).
