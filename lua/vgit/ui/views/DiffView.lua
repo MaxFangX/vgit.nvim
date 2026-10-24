@@ -502,11 +502,11 @@ function DiffView:notify(msg)
 end
 
 -- Computing an uncached diff can suspend on a git spawn and resume in a fast
--- event context, where window and option API calls fail (E5560). So free the
--- textlock after fetching the diff prop.
+-- event context, where window and option API calls fail (E5560). So leave it
+-- after fetching the diff prop.
 function DiffView:get_diff()
   local diff = self.props.diff()
-  loop.free_textlock()
+  loop.leave_fast_event()
   return diff
 end
 

@@ -26,12 +26,12 @@ local visual_selection = require('vgit.features.screens.visual_selection')
   order is the list's fold tree, collapsed folds included, so it always
   follows the display.
 
-  Keys run as jobs through one queue (see enqueue).
-
-  Of the model's calls, only fetch runs git. It resumes in a fast event
-  context, where window and buffer calls fail, so the screen frees the
-  textlock right after it. Views don't free it, except DiffView:get_diff,
-  which wraps the diff prop for screens whose diffs do run git.
+  Keys run as jobs through one queue (see enqueue). A job runs within one
+  main-loop turn: it never yields, so no typed input lands mid-job and each
+  job sees the state the keys before it left. Of the model's calls only fetch
+  runs git, outside any job; the screen frees the textlock right after it.
+  The views leave a fast event context only when in one (loop.leave_fast_event).
+  Destroying the screen does yield, saving state, but ends the queue.
 
   Subclasses set model, setting and list_view, then call init_views. They may
   override jump_section (J/K in the list), and the list width hooks
@@ -324,9 +324,9 @@ function ProjectReviewScreen:focused_pane()
   return self.scene:get('list'):is_focused() and 'list' or 'diff'
 end
 
--- CursorMoved in the list. Moves while a job runs are that job's own.
+-- CursorMoved in the list. A job's own moves leave the cursor on the entry
+-- it shows, so the queued show_list_item does nothing for them.
 function ProjectReviewScreen:handle_list_move()
-  if self._running then return end
   self:enqueue(function() self:show_list_item() end)
 end
 

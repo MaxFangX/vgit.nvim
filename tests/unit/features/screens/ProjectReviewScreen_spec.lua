@@ -512,6 +512,58 @@ describe('ProjectReviewScreen', function()
   end)
 
   describe('keypress queue', function()
+    for _, kind in ipairs({ 'file', 'commit' }) do
+      it('runs each job within one main-loop turn (by ' .. kind .. ')', function()
+        H.open(kind)
+        local screen = H.screen()
+        -- A job that yielded would leave the runner suspended
+        local function still_running(fn)
+          screen:enqueue(fn)
+          return screen._running
+        end
+
+        eq(false, still_running(function() screen:step_hunk('next') end))
+        eq(false, still_running(function() screen:mark_hunk(true) end))
+        eq(false, still_running(function() screen:mark_range(true, 1, 60) end))
+        eq(false, still_running(function() screen:mark(true) end))
+        eq(false, still_running(function() screen:step_file('next', true) end))
+        eq(false, still_running(function() screen:jump_section('next') end))
+        eq(false, still_running(function() screen:reset_marks() end))
+        eq(false, still_running(function() screen:mark(false) end))
+        H.assert_consistent()
+        eq({}, errors)
+      end)
+    end
+
+    it('shows a list row the cursor reached while a job ran', function()
+      H.open('file')
+      H.focus('list')
+      local screen = H.screen()
+      local _, lnum = screen.list_view:find_list_item(function(item)
+        return item.id and H.describe(screen.model:lookup(item.id)) == 'unseen src/b/y.lua'
+      end)
+      -- A plain motion (arrow, click) handled in the middle of a job
+      screen:enqueue(function()
+        vim.api.nvim_win_set_cursor(0, { lnum, 0 })
+        vim.api.nvim_exec_autocmds('CursorMoved', { buffer = 0 })
+      end)
+      H.settle()
+      eq('unseen src/b/y.lua', H.entry())
+      H.assert_consistent()
+    end)
+
+    it('marks what s and a visual range typed after it pointed at', function()
+      H.open('file')
+      -- s on hunk 1 is done before the next key reads the cursor, which is
+      -- already on the next hunk's removed row; V then selects it alone
+      vim.api.nvim_feedkeys('s', 'x', false)
+      eq('x line 20', vim.api.nvim_get_current_line())
+      vim.api.nvim_feedkeys('Vs', 'x', false)
+      H.settle()
+      eq({ { { 'x line 5' }, { 'x line 5 CHANGED' } }, { { 'x line 20' }, {} } }, H.hunks('seen a/x.lua'))
+      eq({}, errors)
+    end)
+
     it('runs every key of a burst, in order', function()
       H.open('file')
       H.keys('jjj')

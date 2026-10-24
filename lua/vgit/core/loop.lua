@@ -16,6 +16,16 @@ function loop.free_textlock(times)
   return loop
 end
 
+-- Get back onto the main loop if in a fast event context (e.g. resumed from
+-- a git spawn's callback), where most of the API is off limits. Unlike
+-- free_textlock, it doesn't yield otherwise, so a caller on the main loop
+-- keeps its turn and no typed input runs in between.
+function loop.leave_fast_event()
+  if vim.in_fast_event() then loop.suspend_textlock() end
+
+  return loop
+end
+
 -- Registry to track debounced handlers and their cleanup functions
 -- Uses weak keys so handlers can be garbage collected when no longer referenced
 local debounced_registry = setmetatable({}, { __mode = 'k' })

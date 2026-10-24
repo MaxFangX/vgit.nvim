@@ -269,15 +269,11 @@ function FoldableListComponent:paint()
 end
 
 function FoldableListComponent:sync()
-  loop.free_textlock()
+  -- Callers may come straight from a git spawn
+  loop.leave_fast_event()
   self.buffer:clear_extmarks()
-
-  local lines = self:generate_lines()
-  self.buffer:set_lines(lines)
-
-  loop.free_textlock()
+  self.buffer:set_lines(self:generate_lines())
   self:paint()
-  loop.free_textlock()
 
   return self
 end
