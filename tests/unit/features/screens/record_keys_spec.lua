@@ -71,7 +71,7 @@ describe('record_keys', function()
     local cid = 'tvnuvoxmqpwrkxlsyrmzxuyokmnplwtx'
 
     it('rekeys an approved record after the subject is reworded', function()
-      local state = new_state({ branch_key = 'rekey', base_branch = 'origin/master' })
+      local state = new_state({ branch_key = 'rekey' })
       state:set_record('oldsubj:src/a.lua', { 'approved' }, false, { 'base' })
       state:reconcile_change_ids({ item('oldsubj:src/a.lua', 'src/a.lua', cid) })
 
@@ -81,7 +81,7 @@ describe('record_keys', function()
     end)
 
     it('keeps a record found by subject when the change id was re-derived (git rebase)', function()
-      local state = new_state({ branch_key = 'rebase', base_branch = 'origin/master' })
+      local state = new_state({ branch_key = 'rebase' })
       state:set_record('subj:src/a.lua', { 'approved' }, false, { 'base' })
       state:reconcile_change_ids({ item('subj:src/a.lua', 'src/a.lua', cid) })
 

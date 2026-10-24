@@ -122,7 +122,6 @@ function Model:fetch(base_branch_arg)
 
   -- Initialize or restore the index
   self.review_state = ReviewState({
-    base_branch = base_branch,
     branch_key = branch_name,
     review_type = self:get_review_type(),
     repo_key = repo_name,

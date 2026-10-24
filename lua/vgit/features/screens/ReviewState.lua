@@ -32,25 +32,20 @@ local SAVE_DELAY_MS = 1000
 -- Global state storage (persists across screen instances within a Vim session)
 local state_store = {}
 
+-- Without a repo_key, the state lives in memory only
 function ReviewState:constructor(opts)
-  opts = opts or {}
-
   return {
-    base_branch = opts.base_branch,
-    branch_key = opts.branch_key,
-    review_type = opts.review_type or 'by_file',
     repo_key = opts.repo_key,
-    _loaded = false,           -- Whether state has been loaded from disk
-    _skip_persistence = false, -- Set when the state file must not be overwritten
+    branch_key = opts.branch_key,
+    review_type = opts.review_type,
+    -- Whether to read and write the state file; cleared when it must not be
+    -- overwritten
+    persist = opts.repo_key ~= nil,
   }
 end
 
-function ReviewState:get_state_key()
-  return string.format('%s|%s|%s', self.repo_key or '', self.branch_key or '', self.review_type)
-end
-
 local function get_state(self)
-  local key = self:get_state_key()
+  local key = string.format('%s|%s|%s', self.repo_key or '', self.branch_key or '', self.review_type)
   if not state_store[key] then
     state_store[key] = {
       records = {},
@@ -83,7 +78,7 @@ local function sync_from_disk(self, state)
   local state_file, err = persistence.load(self.repo_key, self.branch_key, self.review_type)
   if err and (err.newer or err.unreadable) then
     console.warn(string.format('%s; review progress will not be saved this session', err[1]))
-    self._skip_persistence = true
+    self.persist = false
     return nil, err
   end
   state.disk_stamp = disk_stamp
@@ -134,8 +129,7 @@ end
 -- unless the state file's stamp shows another session wrote it since we
 -- last touched it.
 function ReviewState:load_from_disk()
-  if not self.repo_key or self._loaded then return end
-  self._loaded = true
+  if not self.persist then return end
 
   local state = get_state(self)
   if state.disk_stamp == state_stamp(self) then return end
@@ -205,7 +199,7 @@ end
 -- if any were adopted. Objects are content-addressed, so the copied record
 -- keeps its hash, and save() writes the object into this branch's store.
 local function adopt_from_siblings(self, state, items)
-  if #items == 0 or not self.repo_key then return false end
+  if #items == 0 or not self.persist then return false end
 
   -- Escape luv callback context to main Vim loop (required for vim.fn calls)
   loop.free_textlock()
@@ -301,7 +295,7 @@ end
 -- same few milliseconds can still lose one's changes; that isn't worth a lock
 -- for interactive use.
 local function write_to_disk(self, final)
-  if not self.repo_key or self._skip_persistence then return end
+  if not self.persist then return end
 
   -- Escape luv callback context to main Vim loop (required for vim.fn calls)
   loop.free_textlock()
