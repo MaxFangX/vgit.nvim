@@ -51,14 +51,14 @@ function record_keys.split(key)
 end
 
 -- The (commit, file) items for the `commits` that have a jj change id, as
--- `{ key, filepath, change_id }`.
+-- `{ key, filepath, change_id }`. Each commit carries its `subject_key`.
 function record_keys.items(commits, commit_files)
   local items = {}
   for _, commit in ipairs(commits) do
     if commit.change_id then
       for _, file in ipairs(commit_files[commit.hash] or {}) do
         items[#items + 1] = {
-          key = record_keys.join(record_keys.subject_key(commit.message), file.filepath),
+          key = record_keys.join(commit.subject_key, file.filepath),
           filepath = file.filepath,
           change_id = commit.change_id,
         }

@@ -16,14 +16,13 @@ local ReviewModel = require('vgit.features.screens.ReviewModel')
   KEYING
 
   entry_key = commit_hash:filepath   (content/diff caching; hash-exact)
-  record_key  = subject_hash:filepath  (index storage; rebase-stable)
+  record_key  = subject_key:filepath  (index storage; rebase-stable)
 
   Commit hashes change on rebase but subjects typically survive, so the
   approved snapshot follows the commit across rebases/absorbs — which is the
   whole point: after a fixup is absorbed, diff(approved, new commit content)
-  shows only the delta beyond what was already approved.
-
-  Trade-off: commits with identical subjects share an index entry (rare).
+  shows only the delta beyond what was already approved. Commits repeating a
+  subject key apart by their order (see record_keys.subject_keys).
 ]]
 
 -- Generate cache key from commit hash and filepath (for content/diff caching)
@@ -36,9 +35,6 @@ local function entry_id(commit_hash, filepath, entry_type)
   return string.format('%s|%s|%s', commit_hash, filepath, entry_type)
 end
 
-local function make_record_key(commit_subject, filepath)
-  return record_keys.join(record_keys.subject_key(commit_subject), filepath)
-end
 
 -- Session-wide contents cache, reused across screen instances so re-entering
 -- a review skips the preload. Entry keys embed the commit hash, so cached
@@ -86,7 +82,7 @@ function Model:get_review_type()
 end
 
 function Model:get_record_key(entry)
-  return make_record_key(entry.commit.message, entry.filepath)
+  return record_keys.join(entry.commit.subject_key, entry.filepath)
 end
 
 function Model:get_commit_hash()
@@ -138,7 +134,9 @@ function Model:fetch(base_branch_arg)
   end
 
   self.state.commits = commits
-  for _, commit in ipairs(commits) do
+  local subject_keys = record_keys.subject_keys(vim.tbl_map(function(commit) return commit.message end, commits))
+  for i, commit in ipairs(commits) do
+    commit.subject_key = subject_keys[i]
     self.state.commit_messages[commit.hash] = commit.body
     self.state.commit_files[commit.hash] = commit.files
   end
@@ -238,7 +236,7 @@ function Model:rebuild_entries()
 
     for _, file in ipairs(files) do
       local entry_key = make_key(commit.hash, file.filepath)
-      local record_key = make_record_key(commit.message, file.filepath)
+      local record_key = record_keys.join(commit.subject_key, file.filepath)
       local flags = self:get_seen_flags(entry_key, record_key)
 
       local status = ReviewModel.create_status(file.filepath, file.status, file.old_filepath)

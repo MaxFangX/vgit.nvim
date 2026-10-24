@@ -159,9 +159,12 @@ end
 function ReviewModel:resolve_target(reponame, base_arg)
   local repo_name = git_repo.get_name(reponame)
   local target, err = git_branch.review_target(reponame, base_arg, function(base, head)
+    -- Keyed as the by-commit review keys them, repeats included
+    local commits = git_branch.commits_in_range(reponame, base, head) or {}
+    local messages = vim.tbl_map(function(commit) return commit.message end, commits)
     local subjects = {}
-    for _, commit in ipairs(git_branch.commits_in_range(reponame, base, head) or {}) do
-      subjects[record_keys.subject_key(commit.message)] = true
+    for _, subject_key in ipairs(record_keys.subject_keys(messages)) do
+      subjects[subject_key] = true
     end
     return ReviewModel.branch_by_subjects(repo_name, subjects)
   end)
