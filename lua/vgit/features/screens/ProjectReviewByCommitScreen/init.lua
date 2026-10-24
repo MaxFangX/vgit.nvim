@@ -9,57 +9,47 @@ local file_navigation = require('vgit.features.screens.file_navigation')
 
 local ProjectReviewByCommitScreen = ProjectReviewScreen:extend()
 
--- Height of commit message box
+-- Initial height of the commit message box (vh); it then fits its message
 local MSG_HEIGHT = 14
 
-function ProjectReviewByCommitScreen:constructor(opts)
-  opts = opts or {}
+-- Narrowest list column in left/right layouts: the message box below it
+-- shows convention-wrapped (72-column) commit bodies unwrapped
+local MIN_LIST_WIDTH = 72
 
-  local base = ProjectReviewScreen.constructor(self, opts)
+-- Plots for the list, the commit message box and the diff. Left/right
+-- layouts get a `cols`-wide list column with the message box below it, and
+-- in left layout the boundary is draggable: list_cols, the clamped width.
+-- Top/bottom layouts have no message box.
+local function plots_for(position, cols)
+  if position == 'top' then
+    return { row = 1, height = '25vh', width = '100vw' }, nil, { row = '25vh', height = '75vh', width = '100vw' }
+  end
+  if position == 'bottom' then
+    return { row = '75vh', height = '25vh', width = '100vw' }, nil, { row = 1, height = '75vh', width = '100vw' }
+  end
+
+  local list_pct, diff_pct, list_cols = dimensions.fixed_split(cols)
+  local is_left = position ~= 'right'
+  local list_col = not is_left and diff_pct or nil
+  local list_height = dimensions.vh(100 - MSG_HEIGHT)
+  local list_plot = { row = 1, col = list_col, width = list_pct, height = list_height }
+  local msg_plot = { row = list_height, col = list_col, width = list_pct, height = dimensions.vh(MSG_HEIGHT) }
+  local diff_plot = { row = 1, col = is_left and list_pct or nil, width = diff_pct }
+  return list_plot, msg_plot, diff_plot, is_left and list_cols or nil
+end
+
+function ProjectReviewByCommitScreen:constructor(opts)
+  local base = ProjectReviewScreen.constructor(self)
   base.name = 'Project Review By Commit Screen'
   base.model = Model(opts)
   base.setting = setting
 
-  -- Configurable layout based on list_position setting. In left/right
-  -- layouts the list column is a fixed character width (drag the boundary
-  -- in left layout or set list_width to change it). With list_width = 0
-  -- (auto) the plots are built at the floor width here and re-resolved by
-  -- resolve_list_width() once commits are known.
-  local list_position = setting:get('list_position') or 'left'
+  -- With list_width = 0 (auto), the plots start at the floor width and
+  -- resolve_list_width re-plots them once the commits are known
   local list_width = setting:get('list_width')
-  if list_width <= 0 then list_width = 72 end
-  local list_pct, diff_pct, list_cols = dimensions.fixed_split(list_width)
-  local list_plot, diff_plot, msg_plot
-
-  if list_position == 'right' then
-    local list_height = string.format('%svh', 100 - MSG_HEIGHT)
-    local msg_row = list_height
-    list_plot = { row = 1, col = diff_pct, width = list_pct, height = list_height }
-    msg_plot = { row = msg_row, col = diff_pct, width = list_pct, height = string.format('%svh', MSG_HEIGHT) }
-    diff_plot = { row = 1, width = diff_pct }
-  elseif list_position == 'top' then
-    -- No commit message box for top/bottom layouts
-    list_plot = { row = 1, height = '25vh', width = '100vw' }
-    diff_plot = { row = '25vh', height = '75vh', width = '100vw' }
-    msg_plot = nil
-  elseif list_position == 'bottom' then
-    list_plot = { row = '75vh', height = '25vh', width = '100vw' }
-    diff_plot = { row = 1, height = '75vh', width = '100vw' }
-    msg_plot = nil
-  else
-    -- 'left' (default): list takes remaining height after message box
-    local list_height = string.format('%svh', 100 - MSG_HEIGHT)
-    local msg_row = list_height
-    list_plot = { row = 1, width = list_pct, height = list_height }
-    msg_plot = { row = msg_row, width = list_pct, height = string.format('%svh', MSG_HEIGHT) }
-    diff_plot = { row = 1, col = list_pct, width = diff_pct }
-    -- Boundary dragging is only wired up for the left layout
-    base.list_cols = list_cols
-  end
-
-  if list_position == 'left' or list_position == 'right' then
-    base._width_plots = { position = list_position, list = list_plot, msg = msg_plot, diff = diff_plot }
-  end
+  local list_plot, msg_plot, diff_plot, list_cols =
+    plots_for(setting:get('list_position'), list_width > 0 and list_width or MIN_LIST_WIDTH)
+  base.list_cols = list_cols
 
   base.list_view = CommitListView(base.scene, {
     entries = function()
@@ -68,14 +58,8 @@ function ProjectReviewByCommitScreen:constructor(opts)
     on_active_commit = function()
       if base.commit_message_view then base.commit_message_view:render() end
     end,
-  }, list_plot, {
-    elements = {
-      header = true,
-      footer = false,
-    },
-  })
+  }, list_plot)
 
-  -- Create commit message view for left/right layouts
   if msg_plot then
     base.commit_message_view = CommitMessageView(base.scene, {
       message = function()
@@ -87,14 +71,7 @@ function ProjectReviewByCommitScreen:constructor(opts)
         return lines or {}
       end,
       list_view = function() return base.list_view end,
-    }, msg_plot, {
-      elements = {
-        header = true,
-        footer = false,
-      },
-      max_height = MSG_HEIGHT,
-      min_height = 1,
-    })
+    }, msg_plot)
   end
 
   ProjectReviewScreen.init_views(base, diff_plot)
@@ -113,31 +90,32 @@ function ProjectReviewByCommitScreen:jump_section(direction)
 end
 
 -- Auto-size the list column to the widest commit row when list_width is
--- auto (0, the default), clamped to [72, 45% of the editor]. The floor
--- keeps convention-wrapped commit message bodies unwrapped in the message
--- box; the cap keeps one over-long commit subject from squeezing the diff
--- (subjects past it truncate). A positive list_width (user config, or a
--- boundary drag earlier this session) is used as-is. Called by the base
--- screen after fetch, before windows are defined.
+-- auto (0, the default), clamped to [MIN_LIST_WIDTH, 45% of the editor]. The
+-- cap keeps one over-long commit subject from squeezing the diff (subjects
+-- past it truncate). A positive list_width (user config, or a boundary drag
+-- earlier this session) is used as-is. Called after fetch, before windows
+-- are defined.
 function ProjectReviewByCommitScreen:resolve_list_width()
-  local plots = self._width_plots
-  if not plots then return end
-  if setting:get('list_width') > 0 then return end
+  if not self.commit_message_view or setting:get('list_width') > 0 then return end
 
   local cap = math.floor(dimensions.global_width() * 0.45)
-  local cols = math.min(math.max(self.list_view:max_row_width(), 72), cap)
-  local list_pct, diff_pct, list_cols = dimensions.fixed_split(cols)
+  local cols = math.min(math.max(self.list_view:max_row_width(), MIN_LIST_WIDTH), cap)
+  local list_plot, msg_plot, diff_plot, list_cols = plots_for(setting:get('list_position'), cols)
+  self.list_view.plot, self.commit_message_view.plot, self.diff_view.plot = list_plot, msg_plot, diff_plot
+  self.list_cols = list_cols
+end
 
-  plots.list.width = list_pct
-  if plots.msg then plots.msg.width = list_pct end
-  plots.diff.width = diff_pct
-  if plots.position == 'left' then
-    plots.diff.col = list_pct
-    self.list_cols = list_cols
-  else
-    plots.list.col = diff_pct
-    if plots.msg then plots.msg.col = diff_pct end
-  end
+function ProjectReviewByCommitScreen:apply_list_width(cols)
+  if not ProjectReviewScreen.apply_list_width(self, cols) then return end
+
+  -- Later CommitMessageView:resize calls re-derive geometry from the plot
+  self.commit_message_view.plot.width = self.list_cols
+  self:replot_column('commit_message', 0, self.list_cols)
+end
+
+function ProjectReviewByCommitScreen:finish_list_resize()
+  ProjectReviewScreen.finish_list_resize(self)
+  self.commit_message_view:render()
 end
 
 return ProjectReviewByCommitScreen

@@ -7,9 +7,7 @@ local setting = require('vgit.settings.project_review_by_file')
 local ProjectReviewByFileScreen = ProjectReviewScreen:extend()
 
 function ProjectReviewByFileScreen:constructor(opts)
-  opts = opts or {}
-
-  local base = ProjectReviewScreen.constructor(self, opts)
+  local base = ProjectReviewScreen.constructor(self)
   base.name = 'Project Review By File Screen'
   base.model = Model(opts)
   base.setting = setting
@@ -25,12 +23,7 @@ function ProjectReviewByFileScreen:constructor(opts)
     entries = function()
       return base.model:get_entries()
     end,
-  }, list_plot, {
-    elements = {
-      header = true,
-      footer = false,
-    },
-  })
+  }, list_plot)
 
   ProjectReviewScreen.init_views(base, diff_plot)
 

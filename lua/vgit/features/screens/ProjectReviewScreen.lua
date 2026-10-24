@@ -29,7 +29,8 @@ local visual_selection = require('vgit.features.screens.visual_selection')
   Keys run as jobs through one queue (see enqueue).
 
   Subclasses set model, setting and list_view, then call init_views. They may
-  override jump_section (J/K in the list) and resolve_list_width.
+  override jump_section (J/K in the list), and the list width hooks
+  (resolve_list_width, apply_list_width, finish_list_resize).
 ]]
 
 local ProjectReviewScreen = Object:extend()
@@ -40,7 +41,7 @@ function ProjectReviewScreen:constructor()
     scene = Scene(),
     app_bar_view = nil,
     diff_view = nil,
-    -- Set by the by-commit subclass in left/right layouts
+    -- By-commit left/right layouts' message box, mounted last
     commit_message_view = nil,
     -- List column width while the list/diff boundary is draggable
     list_cols = nil,
@@ -481,60 +482,46 @@ end
 -- By-commit sizes the list column to the fetched commits
 function ProjectReviewScreen:resolve_list_width() end
 
--- Reconfigure all width-dependent windows for a new list column width
--- (mouse drag on the list/diff boundary, left-list layout only). Cheap:
--- window re-plots only; content re-renders once on release.
-function ProjectReviewScreen:apply_list_width(cols)
-  local total = dimensions.global_width()
-  cols = math.max(20, math.min(cols, total - 40))
-  if cols == self.list_cols then return end
-  self.list_cols = cols
+-- Move component `name` (and its header) to column `col`, `width` wide
+function ProjectReviewScreen:replot_column(name, col, width)
+  local component = self.scene:get(name)
+  if not component then return end
 
-  local function replot(window, col, width)
-    local win_id = window and window.win_id
-    if not win_id or not vim.api.nvim_win_is_valid(win_id) then return end
-    local row = vim.api.nvim_win_get_config(win_id).row
-    vim.api.nvim_win_set_config(win_id, { relative = 'editor', row = row, col = col, width = width })
-  end
-
-  local function replot_component(component, col, width)
-    if not component then return end
-    replot(component.window, col, width)
-    local header = component.elements and component.elements.header
-    if header then replot(header.window, col, width) end
-  end
-
-  replot_component(self.scene:get('list'), 0, cols)
-
-  if self.commit_message_view then
-    -- Future CommitMessageView:resize() calls re-derive geometry from the plot
-    self.commit_message_view.plot.width = cols
-    replot_component(self.scene:get('commit_message'), 0, cols)
-  end
-
-  local rest = total - cols
-  if self.model:get_layout_type() == 'split' then
-    local half = math.ceil(rest / 2)
-    replot_component(self.scene:get('previous'), cols, half)
-    replot_component(self.scene:get('current'), cols + half, rest - half)
-  else
-    replot_component(self.scene:get('current'), cols, rest)
+  local header = component.elements and component.elements.header
+  for _, window in ipairs({ component.window, header and header.window }) do
+    if window:is_valid() then
+      window:set_win_plot({ relative = 'editor', row = window:get_win_plot().row, col = col, width = width })
+    end
   end
 end
 
--- Re-render width-dependent content (void filler, message wrap height) after
--- a drag completes, and remember the width for screens opened later this
--- session.
+-- Reconfigure all width-dependent windows for a new list column width
+-- (mouse drag on the list/diff boundary, left-list layout only). Cheap:
+-- window re-plots only; content re-renders once on release. Returns
+-- whether the width changed.
+function ProjectReviewScreen:apply_list_width(cols)
+  cols = dimensions.clamp_list_cols(cols)
+  if cols == self.list_cols then return false end
+  self.list_cols = cols
+
+  self:replot_column('list', 0, cols)
+  local rest = dimensions.global_width() - cols
+  if self.model:get_layout_type() == 'split' then
+    local half = math.ceil(rest / 2)
+    self:replot_column('previous', cols, half)
+    self:replot_column('current', cols + half, rest - half)
+  else
+    self:replot_column('current', cols, rest)
+  end
+  return true
+end
+
+-- Re-render width-dependent content (void filler) after a drag completes,
+-- and remember the width for screens opened later this session.
 function ProjectReviewScreen:finish_list_resize()
   self.setting:set('list_width', self.list_cols)
-
   self.diff_view:save_viewport()
   self.diff_view:render()
-
-  if self.commit_message_view then
-    self.commit_message_view.current_height = nil
-    self.commit_message_view:render()
-  end
 end
 
 -- Make the list/diff boundary mouse-draggable. Only active when the subclass

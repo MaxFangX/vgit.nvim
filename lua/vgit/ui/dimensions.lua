@@ -18,6 +18,12 @@ function dimensions.global_height()
   return vim.o.lines - vim.o.cmdheight - tabline_height
 end
 
+-- A list column width the editor can fit: at least 20 columns, leaving
+-- the diff at least 40
+function dimensions.clamp_list_cols(cols)
+  return math.max(20, math.min(cols, dimensions.global_width() - 40))
+end
+
 -- Express a fixed `cols`-wide list column as vw percentage strings
 -- (list_pct, rest_pct) so fixed widths can flow through the relative plot
 -- math, which assumes col + width add up to 100vw. The 0.1 nudge makes
@@ -25,7 +31,7 @@ end
 -- one column past. Also returns the clamped column count.
 function dimensions.fixed_split(cols)
   local total = dimensions.global_width()
-  cols = math.max(20, math.min(cols, math.max(20, total - 40)))
+  cols = dimensions.clamp_list_cols(cols)
 
   local list_pct = (cols - 0.1) * 100 / total
   local rest_pct = (total - cols - 0.1) * 100 / total
