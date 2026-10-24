@@ -126,49 +126,6 @@ describe('ReviewModel reconcile:', function()
     eq(model.review_state:get_approved(FILE), nil)
   end)
 
-  it('does not stamp the current base onto a partial mark of a legacy record', function()
-    -- Legacy record embodies an old base ('v0'); the live base has since
-    -- drifted to 'v1'. diff(approved, current) shows a phantom v0->v1 hunk
-    -- plus the real +C hunk.
-    local model = make_model({ base = { 'v1', 'b' }, current = { 'v1', 'B', 'C' } })
-    model.review_state:set_approved(FILE, { 'v0', 'B' }, false, nil)
-
-    -- Mark only the real hunk (+C); the result still carries the stale 'v0'
-    model:mark_selections(unseen_entry(), { { index = 2 } })
-
-    -- The record must stay base-less: attaching the current base would make
-    -- the stale content look like an approved reversion of the base's changes
-    local record = model.review_state:get_approved(FILE)
-    eq(record.lines, { 'v0', 'B', 'C' })
-    eq(record.base_lines, nil)
-  end)
-
-  it('heals a legacy record when marking makes it match current', function()
-    local base = { 'v1', 'b' }
-    local model = make_model({ base = base, current = { 'v1', 'B', 'C' } })
-    model.review_state:set_approved(FILE, { 'v0', 'B' }, false, nil)
-
-    -- Marking every remaining hunk lands exactly on current: consistent by
-    -- construction, so the record graduates to reconcilable
-    model:mark_selections(unseen_entry(), { { index = 1 }, { index = 2 } })
-
-    local record = model.review_state:get_approved(FILE)
-    eq(record.lines, { 'v1', 'B', 'C' })
-    eq(record.base_lines, base)
-  end)
-
-  it('keeps a legacy record base-less through a partial unmark', function()
-    local model = make_model({ base = { 'a', 'b', 'x', 'c' }, current = { 'a', 'B', 'x', 'C' } })
-    model.review_state:set_approved(FILE, { 'a', 'B', 'x', 'C' }, false, nil)
-
-    -- Unmark the second seen hunk (C -> c); the rest stays approved
-    model:unmark_selections(seen_entry(), { { index = 2 } })
-
-    local record = model.review_state:get_approved(FILE)
-    eq(record.lines, { 'a', 'B', 'x', 'c' })
-    eq(record.base_lines, nil)
-  end)
-
   it('titles a trunk review with its unpushed commit count', function()
     local model = make_model({ base = {}, current = {} })
     model.state.branch_name = 'master'
@@ -182,20 +139,5 @@ describe('ReviewModel reconcile:', function()
 
     model.state.unpushed_count = nil
     eq(model:get_list_title(), 'master (vs origin/master)')
-  end)
-
-  it('leaves legacy records without base_lines untouched', function()
-    local base = { 'a', 'b' }
-    local model = make_model({ base = base, current = { 'a', 'B' } })
-    -- Legacy record: no base_lines stored
-    model.review_state:set_approved(FILE, { 'a', 'B' }, false, nil)
-
-    local record = model:get_reconciled_record(FILE, model:get_contents(unseen_entry()))
-    eq(record.lines, { 'a', 'B' })
-    eq(record.base_lines, nil)
-
-    -- Unseen diff is empty (approved == current), same as before the change
-    local unseen = model:get_diff_for(unseen_entry())
-    eq(#unseen.hunks, 0)
   end)
 end)

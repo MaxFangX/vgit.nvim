@@ -14,7 +14,7 @@ local change_id_rekey = require('vgit.features.screens.change_id_rekey')
 
   An approved record is { lines = {...}, deleted = bool, base_lines = {...} }
   where base_lines is the base the approval was made against (used to rebase
-  the snapshot when the base changes; absent on legacy records). No record
+  the snapshot when the base changes). No record
   means approved == base (nothing seen). Records persist to disk as content-
   addressed objects referenced from the review-type JSON file, each with the
   jj change id of its commit when known (see change_id_rekey).
@@ -72,20 +72,19 @@ local function state_stamp(self)
 end
 
 -- An entry's approved record, materialized from `branch_name`'s object store,
--- or nil if its snapshot object is missing. A missing base object only loses
--- the ability to rebase the snapshot.
+-- or nil if its snapshot or base object is missing.
 local function read_record(repo_name, branch_name, entry)
   local lines = persistence.read_object(repo_name, branch_name, entry.approved)
-  if not lines then return nil end
-
   local base_lines = entry.base and persistence.read_object(repo_name, branch_name, entry.base)
+  if not lines or not base_lines then return nil end
+
   return {
     lines = lines,
     deleted = entry.deleted == true,
     base_lines = base_lines,
     -- Cache content hashes so save() doesn't re-hash unchanged records
     hash = entry.approved,
-    base_hash = base_lines and entry.base or nil,
+    base_hash = entry.base,
   }
 end
 
@@ -323,11 +322,8 @@ local function write_to_disk(self, final)
   local objects = {}
   for _, record in pairs(state.approved) do
     record.hash = record.hash or persistence.hash_lines(record.lines)
-    objects[record.hash] = record.lines
-    if record.base_lines then
-      record.base_hash = record.base_hash or persistence.hash_lines(record.base_lines)
-      objects[record.base_hash] = record.base_lines
-    end
+    record.base_hash = record.base_hash or persistence.hash_lines(record.base_lines)
+    objects[record.hash], objects[record.base_hash] = record.lines, record.base_lines
   end
 
   -- Never write JSON referencing objects that failed to write. Records merged

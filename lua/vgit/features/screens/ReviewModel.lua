@@ -211,13 +211,10 @@ end
 -- reordered below this one), re-play the approved delta onto the new base
 -- hunk by hunk via hunk_apply.rebase; hunks that no longer apply are dropped
 -- individually, reverting just their delta to unseen. The reconciled record
--- replaces the stored one, so this runs once per base change. Records
--- without base_lines (written before bases were stored) can't be rebased
--- and are returned as-is.
+-- replaces the stored one, so this runs once per base change.
 function ReviewModel:get_reconciled_record(mark_key, contents)
   local record = self.review_state and self.review_state:get_approved(mark_key)
   if not record or not contents then return record end
-  if not record.base_lines then return record end
   if hunk_apply.lines_equal(record.base_lines, contents.base) then return record end
 
   local hunks = git_hunks.live(self.state.reponame, record.base_lines, record.lines) or {}
@@ -349,17 +346,6 @@ local function to_hunk_selections(diff, selections)
   return result
 end
 
--- Base to store on a record derived from an existing one. A legacy record
--- (no base_lines) may embody an older base, so stamping the current base
--- onto content derived from it would freeze that drift as approved-forever.
--- Keep derived records base-less — unless the result exactly equals the
--- current content, which is consistent by construction and heals the record.
-local function derived_base(record, contents, new_lines)
-  if not record or record.base_lines then return contents.base end
-  if hunk_apply.lines_equal(new_lines, contents.current) then return contents.base end
-  return nil
-end
-
 -- Mark hunks (or selected rows) of the current unseen diff as seen: apply
 -- them onto the approved snapshot. selections: array of
 -- { index = hunk index, rows = set of row indices or nil for the whole hunk }.
@@ -382,7 +368,7 @@ function ReviewModel:mark_selections(entry, selections)
   -- The snapshot represents "file deleted" only once it fully matches a
   -- deleted current side.
   local deleted = contents.current_deleted == true and hunk_apply.lines_equal(new_lines, contents.current)
-  self.review_state:set_approved(mark_key, new_lines, deleted, derived_base(record, contents, new_lines))
+  self.review_state:set_approved(mark_key, new_lines, deleted, contents.base)
 
   self:invalidate_mark_key(mark_key)
   -- Derive what's left of this diff instead of re-diffing, so marked lines
@@ -416,7 +402,7 @@ function ReviewModel:unmark_selections(entry, selections)
   if hunk_apply.lines_equal(new_lines, contents.base) then
     self.review_state:remove_approved(mark_key)
   else
-    self.review_state:set_approved(mark_key, new_lines, deleted, derived_base(record, contents, new_lines))
+    self.review_state:set_approved(mark_key, new_lines, deleted, contents.base)
   end
 
   self:invalidate_mark_key(mark_key)
