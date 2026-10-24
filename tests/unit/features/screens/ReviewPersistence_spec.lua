@@ -308,14 +308,8 @@ describe('ReviewPersistence v1 state file:', function()
     return names
   end
 
-  -- A ReviewState module with an empty session store, as in a new nvim
-  local function fresh_review_state()
-    package.loaded['vgit.features.screens.ReviewState'] = nil
-    return require('vgit.features.screens.ReviewState')
-  end
-
   local function new_state()
-    return fresh_review_state()({ branch_name = 'feature/x', review_type = 'by_commit', repo_name = 'repo' })
+    return review.fresh_review_state()({ branch_name = 'feature/x', review_type = 'by_commit', repo_name = 'repo' })
   end
 
   it('loads a frozen v1 by_commit state file', function()

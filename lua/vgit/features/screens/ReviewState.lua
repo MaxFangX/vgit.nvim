@@ -9,8 +9,8 @@ local change_id_rekey = require('vgit.features.screens.change_id_rekey')
   content snapshot per mark_key (the git-index analogy — approved is
   to base/current what the index is to HEAD/worktree).
 
-  State is keyed by (base_branch, branch_name, review_type) where review_type
-  is 'by_file' or 'by_commit'.
+  State is keyed by (repo_name, branch_name, review_type), the identity of its
+  state file, where review_type is 'by_file' or 'by_commit'.
 
   An approved record is { lines = {...}, deleted = bool, base_lines = {...} }
   where base_lines is the base the approval was made against (used to rebase
@@ -43,7 +43,7 @@ function ReviewState:constructor(opts)
 end
 
 function ReviewState:get_state_key()
-  return string.format('%s|%s|%s', self.base_branch or '', self.branch_name or '', self.review_type)
+  return string.format('%s|%s|%s', self.repo_name or '', self.branch_name or '', self.review_type)
 end
 
 local function get_state(self)
@@ -108,7 +108,9 @@ function ReviewState:load_from_disk()
     return
   end
 
+  -- No file (never saved, or deleted since): nothing is approved
   if not data or type(data.entries) ~= 'table' then
+    state.approved, state.change_ids = {}, {}
     state.loaded = true
     state.disk_mtime = mtime
     return

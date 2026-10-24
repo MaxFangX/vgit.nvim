@@ -31,4 +31,10 @@ function review.run(fn)
   assert(ok, err)
 end
 
+-- A ReviewState class with an empty session store, as in a new nvim session
+function review.fresh_review_state()
+  package.loaded['vgit.features.screens.ReviewState'] = nil
+  return require('vgit.features.screens.ReviewState')
+end
+
 return review

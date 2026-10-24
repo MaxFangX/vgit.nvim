@@ -71,14 +71,13 @@ describe('change_id_rekey', function()
 
     it('rekeys a record approved in an earlier session', function()
       run(function()
-        local opts = { branch_name = 'reload', repo_name = 'repo' }
-        local before = new_state(vim.tbl_extend('force', opts, { base_branch = 'a' }))
+        local opts = { review_type = 'by_commit', branch_name = 'reload', repo_name = 'repo' }
+        local before = new_state(opts)
         before:set_approved('oldsubj:src/a.lua', { 'approved' }, false, { 'base' })
         before:reconcile_change_ids({ item('oldsubj:src/a.lua', 'src/a.lua', cid) })
         before:save()
 
-        -- A different base_branch is a fresh session state reading the same file
-        local after = new_state(vim.tbl_extend('force', opts, { base_branch = 'b' }))
+        local after = review.fresh_review_state()(opts)
         after:load_from_disk()
         after:reconcile_change_ids({ item('newsubj:src/a.lua', 'src/a.lua', cid) })
         eq(after:get_approved('newsubj:src/a.lua').lines, { 'approved' })
