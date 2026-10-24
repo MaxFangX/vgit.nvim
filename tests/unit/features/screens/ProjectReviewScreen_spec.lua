@@ -576,6 +576,37 @@ describe('ProjectReviewScreen', function()
       H.assert_consistent()
     end)
 
+    it('opens on the commit whose hunk holds the source line', function()
+      vim.cmd.edit('a/x.lua')
+      vim.cmd('55')
+      H.open('commit')
+      eq({ 'unseen a/x.lua @fix: more core', '2/2 inside' }, { H.entry(), H.hunk() })
+      H.close()
+
+      vim.cmd('5')
+      H.open('commit')
+      eq({ 'unseen a/x.lua @feat: add core', '1/2 inside' }, { H.entry(), H.hunk() })
+      H.assert_consistent()
+    end)
+
+    it('opens on the source file\'s latest unseen commit otherwise', function()
+      vim.cmd.edit('a/x.lua')
+      vim.cmd('5')
+      H.open('commit')
+      eq(ORDER[1], H.entry())
+      -- Leave the review on the file's Seen entry
+      H.keys('S')
+      H.keys('k')
+      eq('seen a/x.lua @feat: add core', H.entry())
+      H.close()
+
+      vim.cmd.edit('a/x.lua')
+      vim.cmd('5')
+      H.open('commit')
+      eq('unseen a/x.lua @fix: more core', H.entry())
+      H.assert_consistent()
+    end)
+
     it('reuses each commit\'s file tree until its files change', function()
       H.open('commit')
       local list_view = H.screen().list_view

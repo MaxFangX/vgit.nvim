@@ -567,36 +567,62 @@ function ProjectReviewScreen:setup_drag_resize()
   })
 end
 
--- Entry to open on, and whether it is the current buffer's file: that file
--- (preferring the saved section and commit), else the saved position, else
--- the first unseen entry
-function ProjectReviewScreen:initial_entry_id(buffer)
-  local position = self.model:get_review_state():get_position()
-  local files = self.list_view:file_nodes()
+-- Unseen entries source_entry_id diffs at most. A lockfile can be in every
+-- commit of a long stack, and each diff of it costs a few ms.
+local SOURCE_DIFFS_MAX = 10
 
+-- The entry to open the source file on, the cursor at `lnum`. By-commit
+-- lists a file once per commit: prefer the latest unseen entry whose hunks
+-- hold the line (the latest is closest to the working copy), else the latest
+-- unseen one, else the latest seen one.
+function ProjectReviewScreen:source_entry_id(filepath, lnum)
+  local files = self.list_view:file_nodes()
+  local unseen, seen
+  local diffs = 0
+  for i = #files, 1, -1 do
+    local entry = self.model:lookup(files[i].id)
+    if entry.filepath == filepath and entry.type == 'seen' then
+      seen = seen or entry.id
+    elseif entry.filepath == filepath and diffs < SOURCE_DIFFS_MAX then
+      unseen = unseen or entry.id
+      diffs = diffs + 1
+      local diff = self.model:get_diff_for(entry)
+      loop.free_textlock()
+      for _, mark in ipairs(diff and diff.marks or {}) do
+        if lnum >= mark.top_relative and lnum <= mark.bot_relative then return entry.id end
+      end
+    end
+  end
+  return unseen or seen
+end
+
+-- Entry to open on, and whether it is the source buffer's file: that file
+-- (see source_entry_id), else the saved position (preferring its section
+-- and commit), else the first unseen entry
+function ProjectReviewScreen:initial_entry_id(buffer, lnum)
+  -- Entries are repo-relative, whatever the cwd
+  local name = buffer:get_name()
+  local source_id = name ~= '' and self:source_entry_id(fs.make_relative(self.model:get_reponame(), name), lnum)
+  if source_id then return source_id, true end
+
+  local position = self.model:get_review_state():get_position()
+  local filepath = position.filepath
   local function find(pred)
-    for _, node in ipairs(files) do
+    for _, node in ipairs(self.list_view:file_nodes()) do
       local entry = self.model:lookup(node.id)
-      if entry and pred(entry) then return node.id end
+      if entry.filepath == filepath and pred(entry) then return node.id end
     end
   end
 
   -- Commit subjects (not hashes) survive rebases
-  local function find_file(filepath)
-    if not filepath or filepath == '' then return nil end
-    local function in_section(entry)
-      return entry.filepath == filepath and entry.type == position.type
-    end
-    return find(function(entry)
-      return in_section(entry) and (not entry.commit or entry.commit.message == position.commit_message)
-    end) or find(in_section) or find(function(entry) return entry.filepath == filepath end)
+  local function in_section(entry)
+    return entry.type == position.type
   end
-
-  -- Entries are repo-relative, whatever the cwd
-  local name = buffer:get_name()
-  local buffer_id = name ~= '' and find_file(fs.make_relative(self.model:get_reponame(), name))
-  if buffer_id then return buffer_id, true end
-  return find_file(position.filepath) or self:first_entry_id(), false
+  local saved_id = filepath
+    and (find(function(entry)
+      return in_section(entry) and (not entry.commit or entry.commit.message == position.commit_message)
+    end) or find(in_section) or find(function() return true end))
+  return saved_id or self:first_entry_id(), false
 end
 
 function ProjectReviewScreen:create(args)
@@ -643,7 +669,7 @@ function ProjectReviewScreen:create(args)
   self:setup_keymaps()
   self:setup_drag_resize()
 
-  local id, from_buffer = self:initial_entry_id(buffer)
+  local id, from_buffer = self:initial_entry_id(buffer, source_lnum)
   self:select(id, 1)
 
   -- Focus explicitly: the commit message view may have taken it while mounting
