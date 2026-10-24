@@ -108,27 +108,26 @@ function ReviewModel:get_review_state()
   return self.review_state
 end
 
--- Resolve the persistence keys for HEAD: the branch name the index is stored
--- under, plus the repo name. For a detached jj HEAD, the branch is resolved by
--- which stored review covers HEAD's commits (rebase-stable) before falling
--- back to topology, so the review follows the stack across rebases.
--- Returns branch_name, repo_name, err.
-function ReviewModel:resolve_branch_name(reponame, base_branch)
+-- Resolve what to review (git_branch.review_target) and the repo name the
+-- index persists under. For a detached jj HEAD no bookmark claims, the branch
+-- is resolved by which stored review covers HEAD's commits (rebase-stable),
+-- so the review follows the stack across rebases.
+-- Returns target, repo_name, or nil, err.
+function ReviewModel:resolve_target(reponame, base_arg)
   local repo_name = git_repo.get_name(reponame)
-  local branch_name, err = git_branch.current_persistent(reponame, function()
-    return persistence.branch_by_subjects(repo_name, git_branch.head_subject_hashes(reponame, base_branch))
+  local target, err = git_branch.review_target(reponame, base_arg, function(base, head)
+    local subjects = {}
+    for _, commit in ipairs(git_branch.commits_in_range(reponame, base, head) or {}) do
+      subjects[utils.str.fnv1a(vim.trim(commit.message))] = true
+    end
+    return persistence.branch_by_subjects(repo_name, subjects)
   end)
-  return branch_name, repo_name, err
-end
+  if not target then return nil, err end
 
--- A trunk review (base = origin/<branch key>) covers exactly the unpushed
--- trunk commits; count them so the title can say so. No-op for other reviews.
-function ReviewModel:resolve_unpushed_count(reponame)
-  self.state.unpushed_count = nil
-  if self.state.base_branch ~= 'origin/' .. (self.state.branch_name or '') then return end
-
-  local commits = git_branch.commits_in_range(reponame, self.state.base_branch, git_branch.review_head(reponame))
-  if commits and #commits > 0 then self.state.unpushed_count = #commits end
+  self.state.base_branch = target.base
+  self.state.branch_name = target.branch_key
+  self.state.unpushed_count = target.unpushed_count
+  return target, repo_name
 end
 
 -- Header for the review list: the branch key the index persists under, plus

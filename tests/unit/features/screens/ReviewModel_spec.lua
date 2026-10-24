@@ -171,17 +171,6 @@ describe('ReviewModel reconcile:', function()
     eq(model:get_list_title(), 'master (vs origin/master)')
   end)
 
-  it('skips the unpushed count for non-trunk reviews', function()
-    local model = make_model({ base = {}, current = {} })
-    model.state.branch_name = 'feature'
-    model.state.base_branch = 'master'
-
-    -- Base is not origin/<branch>: returns before any git call (reponame unused)
-    model:resolve_unpushed_count(nil)
-    eq(model.state.unpushed_count, nil)
-    eq(model:get_list_title(), 'feature (vs master)')
-  end)
-
   it('leaves legacy records without base_lines untouched', function()
     local base = { 'a', 'b' }
     local model = make_model({ base = base, current = { 'a', 'B' } })

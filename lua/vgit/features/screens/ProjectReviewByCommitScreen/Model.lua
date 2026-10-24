@@ -106,22 +106,13 @@ function Model:fetch(base_branch_arg)
   if repo_err then return nil, { 'Project has no .git folder' } end
   self.state.reponame = reponame
 
-  -- Detect or use provided base branch
-  local base_branch
-  if base_branch_arg and base_branch_arg ~= '' then
-    base_branch = base_branch_arg
-  else
-    local detected, detect_err = git_branch.detect_base(reponame)
-    if detect_err then return nil, detect_err end
-    base_branch = detected
-  end
-  self.state.base_branch = base_branch
-
-  -- Resolve the branch key and repo name for persistence.
-  local branch_name, repo_name, branch_err = self:resolve_branch_name(reponame, base_branch)
-  if branch_err then return nil, branch_err end
-  self.state.branch_name = branch_name
-  self:resolve_unpushed_count(reponame)
+  -- Resolve the base, branch key and review head (parked mid-stack in jj,
+  -- the review runs to the stack tip, not HEAD)
+  local target, repo_name = self:resolve_target(reponame, base_branch_arg)
+  if not target then return nil, repo_name end
+  local base_branch, merge_base = target.base, target.merge_base
+  local branch_name = target.branch_key
+  self.state.merge_base = merge_base
 
   local cache_id = string.format('%s|%s', reponame, branch_name or '')
   if session_contents.id ~= cache_id then
@@ -131,14 +122,6 @@ function Model:fetch(base_branch_arg)
 
   -- Async fetch if stale — notifies user to reopen if base was updated
   git_branch.fetch_ref_if_stale(reponame, base_branch)
-
-  -- Parked mid-stack (jj), the review runs to the stack tip, not HEAD
-  local head_ref = git_branch.review_head(reponame)
-
-  -- Get merge-base
-  local merge_base, mb_err = git_branch.merge_base(reponame, base_branch, head_ref)
-  if mb_err then return nil, mb_err end
-  self.state.merge_base = merge_base
 
   -- Initialize or restore the index
   self.review_state = ReviewState({
@@ -150,8 +133,8 @@ function Model:fetch(base_branch_arg)
   -- Load persisted state from disk (must be called from coroutine context)
   self.review_state:load_from_disk()
 
-  -- Get commits in the PR range
-  local commits, commits_err = git_branch.commits_in_range(reponame, merge_base, head_ref)
+  -- Get commits in the PR range, with their messages and files
+  local commits, commits_err = git_branch.review_commits(reponame, merge_base, target.head_hash)
   if commits_err then return nil, commits_err end
 
   if #commits == 0 then
@@ -159,23 +142,13 @@ function Model:fetch(base_branch_arg)
   end
 
   self.state.commits = commits
+  for _, commit in ipairs(commits) do
+    self.state.commit_messages[commit.hash] = commit.body
+    self.state.commit_files[commit.hash] = commit.files
+  end
 
   -- In a jj repo, the list shows jj change ids instead of git short hashes
   jj.attach_change_ids(reponame, commits)
-
-  -- Preload every commit's full message in one batched git call (avoids N
-  -- sequential `git show` calls and async issues during render).
-  self.state.commit_messages = git_branch.all_commit_messages(reponame, merge_base, head_ref) or {}
-
-  -- Cache commit files in a single git command (batched for performance)
-  local all_files, files_err = git_branch.all_commit_files(reponame, merge_base, head_ref)
-  if files_err then return nil, files_err end
-  self.state.commit_files = all_files or {}
-  -- Drop jj conflict-artifact sidecars (.jjconflict-*), which aren't reviewable
-  -- and can number in the thousands, dominating the preload below.
-  for hash, files in pairs(self.state.commit_files) do
-    self.state.commit_files[hash] = jj.filter_conflict_artifacts(files)
-  end
 
   -- Marks stored under a reworded subject, or made while reviewing another
   -- branch, are found by jj change id (see change_id_rekey)
@@ -183,7 +156,8 @@ function Model:fetch(base_branch_arg)
   if #items > 0 then self.review_state:reconcile_change_ids(items) end
 
   -- Preload parent and commit contents in parallel
-  self:preload_contents_parallel(commits)
+  local preload_err = self:preload_contents_parallel(commits)
+  if preload_err then return nil, preload_err end
 
   self:rebuild_entries()
   return self.state.entries
@@ -192,7 +166,7 @@ end
 -- Preload all contents in one `git cat-file --batch` process (2 objects per
 -- commit-file: parent + commit). A missing object means the file doesn't
 -- exist at that revision (added / deleted side, or the parent of a root
--- commit).
+-- commit). Returns an error if git fails, caching nothing.
 function Model:preload_contents_parallel(commits)
   local jobs = {}
   for _, commit in ipairs(commits) do
@@ -217,7 +191,8 @@ function Model:preload_contents_parallel(commits)
     specs[#specs + 1] = make_key(job.commit_hash, job.filepath)
   end
 
-  local results = git_show.lines_batch(self.state.reponame, specs)
+  local results, err = git_show.lines_batch(self.state.reponame, specs)
+  if err then return err end
 
   for i, job in ipairs(jobs) do
     local base = results[(i - 1) * 2 + 1]

@@ -2,7 +2,6 @@ local loop = require('vgit.core.loop')
 local git_repo = require('vgit.git.git_repo')
 local git_show = require('vgit.git.git_show')
 local git_branch = require('vgit.git.git_branch')
-local jj = require('vgit.git.jj')
 local ReviewState = require('vgit.features.screens.ReviewState')
 local ReviewModel = require('vgit.features.screens.ReviewModel')
 
@@ -62,43 +61,23 @@ function Model:fetch(base_branch_arg)
   if repo_err then return nil, { 'Project has no .git folder' } end
   self.state.reponame = reponame
 
-  -- Detect or use provided base branch
-  local base_branch
-  if base_branch_arg and base_branch_arg ~= '' then
-    base_branch = base_branch_arg
-  else
-    local detected, detect_err = git_branch.detect_base(reponame)
-    if detect_err then return nil, detect_err end
-    base_branch = detected
-  end
-  self.state.base_branch = base_branch
-
-  -- Resolve the branch key and repo name for persistence.
-  local branch_name, repo_name, branch_err = self:resolve_branch_name(reponame, base_branch)
-  if branch_err then return nil, branch_err end
-  self.state.branch_name = branch_name
-  self:resolve_unpushed_count(reponame)
+  -- Resolve the base, branch key and review head (parked mid-stack in jj,
+  -- the review runs to the stack tip, not HEAD)
+  local target, repo_name = self:resolve_target(reponame, base_branch_arg)
+  if not target then return nil, repo_name end
+  local base_branch, merge_base, head_hash = target.base, target.merge_base, target.head_hash
+  local branch_name = target.branch_key
+  self.state.merge_base = merge_base
+  self.state.head_hash = head_hash
 
   -- Async fetch if stale — notifies user to reopen if base was updated
   git_branch.fetch_ref_if_stale(reponame, base_branch)
 
-  -- Get merge-base
-  -- Parked mid-stack (jj), the review runs to the stack tip, not HEAD
-  local head_ref = git_branch.review_head(reponame)
-  self.state.head_ref = head_ref
-
-  local merge_base, mb_err = git_branch.merge_base(reponame, base_branch, head_ref)
-  if mb_err then return nil, mb_err end
-  self.state.merge_base = merge_base
-
-  local head_hash = git_branch.head(reponame, head_ref)
-  if head_hash then
-    local cache_id = string.format('%s|%s|%s', reponame, merge_base, head_hash)
-    if session_contents.id ~= cache_id then
-      session_contents = { id = cache_id, contents = {} }
-    end
-    self.state.contents = session_contents.contents
+  local cache_id = string.format('%s|%s|%s', reponame, merge_base, head_hash)
+  if session_contents.id ~= cache_id then
+    session_contents = { id = cache_id, contents = {} }
   end
+  self.state.contents = session_contents.contents
 
   -- Initialize or restore the index
   self.review_state = ReviewState({
@@ -111,12 +90,8 @@ function Model:fetch(base_branch_arg)
   self.review_state:load_from_disk()
 
   -- Get files changed between merge-base and the review head
-  local changed_files, files_err = git_branch.changed_files(reponame, merge_base, head_ref)
+  local changed_files, files_err = git_branch.changed_files(reponame, merge_base, head_hash)
   if files_err then return nil, files_err end
-
-  -- Drop jj conflict-artifact sidecars (.jjconflict-*), which aren't reviewable
-  -- and can number in the thousands, dominating the preload below.
-  changed_files = jj.filter_conflict_artifacts(changed_files)
 
   if #changed_files == 0 then
     return nil, { string.format('Branch is the same as %s', base_branch) }
@@ -125,7 +100,8 @@ function Model:fetch(base_branch_arg)
   self.state.changed_files = changed_files
 
   -- Preload base and current contents in parallel
-  self:preload_contents_parallel(changed_files)
+  local preload_err = self:preload_contents_parallel(changed_files)
+  if preload_err then return nil, preload_err end
 
   self:rebuild_entries()
   return self.state.entries
@@ -133,7 +109,8 @@ end
 
 -- Preload all contents in one `git cat-file --batch` process (2 objects per
 -- file: merge-base + review head). A missing object means the file doesn't exist at
--- that revision (added / deleted side of the diff).
+-- that revision (added / deleted side of the diff). Returns an error if git
+-- fails, caching nothing.
 function Model:preload_contents_parallel(changed_files)
   local merge_base = self.state.merge_base
 
@@ -148,10 +125,11 @@ function Model:preload_contents_parallel(changed_files)
   local specs = {}
   for _, file in ipairs(jobs) do
     specs[#specs + 1] = string.format('%s:%s', merge_base, file.old_filepath or file.filepath)
-    specs[#specs + 1] = string.format('%s:%s', self.state.head_ref, file.filepath)
+    specs[#specs + 1] = string.format('%s:%s', self.state.head_hash, file.filepath)
   end
 
-  local results = git_show.lines_batch(self.state.reponame, specs)
+  local results, err = git_show.lines_batch(self.state.reponame, specs)
+  if err then return err end
 
   for i, file in ipairs(jobs) do
     local base = results[(i - 1) * 2 + 1]
@@ -171,7 +149,7 @@ function Model:load_contents(entry)
   local merge_base = self.state.merge_base
 
   local base_lines = git_show.lines(reponame, entry.old_filepath or entry.filepath, merge_base)
-  local current_lines, current_err = git_show.lines(reponame, entry.filepath, self.state.head_ref)
+  local current_lines, current_err = git_show.lines(reponame, entry.filepath, self.state.head_hash)
 
   self:set_contents(entry.filepath, {
     base = base_lines or {},
