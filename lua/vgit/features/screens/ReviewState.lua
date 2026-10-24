@@ -218,13 +218,12 @@ local function adopt_from_siblings(self, state, items)
   local adopted = false
   for _, sibling in ipairs(persistence.load_siblings(self.repo_key, self.branch_key, self.review_type)) do
     local entries = sibling.data.entries or {}
-    -- Every key with a change id holds a record, so this doubles as the key set
     local change_ids = {}
     for key, entry in pairs(entries) do
       if type(entry) == 'table' and entry.approved then change_ids[key] = entry.change_id end
     end
 
-    for _, match in ipairs(record_keys.find(items, change_ids, change_ids)) do
+    for _, match in ipairs(record_keys.find(items, change_ids)) do
       local record = read_record(self.repo_key, sibling.branch_key, entries[match.key])
       if record then
         state.records[match.item.key], state.dirty[match.item.key], adopted = record, true, true

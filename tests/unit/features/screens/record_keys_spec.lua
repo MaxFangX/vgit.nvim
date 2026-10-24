@@ -1,6 +1,7 @@
 -- Not a module path: plenary runs specs without the repo root on package.path
 local review = dofile('tests/helpers/review.lua')
 local ReviewState = require('vgit.features.screens.ReviewState')
+local utils = require('vgit.core.utils')
 local record_keys = require('vgit.features.screens.record_keys')
 local persistence = require('vgit.features.screens.review_persistence')
 
@@ -17,6 +18,25 @@ end
 
 describe('record_keys', function()
   review.use_temp_data_home()
+
+  describe('format:', function()
+    it('keys a subject the way stored records are keyed', function()
+      -- Frozen: every stored by-commit key depends on these
+      eq(record_keys.subject_key('  Add a  '), '8df4a362')
+      eq(record_keys.join('8df4a362', 'src/a:b.lua'), '8df4a362:src/a:b.lua')
+      eq({ record_keys.split('8df4a362:src/a:b.lua') }, { '8df4a362', 'src/a:b.lua' })
+    end)
+
+    it('keys repeated subjects apart, keeping the first plain', function()
+      local keys = record_keys.subject_keys({ 'wip', 'Add a', ' wip', '', 'wip', '' })
+      eq(keys[1], record_keys.subject_key('wip'))
+      eq(keys[2], record_keys.subject_key('Add a'))
+      eq(keys[3], utils.str.fnv1a('wip\0' .. 2))
+      eq(keys[4], record_keys.subject_key(''))
+      eq(keys[5], utils.str.fnv1a('wip\0' .. 3))
+      eq(keys[6], utils.str.fnv1a('\0' .. 2))
+    end)
+  end)
 
   describe('plan:', function()
     local cid = 'kzlnmouooqvwmnwmymlvpmmsuopnlkkt'

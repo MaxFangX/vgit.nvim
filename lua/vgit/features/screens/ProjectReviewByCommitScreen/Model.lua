@@ -1,5 +1,4 @@
 local loop = require('vgit.core.loop')
-local utils = require('vgit.core.utils')
 local git_repo = require('vgit.git.git_repo')
 local git_show = require('vgit.git.git_show')
 local git_branch = require('vgit.git.git_branch')
@@ -37,10 +36,8 @@ local function entry_id(commit_hash, filepath, entry_type)
   return string.format('%s|%s|%s', commit_hash, filepath, entry_type)
 end
 
--- Generate mark key from commit subject and filepath.
 local function make_record_key(commit_subject, filepath)
-  local subject_hash = utils.str.fnv1a(vim.trim(commit_subject))
-  return string.format('%s:%s', subject_hash, filepath)
+  return record_keys.join(record_keys.subject_key(commit_subject), filepath)
 end
 
 -- Session-wide contents cache, reused across screen instances so re-entering
@@ -152,7 +149,7 @@ function Model:fetch(base_branch_arg)
 
   -- Marks stored under a reworded subject, or made while reviewing another
   -- branch, are found by jj change id (see record_keys)
-  local items = record_keys.items(commits, self.state.commit_files, make_record_key)
+  local items = record_keys.items(commits, self.state.commit_files)
   if #items > 0 then self.review_state:reconcile_change_ids(items) end
 
   -- Preload parent and commit contents in parallel

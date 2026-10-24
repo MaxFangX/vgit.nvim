@@ -1,8 +1,13 @@
+local utils = require('vgit.core.utils')
+
 local record_keys = {}
 
 --[[
-  By-commit records are stored under `<subject hash>:<filepath>` keys, so
-  rewording a commit's subject orphans them. jj change ids survive
+  By-commit records are stored under `<subject key>:<filepath>` keys, where
+  the subject key hashes the commit's subject: subjects survive rebases,
+  commit hashes don't. This module owns that format.
+
+  Rewording a commit's subject orphans its records. jj change ids survive
   rewording, but jj re-derives them for commits it imports from git, so only
   subjects survive git-side rebases. Thus a record is looked up by subject
   key first, and failing that by the change id recorded with it, after which
@@ -12,20 +17,48 @@ local record_keys = {}
   review also adopts the record another branch's review holds for the same
   change id. ReviewState applies the results of these lookups to
   its storage.
-
-  Subject hashes are FNV-1a hex, so a key's file path is everything after
-  its first colon.
 ]]
 
+-- The subject key of a commit subject. Every stored key depends on
+-- utils.str.fnv1a, so it must never change.
+function record_keys.subject_key(subject)
+  return utils.str.fnv1a(vim.trim(subject))
+end
+
+-- The subject keys of a stack's subjects, in stack order. The n-th repeat
+-- (n >= 2) of a subject mixes n in, so commits sharing a subject ("wip",
+-- "fmt", or none) get records of their own; first occurrences keep the
+-- plain key.
+function record_keys.subject_keys(subjects)
+  local counts, keys = {}, {}
+  for i, subject in ipairs(subjects) do
+    local trimmed = vim.trim(subject)
+    local n = (counts[trimmed] or 0) + 1
+    counts[trimmed] = n
+    keys[i] = utils.str.fnv1a(n == 1 and trimmed or trimmed .. '\0' .. n)
+  end
+  return keys
+end
+
+function record_keys.join(subject_key, filepath)
+  return subject_key .. ':' .. filepath
+end
+
+-- A key's subject key and file path. Subject keys are hex, so the path is
+-- everything after the first colon.
+function record_keys.split(key)
+  return key:match('^([^:]*):(.*)$')
+end
+
 -- The (commit, file) items for the `commits` that have a jj change id, as
--- `{ key, filepath, change_id }` with `key = make_record_key(subject, filepath)`.
-function record_keys.items(commits, commit_files, make_record_key)
+-- `{ key, filepath, change_id }`.
+function record_keys.items(commits, commit_files)
   local items = {}
   for _, commit in ipairs(commits) do
     if commit.change_id then
       for _, file in ipairs(commit_files[commit.hash] or {}) do
         items[#items + 1] = {
-          key = make_record_key(commit.message, file.filepath),
+          key = record_keys.join(record_keys.subject_key(commit.message), file.filepath),
           filepath = file.filepath,
           change_id = commit.change_id,
         }
@@ -45,12 +78,12 @@ function record_keys.unheld(items, held_keys)
 end
 
 -- Returns `{ item, key }` for each item whose change id and file path match a
--- key in the set `keys`. `change_ids` maps keys to recorded change ids.
-function record_keys.find(items, keys, change_ids)
+-- key of `change_ids`, a map of keys holding state to their change ids.
+function record_keys.find(items, change_ids)
   local by_identity = {}
-  for key in pairs(keys) do
-    local change_id, filepath = change_ids[key], key:match('^[^:]*:(.*)$')
-    if change_id and filepath then by_identity[change_id .. ':' .. filepath] = key end
+  for key, change_id in pairs(change_ids) do
+    local _, filepath = record_keys.split(key)
+    if filepath then by_identity[change_id .. ':' .. filepath] = key end
   end
 
   local matches = {}
@@ -86,11 +119,11 @@ function record_keys.plan(items, held_keys, change_ids)
 
   local sources = {}
   for key in pairs(held_keys) do
-    if not kept[key] then sources[key] = true end
+    if not kept[key] then sources[key] = change_ids[key] end
   end
 
   local moves, taken = {}, {}
-  for _, match in ipairs(record_keys.find(unheld, sources, change_ids)) do
+  for _, match in ipairs(record_keys.find(unheld, sources)) do
     if not taken[match.key] then
       taken[match.key] = true
       moves[#moves + 1] = { from = match.key, to = match.item.key }
