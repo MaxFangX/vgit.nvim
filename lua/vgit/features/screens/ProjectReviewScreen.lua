@@ -520,8 +520,8 @@ end
 -- and remember the width for screens opened later this session.
 function ProjectReviewScreen:finish_list_resize()
   self.setting:set('list_width', self.list_cols)
-  self.diff_view:save_viewport()
-  self.diff_view:render()
+  local entry = self.model:get_entry()
+  if entry then self:show_entry(entry.id, self.diff_view:get_cursor_mark_position() or 1) end
 end
 
 -- Make the list/diff boundary mouse-draggable. Only active when the subclass
