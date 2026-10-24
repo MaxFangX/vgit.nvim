@@ -339,6 +339,19 @@ describe('ProjectReviewScreen', function()
       H.assert_consistent()
     end)
 
+    for _, layout in ipairs({ 'unified', 'split' }) do
+      it('quits from a change onto the line that replaced it (' .. layout .. ')', function()
+        H.open('commit', { layout = layout })
+        H.focus('list')
+        H.keys('k')
+        H.focus('diff')
+        eq({ ORDER[9], '1/1 inside' }, { H.entry(), H.hunk() })
+        H.keys('<esc>')
+        eq(nil, H.screen())
+        eq({ repo .. '/src/b/y.lua', 3 }, { vim.api.nvim_buf_get_name(0), vim.fn.line('.') })
+      end)
+    end
+
     it('S marks the file and moves on; the commit shows up under Seen', function()
       H.open('commit')
       H.keys('S')

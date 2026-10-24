@@ -573,25 +573,28 @@ function DiffView:get_hunk_under_cursor()
   if selected then return hunks[selected], selected end
 end
 
--- Returns the actual file line number for the current cursor position.
--- For removed lines (which don't exist in the file), returns the closest
--- valid line number above.
+-- Returns the file line number for the cursor row. A removed row (absent
+-- from the file) maps to the first numbered row below it, which in a change
+-- is the line that replaced it; a removal at the end of the file maps to
+-- the last numbered row above.
 function DiffView:get_file_lnum()
   local lines_changes = self.state.current_lines_changes
   if not lines_changes or #lines_changes == 0 then return nil end
 
-  local lnum = self.scene:get('current'):get_lnum()
-  if lnum > #lines_changes then lnum = #lines_changes end
-
-  -- Search current line and above for a valid line number
-  for i = lnum, 1, -1 do
+  local function file_lnum_at(i)
     local entry = lines_changes[i]
-    if entry and entry.line_number then
-      local file_lnum = tonumber(entry.line_number:match('%d+'))
-      if file_lnum then return file_lnum end
-    end
+    return entry and entry.line_number and tonumber(entry.line_number:match('%d+'))
   end
 
+  local lnum = math.min(self.scene:get('current'):get_lnum(), #lines_changes)
+  for i = lnum, #lines_changes do
+    local file_lnum = file_lnum_at(i)
+    if file_lnum then return file_lnum end
+  end
+  for i = lnum - 1, 1, -1 do
+    local file_lnum = file_lnum_at(i)
+    if file_lnum then return file_lnum end
+  end
   return nil
 end
 
