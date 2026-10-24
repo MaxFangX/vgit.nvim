@@ -1,0 +1,290 @@
+-- Not a module path: plenary runs specs without the repo root on package.path
+local H = dofile('tests/helpers/review_screen.lua')
+
+local eq = assert.are.same
+
+describe('ProjectReviewByFileScreen', function()
+  H.use_repo()
+
+  local ORDER = {
+    'unseen a/x.lua',
+    'unseen docs/README.md',
+    'unseen src/b/y.lua',
+    'unseen src/c/z.lua',
+    'unseen gone.txt',
+    'unseen img.bin',
+    'unseen new.txt',
+  }
+
+  it('walks the list in display order with j and k, wrapping', function()
+    H.open('file')
+    H.focus('list')
+    eq(vim.list_extend(vim.deepcopy(ORDER), { ORDER[1] }), H.walk('j', 7))
+    eq({ ORDER[1], ORDER[7], ORDER[6] }, H.walk('k', 2))
+  end)
+
+  it('J/K in the list jump between folder headings', function()
+    H.open('file')
+    H.focus('list')
+    H.keys('J')
+    eq('docs', H.row())
+    H.keys('J')
+    eq('b', H.row())
+    H.keys('K')
+    eq('docs', H.row())
+    -- Headings leave the diff alone
+    eq('unseen a/x.lua', H.entry())
+  end)
+
+  it('steps hunks with j/k in the diff and crosses files at the edges', function()
+    H.open('file')
+    eq('1/4 inside', H.hunk())
+    H.keys('j')
+    H.keys('j')
+    H.keys('j')
+    eq({ 'unseen a/x.lua', '4/4 inside' }, { H.entry(), H.hunk() })
+    H.keys('j')
+    eq({ 'unseen docs/README.md', '1/1 inside' }, { H.entry(), H.hunk() })
+    H.keys('k')
+    eq({ 'unseen a/x.lua', '4/4 inside' }, { H.entry(), H.hunk() })
+    H.assert_consistent()
+  end)
+
+  it('doesn\'t reload syntax to step hunks within a file', function()
+    H.open('file')
+    local loads = 0
+    local autocmd = vim.api.nvim_create_autocmd('Syntax', { callback = function() loads = loads + 1 end })
+    H.keys('j')
+    H.keys('k')
+    vim.api.nvim_del_autocmd(autocmd)
+    eq({ 'unseen a/x.lua', 0 }, { H.entry(), loads })
+  end)
+
+  it('jumps to the file edge with J/K, then crosses', function()
+    H.open('file')
+    H.keys('J')
+    eq({ 'unseen a/x.lua', '4/4 inside' }, { H.entry(), H.hunk() })
+    H.keys('J')
+    eq({ 'unseen docs/README.md', '1/1 inside' }, { H.entry(), H.hunk() })
+    H.keys('K')
+    eq({ 'unseen a/x.lua', '4/4 inside' }, { H.entry(), H.hunk() })
+    H.keys('K')
+    eq({ 'unseen a/x.lua', '1/4 inside' }, { H.entry(), H.hunk() })
+    H.assert_consistent()
+  end)
+
+  it('s marks the hunk and lands on the next one; u brings it back', function()
+    H.open('file')
+    H.keys('s')
+    eq({ 'unseen a/x.lua', '1/3 inside' }, { H.entry(), H.hunk() })
+    H.assert_consistent()
+
+    H.focus('list')
+    H.keys('gg')
+    eq('Seen', H.row())
+    H.keys('j')
+    eq({ 'seen a/x.lua', '1/1 inside' }, { H.entry(), H.hunk() })
+    H.focus('diff')
+    H.keys('u')
+    -- The seen section drained: stay on the file, now unseen
+    eq({ 'unseen a/x.lua', '1/4 inside' }, { H.entry(), H.hunk() })
+    H.assert_consistent()
+  end)
+
+  for _, layout in ipairs({ 'unified', 'split' }) do
+    it('visual s marks the selected hunk (' .. layout .. ')', function()
+      H.open('file', { layout = layout })
+      -- Unified stacks the hunk's removed and added rows; split pairs them
+      H.keys(layout == 'unified' and 'Vjs' or 'Vs')
+      eq({ 'unseen a/x.lua', '1/3 inside' }, { H.entry(), H.hunk() })
+      local notes = H.notifications()
+      H.keys('<Up>')
+      H.keys('Vs')
+      eq('No hunks in selection', notes[#notes])
+      eq({}, H.errors)
+    end)
+  end
+
+  it('marks and unmarks single lines of a change in unified layout', function()
+    H.open('file')
+    local x5 = { { 'x line 5' }, { 'x line 5 CHANGED' } }
+    local x20 = { { 'x line 20' }, { 'x line 20 C4' } }
+
+    -- Only the removed line: approve the deletion, not its replacement
+    H.keys('Vs')
+    eq({ { { 'x line 5' }, {} } }, H.hunks('seen a/x.lua'))
+    eq({ {}, { 'x line 5 CHANGED' } }, H.hunks('unseen a/x.lua')[1])
+
+    -- Only the added line: approve the insertion, keeping the old line
+    H.select('unseen a/x.lua', 2)
+    H.keys('<Down>')
+    H.keys('Vs')
+    eq({ { { 'x line 5' }, {} }, { {}, { 'x line 20 C4' } } }, H.hunks('seen a/x.lua'))
+    eq({ { 'x line 20' }, {} }, H.hunks('unseen a/x.lua')[2])
+
+    -- Unmarking mirrors both
+    H.select('seen a/x.lua', 1)
+    H.keys('Vu')
+    eq({ { {}, { 'x line 20 C4' } } }, H.hunks('seen a/x.lua'))
+    eq(x5, H.hunks('unseen a/x.lua')[1])
+
+    H.select('seen a/x.lua', 1)
+    H.keys('Vu')
+    eq(nil, H.hunks('seen a/x.lua'))
+    eq(x20, H.hunks('unseen a/x.lua')[2])
+    eq(4, #H.hunks('unseen a/x.lua'))
+    eq({}, H.errors)
+  end)
+
+  for _, layout in ipairs({ 'unified', 'split' }) do
+    it('stays on a deleted file after marking part of it (' .. layout .. ')', function()
+      H.open('file', { layout = layout })
+      H.select('unseen gone.txt', 1)
+      vim.api.nvim_win_set_cursor(0, { 3, 0 })
+      H.keys('Vjs')
+      eq({ 'unseen gone.txt', '1/1 inside' }, { H.entry(), H.hunk() })
+      eq({ { 'gone 3', 'gone 4' }, {} }, H.hunks('seen gone.txt')[1])
+    end)
+
+    it('stays on a pure deletion after marking part of it (' .. layout .. ')', function()
+      -- A fifth x.lua hunk: lines 30-33 deleted
+      local x = vim.fn.readfile(H.repo .. '/a/x.lua')
+      vim.fn.writefile(vim.list_extend(vim.list_slice(x, 1, 29), vim.list_slice(x, 34)), H.repo .. '/a/x.lua')
+      H.run({ 'git', '-C', H.repo, 'commit', '-qam', 'drop lines' }, H.repo)
+
+      H.open('file', { layout = layout })
+      H.select('unseen a/x.lua', 3)
+      eq({ { 'x line 30', 'x line 31', 'x line 32', 'x line 33' }, {} }, H.hunks('unseen a/x.lua')[3])
+      H.keys('<Down>')
+      H.keys('Vs')
+      eq({ 'unseen a/x.lua', '3/5 inside' }, { H.entry(), H.hunk() })
+      eq({ { 'x line 30', 'x line 32', 'x line 33' }, {} }, H.hunks('unseen a/x.lua')[3])
+    end)
+  end
+
+  it('S marks the file and moves to the next unseen file', function()
+    H.open('file')
+    H.keys('S')
+    eq('unseen docs/README.md', H.entry())
+    H.assert_consistent()
+    H.keys('k')
+    eq('seen a/x.lua', H.entry())
+  end)
+
+  it('steps into a collapsed folder with j and k', function()
+    H.open('file')
+    H.focus('list')
+    H.keys('j')
+    H.keys('<Down>')
+    eq('src', H.row())
+    H.keys('<CR>')
+    H.keys('k')
+    eq('unseen docs/README.md', H.entry())
+    H.keys('j')
+    eq('unseen src/b/y.lua', H.entry())
+    H.assert_consistent()
+
+    H.keys('<Up><Up>')
+    eq('src', H.row())
+    H.keys('<CR>')
+    H.keys('<Down>')
+    eq('unseen gone.txt', H.entry())
+    H.keys('k')
+    eq('unseen src/c/z.lua', H.entry())
+    H.assert_consistent()
+  end)
+
+  it('steps from a section header into its section', function()
+    H.open('file')
+    H.keys('S')
+    H.focus('list')
+    H.keys('gg')
+    eq('Seen', H.row())
+    H.keys('j')
+    eq('seen a/x.lua', H.entry())
+    H.keys('<Down>')
+    eq('Unseen', H.row())
+    H.keys('j')
+    eq('unseen docs/README.md', H.entry())
+    H.keys('<Up>')
+    H.keys('<Up>')
+    eq('Unseen', H.row())
+    H.keys('k')
+    eq('seen a/x.lua', H.entry())
+    H.assert_consistent()
+  end)
+
+  it('leaves a deleted file with k, J and K', function()
+    H.open('file')
+    H.focus('list')
+    for _ = 1, 4 do
+      H.keys('j')
+    end
+    H.focus('diff')
+    eq({ 'unseen gone.txt', '1/1 inside' }, { H.entry(), H.hunk() })
+    H.keys('k')
+    eq('unseen src/c/z.lua', H.entry())
+    H.keys('J')
+    eq('unseen gone.txt', H.entry())
+    H.keys('J')
+    eq('unseen img.bin', H.entry())
+    H.keys('K')
+    eq('unseen gone.txt', H.entry())
+    H.keys('K')
+    eq('unseen src/c/z.lua', H.entry())
+    H.assert_consistent()
+  end)
+
+  it('S on the last unseen file wraps to the first, like s', function()
+    H.open('file')
+    H.focus('list')
+    H.keys('k')
+    eq('unseen new.txt', H.entry())
+    H.keys('S')
+    eq('unseen a/x.lua', H.entry())
+    H.assert_consistent()
+  end)
+
+  it('R re-anchors on the current file, now unseen', function()
+    H.open('file')
+    H.keys('S')
+    H.keys('k')
+    eq('seen a/x.lua', H.entry())
+    H.keys('R')
+    eq({ 'unseen a/x.lua', '1/4 inside' }, { H.entry(), H.hunk() })
+    H.assert_consistent()
+  end)
+
+  it('reopens with the pane that had focus, however it got there', function()
+    H.open('file')
+    H.focus('list')
+    H.close()
+    H.open('file')
+    eq(H.screen().scene:get('list').window.win_id, vim.api.nvim_get_current_win())
+  end)
+
+  it('keeps the diff on its hunk across a list resize', function()
+    H.open('file')
+    H.keys('j')
+    local screen = H.screen()
+    screen:apply_list_width(30)
+    H.async(function() screen:finish_list_resize() end)
+    eq({ 'unseen a/x.lua', '2/4 inside' }, { H.entry(), H.hunk() })
+    eq(30, screen.scene:get('list').window:get_width())
+  end)
+
+  it('opens on the current buffer\'s file', function()
+    vim.cmd.edit('src/b/y.lua')
+    H.open('file')
+    eq('unseen src/b/y.lua', H.entry())
+    H.assert_consistent()
+  end)
+
+  it('opens on the current buffer\'s file from a subdirectory', function()
+    vim.cmd.cd('src')
+    vim.cmd.edit('b/y.lua')
+    H.open('file')
+    eq('unseen src/b/y.lua', H.entry())
+    H.assert_consistent()
+  end)
+end)
