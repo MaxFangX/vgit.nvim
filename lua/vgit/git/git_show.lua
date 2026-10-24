@@ -21,17 +21,4 @@ function git_show.lines_batch(reponame, specs)
   return gitcli.cat_file_batch(reponame, specs)
 end
 
-function git_show.commit_message(reponame, commit_hash)
-  if not reponame then return nil, { 'reponame is required' } end
-  if not commit_hash then return nil, { 'commit_hash is required' } end
-  return gitcli.run({
-    '-C',
-    reponame,
-    'show',
-    '-s',
-    '--format=%B',
-    commit_hash,
-  })
-end
-
 return git_show
