@@ -18,6 +18,10 @@ local change_id_rekey = require('vgit.features.screens.change_id_rekey')
   means approved == base (nothing seen). Records persist to disk as content-
   addressed objects referenced from the review-type JSON file, each with the
   jj change id of its commit when known (see change_id_rekey).
+
+  A key whose record was removed (unmarked, reset, or rebased away) keeps a
+  tombstone, persisted with its change id, so the record isn't adopted
+  from another branch's review again.
 ]]
 
 local ReviewState = Object:extend()
@@ -49,7 +53,7 @@ end
 local function get_state(self)
   local key = self:get_state_key()
   if not state_store[key] then
-    state_store[key] = { approved = {}, change_ids = {}, position = { section = 'unseen' } }
+    state_store[key] = { approved = {}, change_ids = {}, removed = {}, position = { section = 'unseen' } }
   end
   return state_store[key]
 end
@@ -109,7 +113,7 @@ function ReviewState:load_from_disk()
 
   -- No file (never saved, or deleted since): nothing is approved
   if not data or type(data.entries) ~= 'table' then
-    state.approved, state.change_ids = {}, {}
+    state.approved, state.change_ids, state.removed = {}, {}, {}
     state.loaded = true
     state.disk_mtime = mtime
     return
@@ -117,7 +121,7 @@ function ReviewState:load_from_disk()
 
   -- Materialize approved snapshots from the object store. A missing object
   -- means the snapshot was lost; drop the entry (file reverts to unseen).
-  local approved, change_ids, missing = {}, {}, 0
+  local approved, change_ids, removed, missing = {}, {}, {}, 0
   for mark_key, entry in pairs(data.entries) do
     if type(entry) == 'table' and entry.approved then
       local record = read_record(self.repo_name, self.branch_name, entry)
@@ -126,6 +130,8 @@ function ReviewState:load_from_disk()
       else
         missing = missing + 1
       end
+    elseif type(entry) == 'table' and entry.change_id then
+      removed[mark_key], change_ids[mark_key] = true, entry.change_id
     end
   end
   if missing > 0 then
@@ -137,6 +143,7 @@ function ReviewState:load_from_disk()
   state_store[key] = {
     approved = approved,
     change_ids = change_ids,
+    removed = removed,
     position = existing and existing.position or { section = 'unseen' },
     loaded = true,
     disk_mtime = mtime,
@@ -153,13 +160,28 @@ end
 -- rebase the snapshot when the base later changes (stack restructuring).
 -- Content hashes are computed lazily on save() and cached on the record.
 function ReviewState:set_approved(mark_key, lines, deleted, base_lines)
-  get_state(self).approved[mark_key] = { lines = lines, deleted = deleted == true, base_lines = base_lines }
+  local state = get_state(self)
+  state.approved[mark_key] = { lines = lines, deleted = deleted == true, base_lines = base_lines }
+  state.removed[mark_key] = nil
   self:schedule_save()
 end
 
 function ReviewState:remove_approved(mark_key)
-  get_state(self).approved[mark_key] = nil
+  local state = get_state(self)
+  state.approved[mark_key], state.removed[mark_key] = nil, true
   self:schedule_save()
+end
+
+-- The keys holding a record or a tombstone
+local function held_keys(state)
+  local held = {}
+  for key in pairs(state.approved) do
+    held[key] = true
+  end
+  for key in pairs(state.removed) do
+    held[key] = true
+  end
+  return held
 end
 
 -- Copy approved records for `items` from other branches' reviews of the same
@@ -200,13 +222,15 @@ end
 function ReviewState:reconcile_change_ids(items)
   local state = get_state(self)
 
-  local moves = change_id_rekey.plan(items, state.approved, state.change_ids)
+  -- Tombstones move with their key too
+  local moves = change_id_rekey.plan(items, held_keys(state), state.change_ids)
   for _, move in ipairs(moves) do
     state.approved[move.to], state.approved[move.from] = state.approved[move.from], nil
+    state.removed[move.to], state.removed[move.from] = state.removed[move.from], nil
     state.change_ids[move.from] = nil
   end
 
-  local adopted = adopt_from_siblings(self, state, change_id_rekey.unheld(items, state.approved))
+  local adopted = adopt_from_siblings(self, state, change_id_rekey.unheld(items, held_keys(state)))
   if #moves > 0 or adopted then self:schedule_save() end
 
   for _, item in ipairs(items) do
@@ -216,7 +240,14 @@ end
 
 -- Reset the index for the current session (everything back to unseen)
 function ReviewState:reset()
-  get_state(self).approved = {}
+  local state = get_state(self)
+  for key in pairs(state.approved) do
+    state.removed[key] = true
+  end
+  for key in pairs(state.change_ids) do
+    state.removed[key] = true
+  end
+  state.approved = {}
   self:schedule_save()
 end
 
@@ -265,6 +296,11 @@ local function write_to_disk(self, final)
       change_id = state.change_ids[mark_key],
     }
     objects[record.hash] = record.lines
+  end
+  -- Tombstones only matter for adoption, which goes by change id
+  for mark_key in pairs(state.removed) do
+    local change_id = state.change_ids[mark_key]
+    if change_id then entries[mark_key] = { change_id = change_id } end
   end
 
   persistence.write_objects(self.repo_name, self.branch_name, objects)

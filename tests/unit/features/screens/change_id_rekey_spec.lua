@@ -114,6 +114,47 @@ describe('change_id_rekey', function()
       end)
     end)
 
+    -- `lower` holds a record for (cid, a.lua); `upper` adopts it on open
+    local function adopted_by_upper()
+      local ReviewState = review.fresh_review_state()
+      local lower = ReviewState({ review_type = 'by_commit', branch_name = 'lower', repo_name = 'repo' })
+      lower:set_approved('subj:src/a.lua', { 'approved' }, false, { 'base' })
+      lower:reconcile_change_ids({ item('subj:src/a.lua', 'src/a.lua', cid) })
+      lower:save()
+
+      local upper = ReviewState({ review_type = 'by_commit', branch_name = 'upper', repo_name = 'repo' })
+      upper:reconcile_change_ids({ item('subj:src/a.lua', 'src/a.lua', cid) })
+      eq(upper:get_approved('subj:src/a.lua').lines, { 'approved' })
+      return upper
+    end
+
+    local function reopen_upper()
+      local upper = review.fresh_review_state()({ review_type = 'by_commit', branch_name = 'upper', repo_name = 'repo' })
+      upper:load_from_disk()
+      upper:reconcile_change_ids({ item('subj:src/a.lua', 'src/a.lua', cid) })
+      return upper
+    end
+
+    it('does not adopt a record again after it was unmarked', function()
+      run(function()
+        local upper = adopted_by_upper()
+        upper:remove_approved('subj:src/a.lua')
+        upper:save()
+
+        eq(reopen_upper():get_approved('subj:src/a.lua'), nil)
+      end)
+    end)
+
+    it('does not adopt records again after a reset', function()
+      run(function()
+        local upper = adopted_by_upper()
+        upper:reset()
+        upper:save()
+
+        eq(reopen_upper():get_approved('subj:src/a.lua'), nil)
+      end)
+    end)
+
     it("keeps its own record over another branch's for the same commit", function()
       run(function()
         local sibling = new_state({ branch_name = 'own-sibling', repo_name = 'repo' })
