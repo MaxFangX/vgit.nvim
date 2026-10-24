@@ -122,6 +122,9 @@ local function nearest_by_distance(reponame, candidates)
   return best
 end
 
+-- Mirrors the stored-review resolver's threshold (ReviewPersistence)
+local MIN_SUBJECT_OVERLAP = 2
+
 -- Resolve HEAD's branch from the live bookmarks. In a jj repo git HEAD
 -- is the working copy's parent, which roams as you rewrite history: it can sit
 -- behind the branch bookmark (which doesn't auto-advance with new work), ahead of
@@ -130,9 +133,12 @@ end
 -- unrelated branches (or merged bookmarks parked on the trunk, which inherit the
 -- trunk's proximity), so candidates are ranked by stack identity instead: overlap
 -- of commit subjects past the trunk — the same rewrite-stable identity the review
--- marks are keyed by. Zero overlap disqualifies; nil means no branch claims
--- HEAD's stack. Ties (e.g. a stack and its pristine copy) break by symmetric
--- distance, then by sorted name so the key stays stable.
+-- marks are keyed by. A candidate qualifies by sharing a commit with HEAD past
+-- the trunk, or by the stored-review resolver's subject threshold (one shared
+-- generic subject like "fmt" must not let a stale bookmark claim a new
+-- stack); nil means no branch claims HEAD's stack. Ties (e.g. a stack and its
+-- pristine copy) break by symmetric distance, then by sorted name so the key
+-- stays stable.
 local function branch_for_head_uncached(reponame)
   local refs = gitcli.run({
     '-C', reponame, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/',
@@ -154,30 +160,51 @@ local function branch_for_head_uncached(reponame)
     or (git_branch.exists(reponame, 'master') and 'master')
   if not trunk then return nearest_by_distance(reponame, candidates) end
 
-  local head_subjects = {}
-  local head_lines = gitcli.run({ '-C', reponame, '--no-pager', 'log', '--format=%s', trunk .. '..HEAD' })
-  for _, line in ipairs(head_lines or {}) do
-    if line ~= '' then head_subjects[line] = true end
+  -- Commits past the trunk, as `<hash> <subject>` lines
+  local function log_args(ref)
+    return { '-C', reponame, '--no-pager', 'log', '--format=%H %s', trunk .. '..' .. ref }
+  end
+
+  local head_hashes, head_subjects, head_count = {}, {}, 0
+  for _, line in ipairs(gitcli.run(log_args('HEAD')) or {}) do
+    local hash, subject = line:match('^(%x+) (.*)$')
+    if hash then
+      head_hashes[hash] = true
+      if subject ~= '' and not head_subjects[subject] then
+        head_subjects[subject] = true
+        head_count = head_count + 1
+      end
+    end
   end
 
   local commands = {}
   for _, name in ipairs(candidates) do
-    commands[#commands + 1] = { '-C', reponame, '--no-pager', 'log', '--format=%s', trunk .. '..' .. name }
+    commands[#commands + 1] = log_args(name)
   end
   local results = gitcli.run_parallel(commands)
 
   local best, best_overlap = {}, 0
   for i, name in ipairs(candidates) do
-    local overlap, counted = 0, {}
+    local overlap, subjects, shares_commit, counted = 0, 0, false, {}
     for _, line in ipairs((results[i] and results[i].result) or {}) do
-      if line ~= '' and head_subjects[line] and not counted[line] then
-        counted[line] = true
-        overlap = overlap + 1
+      local hash, subject = line:match('^(%x+) (.*)$')
+      if hash then
+        shares_commit = shares_commit or head_hashes[hash] == true
+        if subject ~= '' and not counted[subject] then
+          counted[subject] = true
+          subjects = subjects + 1
+          if head_subjects[subject] then overlap = overlap + 1 end
+        end
       end
     end
-    if overlap > best_overlap then
-      best, best_overlap = { name }, overlap
-    elseif overlap == best_overlap and overlap > 0 then
+
+    local qualifies = shares_commit
+      or overlap >= MIN_SUBJECT_OVERLAP
+      or (overlap > 0 and overlap == subjects and 2 * overlap >= head_count)
+    local score = qualifies and math.max(overlap, 1) or 0
+    if score > best_overlap then
+      best, best_overlap = { name }, score
+    elseif score == best_overlap and score > 0 then
       best[#best + 1] = name
     end
   end
