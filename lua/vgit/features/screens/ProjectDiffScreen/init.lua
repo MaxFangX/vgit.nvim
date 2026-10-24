@@ -225,6 +225,15 @@ function ProjectDiffScreen:apply_visual_stage_change(stage, top, bot)
     return
   end
 
+  -- A deletion goes whole: a patch of part of it leaves the file half
+  -- deleted (MD), a state this screen neither shows nor finishes right
+  local status = entry.status
+  if status:has('D ') or status:has(' D') then
+    for _, selection in ipairs(selections) do
+      if selection.rows then return self.diff_view:notify('Stage or unstage a deleted file whole') end
+    end
+  end
+
   local filepath = entry.status.filepath
   local predicate = stage and is_unstaged or is_staged
   local next_file, prev_file, first_file = self:find_adjacent_files(filepath, predicate)
