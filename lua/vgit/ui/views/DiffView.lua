@@ -23,8 +23,8 @@ function DiffView:constructor(scene, props, plot, config)
     props = props,
     config = config or {},
     state = DiffView:get_initial_state(),
-    _saved_viewport = nil,  -- Saved viewport for smart positioning across render()
-    _saved_viewport_previous = nil,  -- Saved viewport for previous (split) component
+    -- { current, previous } viewports for the next smart move (see save_viewport)
+    _saved_viewport = nil,
   }
 end
 
@@ -41,12 +41,12 @@ local function capture_viewport(component)
   return viewport
 end
 
--- Save current viewport before render() for smart positioning
+-- Save the viewport before render() for the next smart move to keep
 function DiffView:save_viewport()
-  self._saved_viewport = capture_viewport(self.scene:get('current'))
-  if self.props.layout_type() == 'split' then
-    self._saved_viewport_previous = capture_viewport(self.scene:get('previous'))
-  end
+  self._saved_viewport = {
+    current = capture_viewport(self.scene:get('current')),
+    previous = self.props.layout_type() == 'split' and capture_viewport(self.scene:get('previous')) or nil,
+  }
 end
 
 function DiffView:define()
@@ -183,7 +183,7 @@ function DiffView:render_line_diff(component_type, line_changes, lnum)
   local lnum_change = line_changes.lnum_change
   if not lnum_change then return end
 
-  -- Use the passed lnum (already accounts for padding) instead of lnum_change.lnum
+  -- The rendered row is lnum, not lnum_change.lnum
   local change_type = lnum_change.type
   local sign_name = scene_signs[change_type]
 
@@ -574,6 +574,11 @@ function DiffView:get_hunk_under_cursor()
   if selected then return hunks[selected], selected end
 end
 
+-- The file line number shown on a rendered row, nil for removed rows
+local function file_lnum_of(change)
+  return change and change.line_number and tonumber(change.line_number:match('%d+'))
+end
+
 -- Returns the file line number for the cursor row. A removed row (absent
 -- from the file) maps to the first numbered row below it, which in a change
 -- is the line that replaced it; a removal at the end of the file maps to
@@ -582,47 +587,23 @@ function DiffView:get_file_lnum()
   local lines_changes = self.state.current_lines_changes
   if not lines_changes or #lines_changes == 0 then return nil end
 
-  local function file_lnum_at(i)
-    local entry = lines_changes[i]
-    return entry and entry.line_number and tonumber(entry.line_number:match('%d+'))
-  end
-
   local lnum = math.min(self.scene:get('current'):get_lnum(), #lines_changes)
   for i = lnum, #lines_changes do
-    local file_lnum = file_lnum_at(i)
+    local file_lnum = file_lnum_of(lines_changes[i])
     if file_lnum then return file_lnum end
   end
   for i = lnum - 1, 1, -1 do
-    local file_lnum = file_lnum_at(i)
+    local file_lnum = file_lnum_of(lines_changes[i])
     if file_lnum then return file_lnum end
   end
   return nil
 end
 
--- Check if lnum is visible using saved or current viewport, return viewport info
+-- The viewport (saved, else current) and whether lnum is visible in it
 local function check_visibility(component, lnum, saved_viewport)
-  local viewport = saved_viewport
-  local is_visible = false
-
-  if viewport then
-    -- Use saved viewport, just need window height
-    component.window:call(function()
-      local win_height = vim.fn.winheight(0)
-      local botline = viewport.topline + win_height - 1
-      is_visible = lnum >= viewport.topline and lnum <= botline
-    end)
-  else
-    -- Capture current viewport
-    component.window:call(function()
-      local view = vim.fn.winsaveview()
-      viewport = { topline = view.topline }
-      local win_height = vim.fn.winheight(0)
-      local botline = view.topline + win_height - 1
-      is_visible = lnum >= view.topline and lnum <= botline
-    end)
-  end
-
-  return viewport, is_visible
+  local viewport = saved_viewport or capture_viewport(component)
+  local height = component.window:get_height()
+  return viewport, lnum >= viewport.topline and lnum < viewport.topline + height
 end
 
 -- Move cursor to lnum while preserving scroll position
@@ -647,16 +628,10 @@ function DiffView:set_lnum(lnum, position)
   -- Smart positioning: center only if target line is off-screen
 
   -- Determine visibility using saved viewport (from before render) or current
-  local current_viewport, is_visible = check_visibility(
-    current, lnum, self._saved_viewport
-  )
+  local saved = self._saved_viewport or {}
   self._saved_viewport = nil
-
-  local previous_viewport = nil
-  if previous then
-    previous_viewport = self._saved_viewport_previous or capture_viewport(previous)
-    self._saved_viewport_previous = nil
-  end
+  local current_viewport, is_visible = check_visibility(current, lnum, saved.current)
+  local previous_viewport = previous and (saved.previous or capture_viewport(previous))
 
   -- If off-screen, just center both windows
   if not is_visible then
@@ -712,35 +687,18 @@ function DiffView:set_relative_lnum(lnum, position)
   self:set_lnum(lnum, position)
 end
 
--- Find the diff view line that corresponds to a source file line number
+-- The diff row showing source line `source_lnum`, else the nearest row
+-- above it that shows a line
 function DiffView:find_diff_line_for_source(source_lnum)
-  local lines_changes = self.state.current_lines_changes
-  if not lines_changes or #lines_changes == 0 then return nil end
-
-  -- Search for a line with matching line_number
-  for diff_lnum, entry in ipairs(lines_changes) do
-    if entry and entry.line_number then
-      local file_lnum = tonumber(entry.line_number:match('%d+'))
-      if file_lnum and file_lnum == source_lnum then
-        return diff_lnum
-      end
+  local best_lnum, best_file_lnum = nil, 0
+  for diff_lnum, change in ipairs(self.state.current_lines_changes or {}) do
+    local file_lnum = file_lnum_of(change)
+    if file_lnum == source_lnum then return diff_lnum end
+    if file_lnum and file_lnum < source_lnum and file_lnum > best_file_lnum then
+      best_lnum, best_file_lnum = diff_lnum, file_lnum
     end
   end
-
-  -- Source line not found directly - find nearest line before it
-  local best_diff_lnum = nil
-  local best_source_lnum = 0
-  for diff_lnum, entry in ipairs(lines_changes) do
-    if entry and entry.line_number then
-      local file_lnum = tonumber(entry.line_number:match('%d+'))
-      if file_lnum and file_lnum <= source_lnum and file_lnum > best_source_lnum then
-        best_source_lnum = file_lnum
-        best_diff_lnum = diff_lnum
-      end
-    end
-  end
-
-  return best_diff_lnum
+  return best_lnum
 end
 
 -- Set cursor to the diff line corresponding to a source file line
@@ -861,7 +819,7 @@ function DiffView:move_to_hunk(mark_index, pos)
   if not diff or #diff.marks == 0 then
     -- Drop a viewport saved for this move, or a later, unrelated move would
     -- position by it
-    self._saved_viewport, self._saved_viewport_previous = nil, nil
+    self._saved_viewport = nil
     if diff then self:notify('No changes found') end
     return
   end

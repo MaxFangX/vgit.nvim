@@ -2,17 +2,13 @@ local live_gutter_setting = require('vgit.settings.live_gutter')
 
 local navigation = {}
 
--- Check if target line is visible and move cursor, centering only if off-screen
+-- Move the cursor to new_lnum, centering only if it is off-screen
 local function move_and_position(window, new_lnum)
-  local is_visible = false
+  local topline
   window:call(function()
-    -- Use winsaveview for reliable scroll position
-    local view = vim.fn.winsaveview()
-    local topline = view.topline
-    local win_height = vim.fn.winheight(0)
-    local botline = topline + win_height - 1
-    is_visible = new_lnum >= topline and new_lnum <= botline
+    topline = vim.fn.winsaveview().topline
   end)
+  local is_visible = topline ~= nil and new_lnum >= topline and new_lnum < topline + window:get_height()
   window:set_lnum(new_lnum)
   if not is_visible then window:position_cursor('center') end
 end
