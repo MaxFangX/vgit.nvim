@@ -57,19 +57,22 @@ end
 -- index `i`, into `files`. Stops at the first token that isn't a status (or
 -- the trailing empty token) and returns its index. A rename or copy carries
 -- two paths, source first; git's first status after a log header is
--- preceded by a newline.
+-- preceded by a newline. jj conflict artifacts aren't reviewable changes,
+-- and can number in the thousands, so they are dropped here.
 local function parse_name_status(tokens, i, files)
   while tokens[i] do
     local status = tokens[i]:match('^\n?(%u)%d*$')
     if not status then break end
 
+    local file
     if status == 'R' or status == 'C' then
-      files[#files + 1] = { status = status, old_filepath = tokens[i + 1], filepath = tokens[i + 2] }
+      file = { status = status, old_filepath = tokens[i + 1], filepath = tokens[i + 2] }
       i = i + 3
     else
-      files[#files + 1] = { status = status, filepath = tokens[i + 1] }
+      file = { status = status, filepath = tokens[i + 1] }
       i = i + 2
     end
+    if not jj.is_conflict_artifact(file.filepath) then files[#files + 1] = file end
   end
   return i
 end

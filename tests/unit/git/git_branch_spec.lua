@@ -661,3 +661,17 @@ MSG]])
     cleanup(dir)
   end)
 end)
+
+async.describe('jj conflict artifacts:', function()
+  async.it('are dropped from every file listing', function()
+    local dir = make_repo()
+    sh(dir, 'mkdir .jjconflict-base-0 && printf "c\\n" > .jjconflict-base-0/f.txt')
+    sh(dir, 'printf "r\\n" > JJ-CONFLICT-README')
+    sh(dir, 'printf "b\\n" >> f.txt && git add -A && git commit -q -m conflicted')
+
+    local only_f = { { status = 'M', filepath = 'f.txt' } }
+    eq(git_branch.changed_files(dir, 'HEAD~1', 'HEAD'), only_f)
+    eq(git_branch.review_commits(dir, 'HEAD~1', 'HEAD')[1].files, only_f)
+    cleanup(dir)
+  end)
+end)
