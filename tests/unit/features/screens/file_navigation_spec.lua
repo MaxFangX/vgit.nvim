@@ -226,10 +226,14 @@ describe('file_navigation:', function()
   end)
 
   describe('hunk_past_position', function()
-    local function marks(tops)
-      local out = {}
-      for _, top in ipairs(tops) do
-        out[#out + 1] = { top_relative = top }
+    local GitHunk = require('vgit.git.GitHunk')
+
+    -- A diff of hunks given as { top_relative, old start, old count, new count }
+    local function diff(specs)
+      local out = { marks = {}, hunks = {} }
+      for _, spec in ipairs(specs) do
+        out.marks[#out.marks + 1] = { top_relative = spec[1] }
+        out.hunks[#out.hunks + 1] = GitHunk({ { spec[2], spec[3] }, { spec[1], spec[4] } })
       end
       return out
     end
@@ -237,17 +241,27 @@ describe('file_navigation:', function()
     it('skips the leading remainder of a partially marked hunk', function()
       -- A hunk at lines 2-9 with 4-6 marked splits into remainders at 2-3 and
       -- 7-9: the leading remainder keeps start line 2, so land on 7-9.
-      eq(file_navigation.hunk_past_position(marks({ 2, 7 }), 2), 2)
+      eq(file_navigation.hunk_past_position(diff({ { 2, 2, 2, 2 }, { 7, 7, 3, 3 } }), { top = 2, old = 4 }), 2)
     end)
 
     it('lands on the hunk that slid into a fully marked slot', function()
-      eq(file_navigation.hunk_past_position(marks({ 1, 20 }), 10), 2)
+      eq(file_navigation.hunk_past_position(diff({ { 1, 1, 1, 1 }, { 20, 20, 1, 1 } }), { top = 10, old = 10 }), 2)
     end)
 
     it('returns nil when nothing starts past the mark', function()
       -- Marked the file's last hunk: review moves on to the next file even
       -- though an earlier hunk remains.
-      eq(file_navigation.hunk_past_position(marks({ 2, 10 }), 10), nil)
+      eq(file_navigation.hunk_past_position(diff({ { 2, 2, 1, 1 }, { 10, 10, 1, 1 } }), { top = 10, old = 10 }), nil)
+    end)
+
+    it('lands on what is left of a pure deletion below the marked lines', function()
+      -- Deleting old lines 1-10, 3-4 marked: 8 lines left, renumbered 1-8
+      eq(file_navigation.hunk_past_position(diff({ { 1, 1, 8, 0 } }), { top = 1, old = 3 }), 1)
+    end)
+
+    it('skips what is left of a pure deletion above the marked lines', function()
+      -- Deleting old lines 4-7, 6-7 marked: 4-5 left, then a later hunk
+      eq(file_navigation.hunk_past_position(diff({ { 3, 4, 2, 0 }, { 9, 11, 1, 1 } }), { top = 3, old = 6 }), 2)
     end)
   end)
 end)

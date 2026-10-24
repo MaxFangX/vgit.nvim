@@ -59,14 +59,20 @@ function M.next_of_type(files, id, entry_type)
 end
 
 -- After a mark/unmark rewrites a diff, pick the hunk to land on: the first
--- one starting past where the marked region began (`from_top_relative`, in
--- new-side line numbers), or nil if none does. A partially marked hunk
--- splits, and the remainder above the marked rows keeps the original start
--- line, so the comparison is strict, to land below the marked lines rather
--- than pull the cursor back up.
-function M.hunk_past_position(marks, from_top_relative)
-  for i, mark in ipairs(marks) do
-    if mark.top_relative > from_top_relative then return i end
+-- one past where the marked region began, or nil if none is. `from` is that
+-- point: { top = new-side line (top_relative), old = old-side line }.
+-- A partially marked hunk splits, and the remainder above the marked rows
+-- keeps the original start line, so the new side compares strictly, to land
+-- below the marked lines rather than pull the cursor back up. A pure
+-- deletion has no new-side lines, so whatever is left of one starts at the
+-- same new-side line; it is past the marked region if its old side reaches
+-- the region's start.
+function M.hunk_past_position(diff, from)
+  for i, mark in ipairs(diff.marks) do
+    if mark.top_relative > from.top then return i end
+
+    local previous, current = diff.hunks[i]:parse_header()
+    if mark.top_relative == from.top and current[2] == 0 and previous[1] + previous[2] > from.old then return i end
   end
   return nil
 end

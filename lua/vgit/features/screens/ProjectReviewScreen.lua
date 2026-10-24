@@ -236,13 +236,19 @@ function ProjectReviewScreen:mark(mark_as_seen, selections)
     return
   end
 
-  -- Where the marked region begins, in new-side lines: the top of the last
-  -- selection's hunk (the bottom of a visual range)
-  local from_top = 0
+  -- Where the marked region begins, in the last selection's hunk (the
+  -- bottom of a visual range): that hunk's new-side top, and on the old side
+  -- the first selected line
+  local from = { top = 0, old = 0 }
   local last = selections and selections[#selections]
   local marked_diff = last and self.diff_view:get_diff()
   local mark = marked_diff and marked_diff.marks[last.index]
-  if mark then from_top = mark.top_relative end
+  if mark then
+    local picked = last.rows or last.lines and last.lines.removed or {}
+    local first = next(picked) and math.min(unpack(vim.tbl_keys(picked))) or 1
+    local previous = marked_diff.hunks[last.index]:parse_header()
+    from = { top = mark.top_relative, old = previous[1] + first - 1 }
+  end
 
   local next_id = file_navigation.next_of_type(self.list_view:file_nodes(), entry.id, entry.type)
   self:apply_mark(entry, mark_as_seen, selections)
@@ -250,7 +256,7 @@ function ProjectReviewScreen:mark(mark_as_seen, selections)
   local remaining = self.model:lookup(entry.id)
   if remaining then
     local diff = self.model:get_diff_for(remaining)
-    local hunk = diff and file_navigation.hunk_past_position(diff.marks, from_top)
+    local hunk = diff and file_navigation.hunk_past_position(diff, from)
     if hunk and self:select(entry.id, hunk) then return end
   end
   if self:select(next_id, 1) then return end

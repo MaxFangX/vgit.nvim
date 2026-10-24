@@ -384,6 +384,32 @@ describe('ProjectReviewScreen', function()
       eq({}, errors)
     end)
 
+    for _, layout in ipairs({ 'unified', 'split' }) do
+      it('stays on a deleted file after marking part of it (' .. layout .. ')', function()
+        H.open('file', { layout = layout })
+        H.select('unseen gone.txt', 1)
+        vim.api.nvim_win_set_cursor(0, { 3, 0 })
+        H.keys('Vjs')
+        eq({ 'unseen gone.txt', '1/1 inside' }, { H.entry(), H.hunk() })
+        eq({ { 'gone 3', 'gone 4' }, {} }, H.hunks('seen gone.txt')[1])
+      end)
+
+      it('stays on a pure deletion after marking part of it (' .. layout .. ')', function()
+        -- A fifth x.lua hunk: lines 30-33 deleted
+        local x = vim.fn.readfile(repo .. '/a/x.lua')
+        vim.fn.writefile(vim.list_extend(vim.list_slice(x, 1, 29), vim.list_slice(x, 34)), repo .. '/a/x.lua')
+        run({ 'git', '-C', repo, 'commit', '-qam', 'drop lines' }, repo)
+
+        H.open('file', { layout = layout })
+        H.select('unseen a/x.lua', 3)
+        eq({ { 'x line 30', 'x line 31', 'x line 32', 'x line 33' }, {} }, H.hunks('unseen a/x.lua')[3])
+        H.keys('<Down>')
+        H.keys('Vs')
+        eq({ 'unseen a/x.lua', '3/5 inside' }, { H.entry(), H.hunk() })
+        eq({ { 'x line 30', 'x line 32', 'x line 33' }, {} }, H.hunks('unseen a/x.lua')[3])
+      end)
+    end
+
     it('S marks the file and moves to the next unseen file', function()
       H.open('file')
       H.keys('S')
