@@ -99,6 +99,19 @@ describe('ReviewModel reconcile:', function()
     eq(added, { 'K1' })
   end)
 
+  it('shows nothing unseen once an approved insertion moves into the base', function()
+    -- Approve all of a commit that inserts log() and x()
+    local old_base = { 'fn a() {', '}', 'fn b() {', '}' }
+    local current = { 'fn a() {', '  log()', '}', 'fn b() {', '  x()', '}' }
+    local model = make_model({ base = old_base, current = current })
+    model:mark_file(unseen_entry())
+
+    -- log() is absorbed into the parent; the commit's content is unchanged
+    model = make_model({ base = { 'fn a() {', '  log()', '}', 'fn b() {', '}' }, current = current })
+    eq(#model:get_diff_for(unseen_entry()).hunks, 0)
+    eq(model:get_diff_for(seen_entry()).hunks[1].diff, { '+  x()' })
+  end)
+
   it('removes the record entirely when every approved hunk conflicts', function()
     local old_base = { 'a', 'b', 'c' }
     local old_current = { 'a', 'B', 'c' }

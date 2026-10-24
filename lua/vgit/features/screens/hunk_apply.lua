@@ -108,12 +108,14 @@ end
 -- new_base[p .. p+c-1]. For pure insertions (c == 0), position q means
 -- "insert after line q" and at least one context line must match — except
 -- for an empty old_base, which only maps onto an equally empty new_base.
-local function locate_region(old_base, new_base, s, c, removed, min_pos)
-  local best_pos, best_score
-  local function consider(pos, score)
+-- An insertion whose lines new_base already has between its context (say it
+-- was squashed into the parent) matches as applied, the second return value.
+local function locate_region(old_base, new_base, s, c, removed, added, min_pos)
+  local best_pos, best_score, best_applied
+  local function consider(pos, score, applied)
     if best_score == nil or score > best_score
         or (score == best_score and math.abs(pos - s) < math.abs(best_pos - s)) then
-      best_pos, best_score = pos, score
+      best_pos, best_score, best_applied = pos, score, applied
     end
   end
 
@@ -133,11 +135,17 @@ local function locate_region(old_base, new_base, s, c, removed, min_pos)
   end
 
   for q = math.max(0, min_pos - 1), #new_base do
-    local score = context_score(old_base, new_base, s, q, -1)
-      + context_score(old_base, new_base, s + 1, q + 1, 1)
-    if score > 0 then consider(q, score) end
+    local above = context_score(old_base, new_base, s, q, -1)
+    local score = above + context_score(old_base, new_base, s + 1, q + 1, 1)
+    if score > 0 then consider(q, score, false) end
+
+    -- Considered after the plain insertion at q, so it wins only on more context
+    if block_matches(new_base, q + 1, added) then
+      local applied_score = above + context_score(old_base, new_base, s + 1, q + #added + 1, 1)
+      if applied_score > score then consider(q, applied_score, true) end
+    end
   end
-  return best_pos
+  return best_pos, best_applied
 end
 
 -- Re-play diff(old_base -> approved) onto new_base: the index analog of a
@@ -156,7 +164,9 @@ function hunk_apply.rebase(hunks, old_base, new_base)
     local removed, added = hunk:parse_diff()
     local s, c = previous[1], previous[2]
 
-    local pos = locate_region(old_base, new_base, s, c, removed, min_pos)
+    local pos, applied = locate_region(old_base, new_base, s, c, removed, added, min_pos)
+    -- An applied insertion keeps new_base's copy: insert nothing after it
+    if applied then pos, added = pos + #added, {} end
     if pos then
       matched[#matched + 1] = { pos = pos, count = c, added = added }
       min_pos = c > 0 and pos + c or pos + 1

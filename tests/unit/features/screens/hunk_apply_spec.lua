@@ -199,6 +199,25 @@ describe('hunk_apply:', function()
       eq(dropped, 0)
     end)
 
+    it('keeps a pure insertion the new base already has', function()
+      -- The approved log() was squashed into the parent commit
+      local old_base = { 'fn a() {', '}', 'fn b() {', '}' }
+      local approved = { 'fn a() {', '  log()', '}', 'fn b() {', '}' }
+      local new_base = { 'fn a() {', '  log()', '}', 'fn b() {', '  x()', '}' }
+
+      local out, dropped = rebase(old_base, approved, new_base)
+      eq(out, new_base)
+      eq(dropped, 0)
+    end)
+
+    it('still inserts a line repeating its neighbor', function()
+      local old_base = { 'a', '}', 'b', 'c' }
+      local approved = { 'a', '}', '}', 'b', 'c' }
+      local new_base = { 'z', 'a', '}', 'b', 'c' }
+
+      eq(rebase(old_base, approved, new_base), { 'z', 'a', '}', '}', 'b', 'c' })
+    end)
+
     it('drops a pure insertion whose context vanished', function()
       local old_base = { 'a', 'b', 'c' }
       local approved = { 'a', 'b', 'inserted', 'c' }
@@ -275,6 +294,27 @@ describe('hunk_apply:', function()
         local out, dropped = rebase(a, b, a)
         eq(out, b)
         eq(dropped, 0)
+      end
+    end)
+
+    it('reproduces a base that already has the approved delta', function()
+      local seed = 2024
+      local function rand(n)
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        return (seed % n) + 1
+      end
+
+      -- Unique lines, so a dropped hunk can't find its region elsewhere
+      for i = 1, 100 do
+        local a, b = {}, {}
+        for j = 1, rand(30) do a[#a + 1] = 'line' .. j end
+        for j = 1, #a do
+          local choice = rand(4)
+          if choice == 1 then b[#b + 1] = string.format('new%d.%d', i, j) end
+          if choice ~= 2 then b[#b + 1] = a[j] end
+        end
+
+        eq(rebase(a, b, b), b)
       end
     end)
   end)
