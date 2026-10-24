@@ -5,13 +5,13 @@ local fs = require('vgit.core.fs')
   (repo, branch, review type), with each approved snapshot stored once as a
   content-addressed object under the branch:
 
-    $XDG_DATA_HOME/vgit/<repo>/<branch>/<type>.json
-    $XDG_DATA_HOME/vgit/<repo>/<branch>/objects/<sha256>
+    $XDG_STATE_HOME/vgit/<repo>/<branch>/<type>.json
+    $XDG_STATE_HOME/vgit/<repo>/<branch>/objects/<sha256>
 
   with / in branch keys encoded as --. Sessions on different vgit versions
   share these files, so the format only grows compatibly (see the v1 pin in
-  the spec). Every read here uses only libuv, io and vim.json, so it is safe
-  in fast event contexts.
+  the spec). Everything here uses only libuv, io and vim.json, except where
+  noted, so it is safe in fast event contexts.
 ]]
 
 local review_persistence = {}
@@ -23,107 +23,16 @@ local MAX_BRANCHES = 128
 -- references from each.
 local REVIEW_TYPES = { 'by_file', 'by_commit' }
 
--- Prefers env vars over vim.fn.expand, which isn't fast-event safe
-local function get_data_home()
-  local xdg = os.getenv('XDG_DATA_HOME')
-  if xdg and xdg ~= '' then
-    return xdg
-  end
-  local home = os.getenv('HOME')
-  if home and home ~= '' then
-    return home .. '/.local/share'
-  end
-  return vim.fn.expand('~/.local/share')
+-- $<var>, else ~/<default>. Reads env vars, as vim.fn.expand isn't
+-- fast-event safe.
+local function xdg_dir(var, default)
+  local dir = os.getenv(var)
+  if dir and dir ~= '' then return dir end
+  return (os.getenv('HOME') or vim.loop.os_homedir()) .. '/' .. default
 end
 
 local function encode_branch(name)
   return (name:gsub('/', '--'))
-end
-
--- Migration (added 2026-10-23): review state moved from <type>_indexed.json
--- to <type>.json, replacing any file there in the old marks format, which
--- has no `entries`. Sessions still running pre-rename code sweep objects by
--- the _indexed file's references alone, so removing it would let them
--- delete that review's snapshots. Thus it is copied, not moved. Such a
--- session can also keep writing the _indexed file, so it is copied again
--- whenever it is newer. Uses libuv and io only, so it is safe in fast event
--- contexts.
--- Delete this block, its call in get_state_dir, and the _indexed refs in
--- referenced_hashes once no session runs pre-rename code; delete leftover
--- _indexed files then too.
-
--- Whether stat result `a` has a newer mtime than `b`
-local function is_newer(a, b)
-  if a.mtime.sec ~= b.mtime.sec then return a.mtime.sec > b.mtime.sec end
-  return a.mtime.nsec > b.mtime.nsec
-end
-
--- Whether the state file at `path` is in the current format (has entries)
-local function has_entries(path)
-  local fd = io.open(path, 'r')
-  if not fd then return false end
-  local content = fd:read('*a')
-  fd:close()
-
-  local ok, data = pcall(vim.json.decode, content)
-  return ok and type(data) == 'table' and type(data.entries) == 'table'
-end
-
--- Copy `from` over `to` atomically, so a crash can't leave a truncated file
-local function copy_file(from, to)
-  local fd = io.open(from, 'rb')
-  if not fd then return end
-  local content = fd:read('*a')
-  fd:close()
-
-  -- write_file_atomic terminates each line with '\n'
-  if content:sub(-1) == '\n' then content = content:sub(1, -2) end
-  fs.write_file_atomic(to, { content })
-end
-
--- State dirs already migrated this session
-local migrated = {}
-
--- Copy each branch's <type>_indexed.json over <type>.json unless the latter
--- is already in the new format and at least as new. Once per state dir.
-local function migrate_indexed_names(state_dir)
-  if migrated[state_dir] then return end
-  migrated[state_dir] = true
-
-  local handle = vim.loop.fs_scandir(state_dir)
-  if not handle then return end
-
-  while true do
-    local entry, entry_type = vim.loop.fs_scandir_next(handle)
-    if not entry then break end
-    if entry_type == 'directory' then
-      for _, review_type in ipairs(REVIEW_TYPES) do
-        local path = string.format('%s/%s/%s.json', state_dir, entry, review_type)
-        local old_path = string.format('%s/%s/%s_indexed.json', state_dir, entry, review_type)
-        local old_stat = vim.loop.fs_stat(old_path)
-        local stat = old_stat and vim.loop.fs_stat(path)
-        if old_stat and (not stat or is_newer(old_stat, stat) or not has_entries(path)) then
-          copy_file(old_path, path)
-        end
-      end
-    end
-  end
-end
-
--- The state directory of a repo. Every path into a repo's state comes
--- through here, so this runs the name migration before anything reads it.
-local function get_state_dir(repo_key)
-  local state_dir = get_data_home() .. '/vgit/' .. repo_key
-  migrate_indexed_names(state_dir)
-  return state_dir
-end
-
-function review_persistence.get_state_path(repo_key, branch_key, review_type)
-  return string.format('%s/%s/%s.json', get_state_dir(repo_key), encode_branch(branch_key), review_type)
-end
-
-local function get_objects_dir(repo_key, branch_key)
-  return string.format('%s/%s/objects', get_state_dir(repo_key), encode_branch(branch_key))
 end
 
 -- Iterates (name, type) over the entries of `dir`; nothing if it can't be read
@@ -134,11 +43,164 @@ local function each_dir_entry(dir)
   end
 end
 
--- Returns nil, err on failure
+-- mkdir -p. Returns nil, err on failure.
 local function ensure_dir(dir)
-  if vim.fn.mkdir(dir, 'p') == 0 and vim.fn.isdirectory(dir) == 0 then
-    return nil, { string.format('Failed to create %s', dir) }
+  if vim.loop.fs_stat(dir) then return end
+  local parent = dir:match('^(.+)/[^/]+$')
+  if parent then
+    local _, err = ensure_dir(parent)
+    if err then return nil, err end
   end
+
+  local ok, mkdir_err, err_name = vim.loop.fs_mkdir(dir, 493)
+  if not ok and err_name ~= 'EEXIST' then
+    return nil, { string.format('Failed to create %s: %s', dir, mkdir_err) }
+  end
+end
+
+-- Write `content` to `path` byte for byte, through a temp file of this
+-- process, so readers never see a partial file. The temp file is renamed
+-- over `path`, or with `exclusive`, linked to it only if `path` doesn't
+-- exist yet. Returns nil, err on failure.
+local function write_raw_atomic(path, content, exclusive)
+  local tmp = string.format('%s.%d.tmp', path, vim.loop.os_getpid())
+  local fd, open_err = io.open(tmp, 'wb')
+  if not fd then return nil, { open_err } end
+  local ok, write_err = fd:write(content)
+  local closed, close_err = fd:close()
+
+  local published, publish_err
+  if ok and closed then
+    if exclusive then
+      published, publish_err = vim.loop.fs_link(tmp, path)
+    else
+      published, publish_err = os.rename(tmp, path)
+    end
+  end
+  os.remove(tmp)
+  if not published then return nil, { write_err or close_err or publish_err } end
+  return true
+end
+
+local function read_raw(path)
+  local fd = io.open(path, 'rb')
+  if not fd then return nil end
+  local content = fd:read('*a')
+  fd:close()
+  return content
+end
+
+--[[
+  Migration (added 2026-10-23). Review state used to live in
+  $XDG_DATA_HOME/vgit/<repo>/<branch>/<type>_indexed.json and objects/,
+  where sessions still running older vgit read, write and sweep it: their
+  sweeps delete objects only newer state references, and their classic
+  screens overwrite <type>.json in another format. So state moved to its own
+  tree, which old code never touches, and each repo's reviews are copied
+  over once: the first time a session accesses a repo whose new state dir
+  has no MIGRATED_MARKER, every <type>_indexed.json in the index format
+  (version 1, with entries) whose review has no state file in the new tree
+  yet is copied there, keeping its mtime (eviction's last-used order), after
+  hard-linking (or copying) every object it references into the new
+  objects/. A referenced object already gone from the old tree just loads as
+  missing. The marker is written last, so an interrupted migration retries.
+
+  The copy is one-time, and the old tree is never written: old sessions own
+  it. From then on the trees are independent, so marks an old session makes
+  later stay in the old tree, and reviews evicted from the new tree stay
+  gone. To remove this, delete this block and its call in get_state_dir, and
+  optionally the old tree and the markers.
+]]
+
+-- In a repo's new state dir, once its old-tree reviews are copied over. A
+-- file, so the branch-dir walks skip it.
+local MIGRATED_MARKER = '.migrated'
+
+-- Repo state dirs checked this session
+local migrated = {}
+
+-- Hard-link, else copy, the object `hash` from objects dir `from` into `to`,
+-- unless `to` has it or `from` doesn't
+local function link_object(from, to, hash)
+  local source, target = from .. '/' .. hash, to .. '/' .. hash
+  if vim.loop.fs_stat(target) or not vim.loop.fs_stat(source) then return end
+  if vim.loop.fs_link(source, target) then return end
+
+  local content = read_raw(source)
+  if content then write_raw_atomic(target, content) end
+end
+
+-- Copy the old tree's `<type>_indexed.json` at `old_path` to `new_path`
+-- with its objects (see above), if it is in the index format. Returns false
+-- if it should have been copied but wasn't.
+local function migrate_review(old_branch_dir, new_branch_dir, old_path, new_path)
+  local content = read_raw(old_path)
+  local ok, data = pcall(vim.json.decode, content or '')
+  if not ok or type(data) ~= 'table' or data.version ~= 1 or type(data.entries) ~= 'table' then return true end
+
+  local old_objects, new_objects = old_branch_dir .. '/objects', new_branch_dir .. '/objects'
+  local _, err = ensure_dir(new_objects)
+  if err then return false end
+  local function link(hash)
+    if type(hash) == 'string' then link_object(old_objects, new_objects, hash) end
+  end
+  for _, entry in pairs(data.entries) do
+    if type(entry) == 'table' then
+      link(entry.approved)
+      link(entry.base)
+    end
+  end
+
+  -- Last, so the new state file never references an object not yet there.
+  -- Exclusive, as another session may have saved this review meanwhile.
+  if not write_raw_atomic(new_path, content, true) then return vim.loop.fs_stat(new_path) ~= nil end
+
+  local old_stat = vim.loop.fs_stat(old_path)
+  if old_stat then
+    local mtime = old_stat.mtime.sec + old_stat.mtime.nsec / 1e9
+    vim.loop.fs_utime(new_path, mtime, mtime)
+  end
+  return true
+end
+
+local function migrate_old_tree(repo_key, state_dir)
+  if migrated[state_dir] then return end
+  migrated[state_dir] = true
+  local marker = state_dir .. '/' .. MIGRATED_MARKER
+  if vim.loop.fs_stat(marker) then return end
+
+  local old_dir = xdg_dir('XDG_DATA_HOME', '.local/share') .. '/vgit/' .. repo_key
+  local complete = true
+  for name, entry_type in each_dir_entry(old_dir) do
+    if entry_type == 'directory' then
+      for _, review_type in ipairs(REVIEW_TYPES) do
+        local new_path = string.format('%s/%s/%s.json', state_dir, name, review_type)
+        local old_path = string.format('%s/%s/%s_indexed.json', old_dir, name, review_type)
+        if not vim.loop.fs_stat(new_path) and vim.loop.fs_stat(old_path) then
+          complete = migrate_review(old_dir .. '/' .. name, state_dir .. '/' .. name, old_path, new_path) and complete
+        end
+      end
+    end
+  end
+
+  -- Last, so a failed or interrupted migration retries next session
+  if complete and not select(2, ensure_dir(state_dir)) then write_raw_atomic(marker, '') end
+end
+
+-- The state directory of a repo. Every path into a repo's state comes
+-- through here, so this runs the migration before anything reads it.
+local function get_state_dir(repo_key)
+  local state_dir = xdg_dir('XDG_STATE_HOME', '.local/state') .. '/vgit/' .. repo_key
+  migrate_old_tree(repo_key, state_dir)
+  return state_dir
+end
+
+function review_persistence.get_state_path(repo_key, branch_key, review_type)
+  return string.format('%s/%s/%s.json', get_state_dir(repo_key), encode_branch(branch_key), review_type)
+end
+
+local function get_objects_dir(repo_key, branch_key)
+  return string.format('%s/%s/objects', get_state_dir(repo_key), encode_branch(branch_key))
 end
 
 -- Identifies one version of a file: a rewrite creates a new inode, so this
@@ -167,9 +229,7 @@ end
 ]]
 local function decode(data)
   local state_file = { branch_key = data.branchName, records = {}, removed = {} }
-  -- A file in the old marks format has no entries
-  local entries = type(data.entries) == 'table' and data.entries or {}
-  for key, entry in pairs(entries) do
+  for key, entry in pairs(data.entries) do
     if type(entry) == 'table' and type(entry.approved) == 'string' then
       state_file.records[key] = {
         hash = entry.approved,
@@ -206,6 +266,7 @@ local function read_state_file(path)
   if data.version ~= CURRENT_VERSION then
     return nil, { string.format('Unknown schema version %s in %s', tostring(data.version), path) }
   end
+  if type(data.entries) ~= 'table' then return nil, { string.format('No review entries in %s', path) } end
   return decode(data)
 end
 
@@ -347,15 +408,11 @@ end
 local function referenced_hashes(repo_key, branch_key)
   local referenced = {}
   for _, review_type in ipairs(REVIEW_TYPES) do
-    -- Migration: a pre-rename session may have written approvals to the
-    -- _indexed file since this session copied it to <type>.json.
-    for _, name in ipairs({ review_type, review_type .. '_indexed' }) do
-      local state_file, err = review_persistence.load(repo_key, branch_key, name)
-      if err then return nil end
-      for _, ref in pairs(state_file and state_file.records or {}) do
-        referenced[ref.hash] = true
-        if ref.base_hash then referenced[ref.base_hash] = true end
-      end
+    local state_file, err = review_persistence.load(repo_key, branch_key, review_type)
+    if err then return nil end
+    for _, ref in pairs(state_file and state_file.records or {}) do
+      referenced[ref.hash] = true
+      if ref.base_hash then referenced[ref.base_hash] = true end
     end
   end
   return referenced

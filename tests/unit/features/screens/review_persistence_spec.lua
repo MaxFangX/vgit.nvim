@@ -53,22 +53,22 @@ describe('ReviewModel.branch_by_subjects:', function()
   local homes = use_temp_homes()
 
   it('picks the review with the most overlap with HEAD subjects', function()
-    write_review(homes.data, 'feature', { 's1', 's2', 's3' }, 100)
-    write_review(homes.data, 'other', { 's3', 'x9' }, 200)
+    write_review(homes.state, 'feature', { 's1', 's2', 's3' }, 100)
+    write_review(homes.state, 'other', { 's3', 'x9' }, 200)
 
     -- feature shares s1,s2,s3 (3); other shares only s3 (1).
     eq(ReviewModel.branch_by_subjects('repo', { s1 = true, s2 = true, s3 = true }), 'feature')
   end)
 
   it('breaks equal overlap toward the most recently used review', function()
-    write_review(homes.data, 'older', { 's1', 's2' }, 100)
-    write_review(homes.data, 'newer', { 's1', 's2' }, 200)
+    write_review(homes.state, 'older', { 's1', 's2' }, 100)
+    write_review(homes.state, 'newer', { 's1', 's2' }, 200)
 
     eq(ReviewModel.branch_by_subjects('repo', { s1 = true, s2 = true }), 'newer')
   end)
 
   it('returns nil when overlap is below the threshold (coincidental)', function()
-    write_review(homes.data, 'feature', { 's1', 's2', 's3' }, 100)
+    write_review(homes.state, 'feature', { 's1', 's2', 's3' }, 100)
 
     -- One shared subject isn't enough to claim HEAD
     eq(ReviewModel.branch_by_subjects('repo', { s1 = true, z = true }), nil)
@@ -84,7 +84,7 @@ describe('review_persistence.evict_lru:', function()
 
   -- Create a branch dir holding a state file with the given mtime (seconds).
   local function write_branch(name, mtime)
-    local dir = homes.data .. '/vgit/repo/' .. name
+    local dir = homes.state .. '/vgit/repo/' .. name
     vim.fn.mkdir(dir, 'p')
     local path = dir .. '/by_commit.json'
     vim.fn.writefile({ '{}' }, path)
@@ -123,8 +123,8 @@ describe('review_persistence.evict_lru:', function()
   end)
 
   it('prunes empty branch dirs but keeps ones with other content', function()
-    local empty = homes.data .. '/vgit/repo/empty'
-    local objects_only = homes.data .. '/vgit/repo/objects-only/objects'
+    local empty = homes.state .. '/vgit/repo/empty'
+    local objects_only = homes.state .. '/vgit/repo/objects-only/objects'
     vim.fn.mkdir(empty, 'p')
     vim.fn.mkdir(objects_only, 'p')
     write_branch('live', 1000)
@@ -140,151 +140,193 @@ describe('review_persistence.evict_lru:', function()
   end)
 end)
 
-describe('review_persistence name migration:', function()
-  -- A fresh data home per spec, so the per-state-dir memo never carries over
+describe('review_persistence migration from the old tree:', function()
+  -- Fresh homes per spec, so the per-session memo never carries over
   local homes = use_temp_homes()
-  local dir
+  local old_dir, new_dir
 
   before_each(function()
-    dir = homes.data .. '/vgit/repo/feature'
-    vim.fn.mkdir(dir, 'p')
+    old_dir = homes.data .. '/vgit/repo/feature'
+    new_dir = homes.state .. '/vgit/repo/feature'
+    vim.fn.mkdir(old_dir .. '/objects', 'p')
   end)
 
-  -- Write a state file under the branch dir with the given contents and
-  -- mtime (seconds).
-  local function write_state(name, data, mtime)
-    local path = dir .. '/' .. name
-    vim.fn.writefile({ vim.fn.json_encode(vim.tbl_extend('force', { version = 1, branchName = 'feature' }, data)) }, path)
-    vim.loop.fs_utime(path, mtime, mtime)
-  end
-
-  local function approved(entries_key, hash)
-    return { entries = { [entries_key] = { approved = hash } } }
+  local function write_old(name, data)
+    local file = vim.tbl_extend('force', { version = 1, branchName = 'feature' }, data)
+    vim.fn.writefile({ vim.fn.json_encode(file) }, old_dir .. '/' .. name)
   end
 
   -- Objects named as given rather than by their hash
-  local function write_objects(objects)
-    vim.fn.mkdir(dir .. '/objects', 'p')
+  local function write_old_objects(objects)
     for name, lines in pairs(objects) do
-      vim.fn.writefile(lines, dir .. '/objects/' .. name)
+      fs.write_file(old_dir .. '/objects/' .. name, lines)
     end
   end
 
-  local function read(name)
-    local fd = assert(io.open(dir .. '/' .. name, 'rb'))
+  local function read(path)
+    local fd = io.open(path, 'rb')
+    if not fd then return nil end
     local content = fd:read('*a')
     fd:close()
     return content
   end
 
-  local function exists(name)
-    return vim.loop.fs_stat(dir .. '/' .. name) ~= nil
-  end
-
-  -- The approved hash of each record in a review's state file
-  local function load_entries(review_type)
-    return vim.tbl_map(function(ref) return ref.hash end, persistence.load('repo', 'feature', review_type).records)
-  end
-
-  it('copies an _indexed file when no state file exists, keeping the original', function()
-    write_state('by_commit_indexed.json', approved('s:a.lua', 'old'), 1000)
-
-    eq(load_entries('by_commit'), { ['s:a.lua'] = 'old' })
-    eq(read('by_commit.json'), read('by_commit_indexed.json'))
-  end)
-
-  it('replaces an old marks-format file, even a newer one', function()
-    write_state('by_file.json', { marks = { ['a.lua:cid'] = true } }, 2000)
-    write_state('by_file_indexed.json', approved('a.lua', 'old'), 1000)
-
-    eq(load_entries('by_file'), { ['a.lua'] = 'old' })
-    eq(exists('by_file_indexed.json'), true)
-  end)
-
-  it('replaces an older current-format file', function()
-    write_state('by_commit.json', approved('s:a.lua', 'new'), 1000)
-    write_state('by_commit_indexed.json', approved('s:a.lua', 'old'), 2000)
-
-    eq(load_entries('by_commit'), { ['s:a.lua'] = 'old' })
-  end)
-
-  it('keeps a current-format file that is as new or newer', function()
-    write_state('by_commit.json', approved('s:a.lua', 'new'), 2000)
-    write_state('by_commit_indexed.json', approved('s:a.lua', 'old'), 1000)
-    write_state('by_file.json', approved('a.lua', 'new'), 1000)
-    write_state('by_file_indexed.json', approved('a.lua', 'old'), 1000)
-
-    eq(load_entries('by_commit'), { ['s:a.lua'] = 'new' })
-    eq(load_entries('by_file'), { ['a.lua'] = 'new' })
-    eq(exists('by_commit_indexed.json'), true)
-  end)
-
-  it('writes the copy atomically through a temp file', function()
-    local writes = {}
-    local write_file_atomic = fs.write_file_atomic
-    fs.write_file_atomic = function(path, lines)
-      writes[#writes + 1] = path
-      return write_file_atomic(path, lines)
+  -- Every file of the old tree, with its contents and mtime
+  local function old_tree()
+    local files = {}
+    for _, path in ipairs(vim.fn.globpath(homes.data, '**', false, true)) do
+      local stat = vim.loop.fs_stat(path)
+      if stat.type == 'file' then files[path] = { read(path), stat.mtime.sec, stat.mtime.nsec } end
     end
-    write_state('by_commit_indexed.json', approved('s:a.lua', 'old'), 1000)
+    return files
+  end
 
-    local ok, err = pcall(load_entries, 'by_commit')
-    fs.write_file_atomic = write_file_atomic
-    assert(ok, err)
-    eq(writes, { dir .. '/by_commit.json' })
-    eq(vim.fn.glob(dir .. '/*.tmp'), '')
+  local function fresh_persistence()
+    package.loaded['vgit.features.screens.review_persistence'] = nil
+    local fresh = require('vgit.features.screens.review_persistence')
+    package.loaded['vgit.features.screens.review_persistence'] = persistence
+    return fresh
+  end
+
+  local function hashes(review_type, module)
+    local state_file = (module or persistence).load('repo', 'feature', review_type)
+    return state_file and vim.tbl_map(function(ref) return ref.hash end, state_file.records)
+  end
+
+  it('copies an _indexed review and hard-links the objects it references', function()
+    write_old('by_commit_indexed.json', { entries = { ['s:a.lua'] = { approved = 'appr', base = 'base' } } })
+    write_old_objects({ appr = { 'a' }, base = { 'b' }, other = { 'o' } })
+    local before = old_tree()
+
+    eq(hashes('by_commit'), { ['s:a.lua'] = 'appr' })
+    eq(read(new_dir .. '/by_commit.json'), read(old_dir .. '/by_commit_indexed.json'))
+    eq(vim.loop.fs_stat(new_dir .. '/objects/appr').ino, vim.loop.fs_stat(old_dir .. '/objects/appr').ino)
+    eq(persistence.read_object('repo', 'feature', 'base'), { 'b' })
+    eq(persistence.read_object('repo', 'feature', 'other'), nil)
+    eq(old_tree(), before)
   end)
 
-  it('copies again once a pre-rename session rewrites the _indexed file', function()
-    write_state('by_commit_indexed.json', approved('s:a.lua', 'first'), 1000)
-    eq(load_entries('by_commit'), { ['s:a.lua'] = 'first' })
+  it('copies the objects it cannot link', function()
+    write_old('by_file_indexed.json', { entries = { ['a.lua'] = { approved = 'appr', base = 'empty' } } })
+    write_old_objects({ appr = { 'a', '\0b' }, empty = {} })
+    local fs_link = vim.loop.fs_link
+    vim.loop.fs_link = function() return nil, 'EXDEV: cross-device link not permitted', 'EXDEV' end
 
-    -- An old-code session saves after the copy; a later session (fresh
-    -- memo, here a fresh module) picks the newer _indexed file up.
-    write_state('by_commit_indexed.json', approved('s:a.lua', 'second'), os.time() + 60)
-    package.loaded['vgit.features.screens.review_persistence'] = nil
-    local ok, fresh = pcall(require, 'vgit.features.screens.review_persistence')
-    package.loaded['vgit.features.screens.review_persistence'] = persistence
-    assert(ok, fresh)
-    eq(fresh.load('repo', 'feature', 'by_commit').records['s:a.lua'].hash, 'second')
+    local ok, err = pcall(hashes, 'by_file')
+    vim.loop.fs_link = fs_link
+    assert(ok, err)
+    for _, name in ipairs({ 'appr', 'empty' }) do
+      eq(read(new_dir .. '/objects/' .. name), read(old_dir .. '/objects/' .. name))
+    end
+    eq(vim.fn.glob(new_dir .. '/**/*.tmp'), '')
+  end)
+
+  it('copies each review once, never what old code writes later', function()
+    write_old('by_file_indexed.json', { entries = { ['a.lua'] = { approved = 'first' } } })
+    eq(hashes('by_file'), { ['a.lua'] = 'first' })
+
+    -- An old session saves again, and a later session starts
+    write_old('by_file_indexed.json', { entries = { ['a.lua'] = { approved = 'second' } } })
+    eq(hashes('by_file', fresh_persistence()), { ['a.lua'] = 'first' })
+  end)
+
+  it('migrates each repo once, then never again', function()
+    hashes('by_file')
+    write_old('by_file_indexed.json', { entries = { ['a.lua'] = { approved = 'appr' } } })
+    eq(hashes('by_file'), nil)
+    eq(hashes('by_file', fresh_persistence()), nil)
+  end)
+
+  it('retries a migration that never finished', function()
+    write_old('by_file_indexed.json', { entries = { ['a.lua'] = { approved = 'appr' } } })
+    hashes('by_file')
+    -- As if the session died after copying a review, before the marker
+    vim.fn.delete(homes.state .. '/vgit/repo/.migrated')
+    write_old('by_commit_indexed.json', { entries = { ['s:a.lua'] = { approved = 'appr' } } })
+
+    eq(hashes('by_commit', fresh_persistence()), { ['s:a.lua'] = 'appr' })
+  end)
+
+  it('writes the marker last', function()
+    write_old('by_file_indexed.json', { entries = { ['a.lua'] = { approved = 'appr' } } })
+    write_old_objects({ appr = { 'a' } })
+    local writes, open = {}, io.open
+    io.open = function(path, mode)
+      if mode == 'wb' then writes[#writes + 1] = vim.fn.fnamemodify(path, ':t'):gsub('%.%d+%.tmp$', '') end
+      return open(path, mode)
+    end
+    local ok, err = pcall(hashes, 'by_file')
+    io.open = open
+    assert(ok, err)
+    eq(writes[#writes], '.migrated')
+    eq(#writes > 1, true)
+  end)
+
+  it('keeps the old files\' mtimes, which order eviction', function()
+    write_old('by_file_indexed.json', { entries = { ['a.lua'] = { approved = 'appr' } } })
+    vim.loop.fs_utime(old_dir .. '/by_file_indexed.json', 1000, 1000)
+    hashes('by_file')
+    eq(vim.loop.fs_stat(new_dir .. '/by_file.json').mtime.sec, 1000)
+  end)
+
+  it('does not bring back reviews eviction removed', function()
+    for i = 1, 130 do
+      local dir = homes.data .. '/vgit/repo/b' .. i
+      vim.fn.mkdir(dir, 'p')
+      local file = { version = 1, branchName = 'b' .. i, entries = {} }
+      vim.fn.writefile({ vim.fn.json_encode(file) }, dir .. '/by_file_indexed.json')
+      vim.loop.fs_utime(dir .. '/by_file_indexed.json', 1000 + i, 1000 + i)
+    end
+    local function branches()
+      return #vim.fn.glob(homes.state .. '/vgit/repo/b*', false, true)
+    end
+
+    persistence.evict_lru('repo')
+    eq(branches(), 128)
+    -- The oldest two went
+    eq(vim.fn.isdirectory(homes.state .. '/vgit/repo/b2'), 0)
+
+    fresh_persistence().evict_lru('repo')
+    eq(branches(), 128)
+  end)
+
+  it('copies nothing but the index format', function()
+    write_old('by_file.json', { marks = { ['a.lua:cid'] = true } })
+    write_old('by_commit_indexed.json', { marks = { ['a.lua:cid'] = true } })
+
+    eq({ hashes('by_file'), hashes('by_commit') }, {})
+    eq(vim.fn.glob(new_dir .. '/*'), '')
   end)
 
   it('runs from the branch resolver too', function()
-    write_state('by_commit_indexed.json', { lastUsed = 100, entries = { ['s1:a.lua'] = { approved = 'h' } } }, 1000)
+    write_old('by_commit_indexed.json', { entries = { ['s1:a.lua'] = { approved = 'h' } } })
 
     eq(ReviewModel.branch_by_subjects('repo', { s1 = true }), 'feature')
-    eq(read('by_commit.json'), read('by_commit_indexed.json'))
   end)
+end)
 
-  it('runs at most once per session', function()
-    write_state('by_commit_indexed.json', approved('s:a.lua', 'first'), 1000)
-    load_entries('by_commit')
+describe('review_persistence.sweep_objects:', function()
+  local homes = use_temp_homes()
+  local dir
 
-    write_state('by_commit_indexed.json', approved('s:a.lua', 'second'), os.time() + 60)
-    eq(load_entries('by_commit'), { ['s:a.lua'] = 'first' })
+  before_each(function()
+    dir = homes.state .. '/vgit/repo/feature'
+    vim.fn.mkdir(dir .. '/objects', 'p')
   end)
 
   it('sweeps nothing while a state file is unreadable', function()
-    write_state('by_file.json', approved('a.lua', 'shared'), 2000)
+    local function write_state(name, data)
+      vim.fn.writefile({ vim.fn.json_encode(vim.tbl_extend('force', { branchName = 'feature' }, data)) }, dir .. '/' .. name)
+    end
+    write_state('by_file.json', { version = 1, entries = { ['a.lua'] = { approved = 'shared' } } })
     -- A newer vgit's file may reference any object
-    write_state('by_commit.json', { version = 2, entries = { ['s:a.lua'] = { approved = 'newer' } } }, 2000)
-    write_objects({ shared = { 's' }, newer = { 'n' } })
+    write_state('by_commit.json', { version = 2, entries = { ['s:a.lua'] = { approved = 'newer' } } })
+    for name, lines in pairs({ shared = { 's' }, newer = { 'n' } }) do
+      vim.fn.writefile(lines, dir .. '/objects/' .. name)
+    end
 
     persistence.sweep_objects('repo', 'feature')
     eq(persistence.read_object('repo', 'feature', 'newer'), { 'n' })
-  end)
-
-  it('keeps objects referenced only by an _indexed file when sweeping', function()
-    -- A pre-rename session approved more after this session made its copy
-    write_state('by_file.json', approved('a.lua', 'shared'), 2000)
-    load_entries('by_file')
-    write_state('by_file_indexed.json', { entries = { ['a.lua'] = { approved = 'shared' }, ['b.lua'] = { approved = 'later' } } }, 3000)
-    write_objects({ shared = { 's' }, later = { 'l' }, stale = { 'x' } })
-
-    persistence.sweep_objects('repo', 'feature')
-    eq(persistence.read_object('repo', 'feature', 'shared'), { 's' })
-    eq(persistence.read_object('repo', 'feature', 'later'), { 'l' })
-    eq(persistence.read_object('repo', 'feature', 'stale'), nil)
   end)
 end)
 
@@ -305,7 +347,7 @@ describe('review_persistence v1 state file:', function()
     .. [["7d0c6595:gone.lua":{"approved":"]] .. EMPTY_HASH .. [[","base":"]] .. BASE_HASH .. [[","deleted":true}}}]]
 
   local function branch_dir()
-    return homes.data .. '/vgit/repo/feature--x'
+    return homes.state .. '/vgit/repo/feature--x'
   end
 
   local function write_fixture()
