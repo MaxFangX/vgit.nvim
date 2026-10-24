@@ -35,33 +35,21 @@ function StatusFolds:get_parent_folder(segmented_folders, current_index)
 end
 
 function StatusFolds:derive_status_hl(status)
-  -- Simple check based on first status char (works for both GitStatus and review status)
-  local first = status.first
-  if first == 'A' or first == 'C' or first == 'R' or first == '?' then
-    return 'GitSignsAdd'
-  end
-  if first == 'D' then
-    return 'GitSignsDelete'
-  end
-  if first == 'M' or first == 'T' then
-    return 'GitSignsChange'
-  end
-
-  -- Fallback to GitStatus methods for staged/unstaged if available
-  if status.is_staged and status:is_staged() then
+  if status:is_staged() then
     if status:has('A*') or status:has('C*') or status:has('R*') then return 'GitSignsAdd' end
     if status:has('D*') then return 'GitSignsDelete' end
-    if status:has_either('MT') then return 'GitSignsChange' end
+    -- Not has_either('MT'), which compares by position and misses 'T '
+    if status:has('M*') or status:has('T*') then return 'GitSignsChange' end
   end
 
-  if status.is_unstaged and status:is_unstaged() then
+  if status:is_unstaged() then
     if status:has('??') or status:has(' A') then return 'GitSignsAdd' end
     if status:has('*R') or status:has('*C') then return 'GitSignsAdd' end
     if status:has('*D') then return 'GitSignsDelete' end
     if status:has('*M') or status:has('*T') then return 'GitSignsChange' end
   end
 
-  if status.is_unmerged and status:is_unmerged() then return 'GitSignsChange' end
+  if status:is_unmerged() then return 'GitSignsChange' end
 
   return 'GitLineNr'
 end
