@@ -1,4 +1,3 @@
-local fs = require('vgit.core.fs')
 local utils = require('vgit.core.utils')
 local gitcli = require('vgit.git.gitcli')
 local GitHunk = require('vgit.git.GitHunk')
@@ -20,39 +19,16 @@ function git_hunks.parse(lines)
   return result
 end
 
+-- Hunks between two line arrays via in-process xdiff (sub-millisecond at
+-- thousands of lines, and unlike `git diff --no-index`, fine with NULs).
 function git_hunks.live(reponame, original_lines, current_lines)
-  local lines_limit = 5000
-
-  if #current_lines > lines_limit then
-    local temp_filename_b = fs.tmpname()
-    local temp_filename_a = fs.tmpname()
-
-    fs.write_file(temp_filename_a, original_lines)
-    fs.write_file(temp_filename_b, current_lines)
-
-    local hunks, hunks_err = git_hunks.list(reponame, { filenames = { temp_filename_a, temp_filename_b } })
-
-    fs.remove_file(temp_filename_a)
-    fs.remove_file(temp_filename_b)
-
-    return hunks, hunks_err
-  end
-
-  local o_lines_str = ''
-  local c_lines_str = ''
-  local num_lines = math.max(#original_lines, #current_lines)
-
-  for i = 1, num_lines do
-    local o_line = original_lines[i]
-    local c_line = current_lines[i]
-
-    if o_line then o_lines_str = o_lines_str .. original_lines[i] .. '\n' end
-    if c_line then c_lines_str = c_lines_str .. current_lines[i] .. '\n' end
+  local function join(lines)
+    return #lines == 0 and '' or table.concat(lines, '\n') .. '\n'
   end
 
   local live_hunks = {}
 
-  vim.diff(o_lines_str, c_lines_str, {
+  vim.diff(join(original_lines), join(current_lines), {
     on_hunk = function(start_o, count_o, start_c, count_c)
       local hunk = GitHunk({ { start_o, count_o }, { start_c, count_c } })
 
