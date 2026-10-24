@@ -26,6 +26,8 @@ function CommitListView:constructor(scene, props, plot, config)
   local base = BaseListView.constructor(self, scene, props, plot, config)
   -- The expanded commit, { hash, section } (nil: none)
   base.active_commit = nil
+  -- Each commit row's file tree from the last render, by its entry ids
+  base.trees = {}
   return base
 end
 
@@ -113,12 +115,29 @@ function CommitListView:max_row_width()
   return ROW_DECORATION_WIDTH + index_width + 3 + id_width + 3 + message_width
 end
 
+-- The file tree for a commit row's `files`. Rebuilding every commit's tree
+-- on each render dominated marks and commit changes on long stacks, so a
+-- tree is reused while the row's files (their ids) stay the same; it keeps
+-- its folders' open state too.
+local function file_tree(trees, next_trees, files)
+  local ids = {}
+  for i, file in ipairs(files) do
+    ids[i] = file.id
+  end
+  local key = table.concat(ids, '\n')
+
+  local tree = trees[key] or StatusFolds():generate(files)
+  next_trees[key] = tree
+  return tree
+end
+
 function CommitListView:render()
   local entries = self.props.entries()
   local index_width, id_width = column_widths(entries)
   local index_format = string.format('%%0%dd', index_width)
   local row_format = string.format('%%s - %%-%ds - %%s', id_width)
   local active = self.active_commit
+  local trees = {}
 
   local folds = {}
   for _, section in ipairs(entries) do
@@ -131,7 +150,7 @@ function CommitListView:render()
         node_type = 'commit',
         open = active ~= nil and active.hash == commit.hash and active.section == section.type,
         value = string.format(row_format, index_label, commit.change_id_short or commit.short_hash, commit.message),
-        items = StatusFolds():generate(commit_data.files),
+        items = file_tree(self.trees, trees, commit_data.files),
         section_type = section.type,
         commit_hash = commit.hash,
         icon_before = function(item)
@@ -149,6 +168,7 @@ function CommitListView:render()
     }
   end
 
+  self.trees = trees
   self:sync_folds(folds)
 end
 

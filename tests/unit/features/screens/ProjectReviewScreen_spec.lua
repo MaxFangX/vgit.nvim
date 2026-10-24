@@ -551,6 +551,36 @@ describe('ProjectReviewScreen', function()
       H.assert_consistent()
     end)
 
+    it('reuses each commit\'s file tree until its files change', function()
+      H.open('commit')
+      local list_view = H.screen().list_view
+      local function trees()
+        local result = {}
+        for _, section in ipairs(list_view.state.folds) do
+          for _, commit in ipairs(section.items) do
+            result[section.section_type .. ' ' .. commit.value] = commit.items
+          end
+        end
+        return result
+      end
+
+      local before = trees()
+      H.async(function() list_view:render() end)
+      for key, tree in pairs(trees()) do
+        assert(before[key] == tree, key)
+      end
+
+      -- S on a/x.lua changes commit 01's Unseen files only
+      H.keys('S')
+      for key, tree in pairs(trees()) do
+        if key:match('^unseen 01') then
+          assert(before[key] ~= tree, key)
+        elseif before[key] then
+          assert(before[key] == tree, key)
+        end
+      end
+    end)
+
     it('S marks the file and moves on; the commit shows up under Seen', function()
       H.open('commit')
       H.keys('S')
