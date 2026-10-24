@@ -7,7 +7,7 @@ local eq = assert.are.same
 local run = review.run
 
 describe('ReviewState', function()
-  review.use_temp_data_home()
+  review.use_temp_homes()
 
   describe('session store:', function()
     local function trunk_review(repo_key)

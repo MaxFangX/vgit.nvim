@@ -1,3 +1,5 @@
+-- Not a module path: plenary runs specs without the repo root on package.path
+local review = dofile('tests/helpers/review.lua')
 local loop = require('vgit.core.loop')
 local console = require('vgit.core.console')
 local screen_manager = require('vgit.ui.screen_manager')
@@ -213,7 +215,7 @@ function H.assert_consistent()
 end
 
 describe('ProjectReviewScreen', function()
-  local repo, cwd, xdg
+  local repo, cwd, restore_homes
 
   local input, error = console.input, console.error
   local errors
@@ -225,8 +227,7 @@ describe('ProjectReviewScreen', function()
       errors[#errors + 1] = msg
     end
     cwd = vim.loop.cwd()
-    xdg = vim.env.XDG_DATA_HOME
-    vim.env.XDG_DATA_HOME = vim.fn.tempname()
+    restore_homes = select(2, review.enter_temp_homes())
     repo = make_repo()
     vim.cmd.cd(repo)
   end)
@@ -235,7 +236,7 @@ describe('ProjectReviewScreen', function()
     H.close()
     vim.cmd('silent! %bwipeout!')
     vim.cmd.cd(cwd)
-    vim.env.XDG_DATA_HOME = xdg
+    restore_homes()
     vim.fn.delete(repo, 'rf')
     console.input, console.error = input, error
   end)

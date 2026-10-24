@@ -4,7 +4,7 @@ local ReviewModel = require('vgit.features.screens.ReviewModel')
 -- Not a module path: plenary runs specs without the repo root on package.path
 local review = dofile('tests/helpers/review.lua')
 
-local use_temp_data_home = review.use_temp_data_home
+local use_temp_homes = review.use_temp_homes
 local eq = assert.are.same
 
 -- Write a by-commit review file whose approved entries reference `subjects`
@@ -22,7 +22,7 @@ local function write_review(root, branch_key, subjects, last_used)
 end
 
 describe('review_persistence snapshot objects:', function()
-  use_temp_data_home()
+  use_temp_homes()
 
   it('hashes binary content without tripping the vim.fn Blob conversion', function()
     -- A NUL byte in the concatenated content converts the string to a Blob at
@@ -50,25 +50,25 @@ describe('review_persistence snapshot objects:', function()
 end)
 
 describe('ReviewModel.branch_by_subjects:', function()
-  local data_home = use_temp_data_home()
+  local homes = use_temp_homes()
 
   it('picks the review with the most overlap with HEAD subjects', function()
-    write_review(data_home.root, 'feature', { 's1', 's2', 's3' }, 100)
-    write_review(data_home.root, 'other', { 's3', 'x9' }, 200)
+    write_review(homes.data, 'feature', { 's1', 's2', 's3' }, 100)
+    write_review(homes.data, 'other', { 's3', 'x9' }, 200)
 
     -- feature shares s1,s2,s3 (3); other shares only s3 (1).
     eq(ReviewModel.branch_by_subjects('repo', { s1 = true, s2 = true, s3 = true }), 'feature')
   end)
 
   it('breaks equal overlap toward the most recently used review', function()
-    write_review(data_home.root, 'older', { 's1', 's2' }, 100)
-    write_review(data_home.root, 'newer', { 's1', 's2' }, 200)
+    write_review(homes.data, 'older', { 's1', 's2' }, 100)
+    write_review(homes.data, 'newer', { 's1', 's2' }, 200)
 
     eq(ReviewModel.branch_by_subjects('repo', { s1 = true, s2 = true }), 'newer')
   end)
 
   it('returns nil when overlap is below the threshold (coincidental)', function()
-    write_review(data_home.root, 'feature', { 's1', 's2', 's3' }, 100)
+    write_review(homes.data, 'feature', { 's1', 's2', 's3' }, 100)
 
     -- One shared subject isn't enough to claim HEAD
     eq(ReviewModel.branch_by_subjects('repo', { s1 = true, z = true }), nil)
@@ -80,11 +80,11 @@ describe('ReviewModel.branch_by_subjects:', function()
 end)
 
 describe('review_persistence.evict_lru:', function()
-  local data_home = use_temp_data_home()
+  local homes = use_temp_homes()
 
   -- Create a branch dir holding a state file with the given mtime (seconds).
   local function write_branch(name, mtime)
-    local dir = data_home.root .. '/vgit/repo/' .. name
+    local dir = homes.data .. '/vgit/repo/' .. name
     vim.fn.mkdir(dir, 'p')
     local path = dir .. '/by_commit.json'
     vim.fn.writefile({ '{}' }, path)
@@ -123,8 +123,8 @@ describe('review_persistence.evict_lru:', function()
   end)
 
   it('prunes empty branch dirs but keeps ones with other content', function()
-    local empty = data_home.root .. '/vgit/repo/empty'
-    local objects_only = data_home.root .. '/vgit/repo/objects-only/objects'
+    local empty = homes.data .. '/vgit/repo/empty'
+    local objects_only = homes.data .. '/vgit/repo/objects-only/objects'
     vim.fn.mkdir(empty, 'p')
     vim.fn.mkdir(objects_only, 'p')
     write_branch('live', 1000)
@@ -142,11 +142,11 @@ end)
 
 describe('review_persistence name migration:', function()
   -- A fresh data home per spec, so the per-state-dir memo never carries over
-  local data_home = use_temp_data_home()
+  local homes = use_temp_homes()
   local dir
 
   before_each(function()
-    dir = data_home.root .. '/vgit/repo/feature'
+    dir = homes.data .. '/vgit/repo/feature'
     vim.fn.mkdir(dir, 'p')
   end)
 
@@ -289,7 +289,7 @@ describe('review_persistence name migration:', function()
 end)
 
 describe('review_persistence v1 state file:', function()
-  local data_home = use_temp_data_home()
+  local homes = use_temp_homes()
 
   local A_LINES = { 'local a = 1', 'return a' }
   local A_HASH = 'c4bf756b1652fb667f82201cce2ec25db186b580efec27cf901074da364f4c14'
@@ -305,7 +305,7 @@ describe('review_persistence v1 state file:', function()
     .. [["7d0c6595:gone.lua":{"approved":"]] .. EMPTY_HASH .. [[","base":"]] .. BASE_HASH .. [[","deleted":true}}}]]
 
   local function branch_dir()
-    return data_home.root .. '/vgit/repo/feature--x'
+    return homes.data .. '/vgit/repo/feature--x'
   end
 
   local function write_fixture()

@@ -1,4 +1,6 @@
 -- The review Models against throwaway git repos
+-- Not a module path: plenary runs specs without the repo root on package.path
+local review = dofile('tests/helpers/review.lua')
 local async = require('plenary.async.tests')
 local loop = require('vgit.core.loop')
 local utils = require('vgit.core.utils')
@@ -23,8 +25,8 @@ end
 -- cleanup to call at the end of the spec (it must run in the spec's
 -- coroutine, to hop out of the fast event context git calls leave behind).
 local function make_repo(commands)
-  local dir, saved_cwd, saved_xdg = vim.fn.tempname(), vim.loop.cwd(), vim.env.XDG_DATA_HOME
-  vim.env.XDG_DATA_HOME = vim.fn.tempname()
+  local dir, saved_cwd = vim.fn.tempname(), vim.loop.cwd()
+  local _, restore_homes = review.enter_temp_homes()
   vim.fn.mkdir(dir, 'p')
   sh(dir, 'git init -q -b master && git config user.email t@t.co && git config user.name t')
   sh(dir, 'printf "a\\n" > a.txt && git add a.txt && git commit -q -m A && git checkout -q -b feature')
@@ -36,8 +38,7 @@ local function make_repo(commands)
     loop.free_textlock()
     vim.cmd.cd(saved_cwd)
     vim.fn.delete(dir, 'rf')
-    vim.fn.delete(vim.env.XDG_DATA_HOME, 'rf')
-    vim.env.XDG_DATA_HOME = saved_xdg
+    restore_homes()
   end
 end
 

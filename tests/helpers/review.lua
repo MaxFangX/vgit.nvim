@@ -2,21 +2,35 @@ local loop = require('vgit.core.loop')
 
 local review = {}
 
--- Points XDG_DATA_HOME at a fresh temp dir around each spec of the enclosing
--- describe, restored (and the dir deleted) even when an assertion fails.
--- Returns a table whose `root` is the current spec's data home.
-function review.use_temp_data_home()
-  local data_home, saved = {}, nil
+-- Point XDG_DATA_HOME and XDG_STATE_HOME at fresh temp dirs, so nothing
+-- touches the real ones. Returns the dirs ({ data, state }) and a function
+-- that restores both variables and deletes the dirs.
+function review.enter_temp_homes()
+  local homes, saved = { data = vim.fn.tempname(), state = vim.fn.tempname() }, {}
+  for _, name in ipairs({ 'XDG_DATA_HOME', 'XDG_STATE_HOME' }) do
+    saved[name] = vim.env[name]
+  end
+  vim.env.XDG_DATA_HOME, vim.env.XDG_STATE_HOME = homes.data, homes.state
+
+  return homes, function()
+    vim.env.XDG_DATA_HOME, vim.env.XDG_STATE_HOME = saved.XDG_DATA_HOME, saved.XDG_STATE_HOME
+    vim.fn.delete(homes.data, 'rf')
+    vim.fn.delete(homes.state, 'rf')
+  end
+end
+
+-- Temp XDG homes (see enter_temp_homes) around each spec of the enclosing
+-- describe, restored even when an assertion fails. Returns a table holding
+-- the current spec's `data` and `state` dirs.
+function review.use_temp_homes()
+  local homes, restore = {}, nil
   before_each(function()
-    saved = vim.env.XDG_DATA_HOME
-    data_home.root = vim.fn.tempname()
-    vim.env.XDG_DATA_HOME = data_home.root
+    local dirs
+    dirs, restore = review.enter_temp_homes()
+    homes.data, homes.state = dirs.data, dirs.state
   end)
-  after_each(function()
-    vim.env.XDG_DATA_HOME = saved
-    vim.fn.delete(data_home.root, 'rf')
-  end)
-  return data_home
+  after_each(function() restore() end)
+  return homes
 end
 
 -- Save and load yield through free_textlock, so run `fn` in a vgit coroutine

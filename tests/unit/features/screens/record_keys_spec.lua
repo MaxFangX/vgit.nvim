@@ -17,7 +17,7 @@ local function item(key, filepath, change_id)
 end
 
 describe('record_keys', function()
-  review.use_temp_data_home()
+  review.use_temp_homes()
 
   describe('format:', function()
     it('keys a subject the way stored records are keyed', function()
