@@ -765,11 +765,13 @@ function ProjectReviewScreen:set_file_seen_state_locked(mark_as_seen)
   local saved_hunk_index = self:get_current_mark_index() or 1
   local hunk_alignment = 'smart'
 
-  -- Find adjacent files in the opposite-state section BEFORE rebuilding
-  local next_file, prev_file = nil, nil
+  -- Find the next file in the opposite-state section BEFORE rebuilding,
+  -- wrapping to its first file like s
+  local next_file
   if current_type == opposite_state_type then
     local target_section = opposite_state_type == 'seen' and 'Seen' or 'Unseen'
-    next_file, prev_file = self:find_adjacent_files(target_section, current_filepath, current_commit)
+    local next, _, first = self:find_adjacent_files(target_section, current_filepath, current_commit)
+    next_file = next or first
   end
 
   -- Perform the mark/unmark
@@ -792,12 +794,10 @@ function ProjectReviewScreen:set_file_seen_state_locked(mark_as_seen)
     return
   end
 
-  -- Navigate to next opposite-state file, or prev if on last, or stay if none left
+  -- Navigate to the next opposite-state file, or stay if none is left
   local found_entry
   if next_file then
     found_entry = self:move_to_entry_expanding_commit(next_file.filepath, next_file.commit_hash, opposite_state_type)
-  elseif prev_file then
-    found_entry = self:move_to_entry_expanding_commit(prev_file.filepath, prev_file.commit_hash, opposite_state_type)
   end
 
   -- If no opposite-state entries found, stay on the current file (now in same_state section)
