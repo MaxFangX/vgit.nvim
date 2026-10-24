@@ -402,14 +402,15 @@ describe('Diff:', function()
     before_each(function()
       pre_diff_lines = { 'a', 'b', 'c', 'd', 'e' }
       hunks = {
+        -- `@@ -1,5 +0,0 @@`: the new side is empty
         build_hunk({
-          bot = 5,
-          diff = { '+a', '+b', '+c', '+d', '+e' },
+          bot = 0,
+          diff = { '-a', '-b', '-c', '-d', '-e' },
           stat = {
             added = 0,
             removed = 5,
           },
-          top = 1,
+          top = 0,
           type = 'remove',
         }),
       }
@@ -450,10 +451,13 @@ describe('Diff:', function()
             type = 'remove',
           },
         })
+        -- The mark covers every rendered row
         assert.are.same(diff_dto.marks, {
           {
             bot = 5,
             top = 1,
+            top_relative = 1,
+            bot_relative = 5,
             type = 'remove',
           },
         })
@@ -524,10 +528,13 @@ describe('Diff:', function()
             type = 'void',
           },
         })
+        -- The mark covers every rendered row
         assert.are.same(diff_dto.marks, {
           {
             bot = 5,
             top = 1,
+            top_relative = 1,
+            bot_relative = 5,
             type = 'remove',
           },
         })

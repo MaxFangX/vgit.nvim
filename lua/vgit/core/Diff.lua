@@ -247,7 +247,7 @@ function Diff:generate_unified_deleted(hunks, lines)
   local type = hunk.type
   local diff = hunk.diff
   local top = 1
-  local bot = hunk.bot
+  local bot = #diff
   local lnum_changes = {}
   local s = top
 
@@ -269,6 +269,8 @@ function Diff:generate_unified_deleted(hunks, lines)
         type = type,
         top = top,
         bot = bot,
+        top_relative = top,
+        bot_relative = bot,
       },
     },
     stat = hunk.stat,
@@ -286,7 +288,7 @@ function Diff:generate_split_deleted(hunks, lines)
   local type = hunk.type
   local diff = hunk.diff
   local top = 1
-  local bot = hunk.bot
+  local bot = #diff
   local s = top
   local lnum_changes = {}
   local current_lines = {}
@@ -316,6 +318,8 @@ function Diff:generate_split_deleted(hunks, lines)
         type = type,
         top = top,
         bot = bot,
+        top_relative = top,
+        bot_relative = bot,
       },
     },
     stat = hunk.stat,

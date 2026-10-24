@@ -252,6 +252,12 @@ end
 function Model:reset_hunk(filepath, hunk)
   local abs_filepath = self.state.reponame .. '/' .. filepath
   local git_file = GitFile(abs_filepath)
+
+  -- A deleted file's one hunk is the whole deletion; there's no file to patch
+  local file, err = git_file:status()
+  if err then return nil, err end
+  if file and file:has(' D') then return self:reset_file(filepath) end
+
   return git_file:reset_hunk(hunk)
 end
 
