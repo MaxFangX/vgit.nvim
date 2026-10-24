@@ -1,20 +1,11 @@
-local loop = require('vgit.core.loop')
+-- Not a module path: plenary runs specs without the repo root on package.path
+local review = dofile('tests/helpers/review.lua')
 local ReviewState = require('vgit.features.screens.ReviewState')
 local change_id_rekey = require('vgit.features.screens.change_id_rekey')
 local persistence = require('vgit.features.screens.ReviewPersistence')
 
 local eq = assert.are.same
-
--- Save and load yield through free_textlock, so run `fn` in a vgit coroutine
--- and block until it finishes.
-local function run(fn)
-  local done = false
-  loop.coroutine(function()
-    fn()
-    done = true
-  end)()
-  assert(vim.wait(5000, function() return done end, 10), 'coroutine did not finish')
-end
+local run = review.run
 
 local function new_state(opts)
   return ReviewState(vim.tbl_extend('force', { review_type = 'by_commit' }, opts))
@@ -25,18 +16,7 @@ local function item(key, filepath, change_id)
 end
 
 describe('change_id_rekey', function()
-  -- Every spec writes under a throwaway data home, restored even when an
-  -- assertion fails.
-  local saved_xdg, root
-  before_each(function()
-    saved_xdg = vim.env.XDG_DATA_HOME
-    root = vim.fn.tempname()
-    vim.env.XDG_DATA_HOME = root
-  end)
-  after_each(function()
-    vim.env.XDG_DATA_HOME = saved_xdg
-    vim.fn.delete(root, 'rf')
-  end)
+  review.use_temp_data_home()
 
   describe('plan:', function()
     local cid = 'kzlnmouooqvwmnwmymlvpmmsuopnlkkt'

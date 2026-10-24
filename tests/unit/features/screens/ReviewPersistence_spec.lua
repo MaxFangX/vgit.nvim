@@ -1,6 +1,9 @@
 local fs = require('vgit.core.fs')
 local persistence = require('vgit.features.screens.ReviewPersistence')
+-- Not a module path: plenary runs specs without the repo root on package.path
+local review = dofile('tests/helpers/review.lua')
 
+local use_temp_data_home = review.use_temp_data_home
 local eq = assert.are.same
 
 -- Write a by-commit review file whose approved entries reference `subjects`
@@ -17,18 +20,7 @@ local function write_review(root, branch_name, subjects, last_used)
 end
 
 describe('ReviewPersistence snapshot objects:', function()
-  local root, saved_xdg
-
-  before_each(function()
-    saved_xdg = vim.env.XDG_DATA_HOME
-    root = vim.fn.tempname()
-    vim.env.XDG_DATA_HOME = root
-  end)
-
-  after_each(function()
-    vim.env.XDG_DATA_HOME = saved_xdg
-    vim.fn.delete(root, 'rf')
-  end)
+  use_temp_data_home()
 
   it('hashes binary content without tripping the vim.fn Blob conversion', function()
     -- A NUL byte in the concatenated content converts the string to a Blob at
@@ -52,36 +44,25 @@ describe('ReviewPersistence snapshot objects:', function()
 end)
 
 describe('ReviewPersistence.branch_by_subjects:', function()
-  local root, saved_xdg
-
-  before_each(function()
-    saved_xdg = vim.env.XDG_DATA_HOME
-    root = vim.fn.tempname()
-    vim.env.XDG_DATA_HOME = root
-  end)
-
-  after_each(function()
-    vim.env.XDG_DATA_HOME = saved_xdg
-    vim.fn.delete(root, 'rf')
-  end)
+  local data_home = use_temp_data_home()
 
   it('picks the review with the most overlap with HEAD subjects', function()
-    write_review(root, 'feature', { 's1', 's2', 's3' }, 100)
-    write_review(root, 'other', { 's3', 'x9' }, 200)
+    write_review(data_home.root, 'feature', { 's1', 's2', 's3' }, 100)
+    write_review(data_home.root, 'other', { 's3', 'x9' }, 200)
 
     -- feature shares s1,s2,s3 (3); other shares only s3 (1).
     eq(persistence.branch_by_subjects('repo', { s1 = true, s2 = true, s3 = true }), 'feature')
   end)
 
   it('breaks equal overlap toward the most recently used review', function()
-    write_review(root, 'older', { 's1', 's2' }, 100)
-    write_review(root, 'newer', { 's1', 's2' }, 200)
+    write_review(data_home.root, 'older', { 's1', 's2' }, 100)
+    write_review(data_home.root, 'newer', { 's1', 's2' }, 200)
 
     eq(persistence.branch_by_subjects('repo', { s1 = true, s2 = true }), 'newer')
   end)
 
   it('returns nil when overlap is below the threshold (coincidental)', function()
-    write_review(root, 'feature', { 's1', 's2', 's3' }, 100)
+    write_review(data_home.root, 'feature', { 's1', 's2', 's3' }, 100)
 
     -- Only one shared subject — not enough to claim HEAD.
     eq(persistence.branch_by_subjects('repo', { s1 = true, z = true }), nil)
@@ -93,22 +74,11 @@ describe('ReviewPersistence.branch_by_subjects:', function()
 end)
 
 describe('ReviewPersistence.evict_lru:', function()
-  local root, saved_xdg
-
-  before_each(function()
-    saved_xdg = vim.env.XDG_DATA_HOME
-    root = vim.fn.tempname()
-    vim.env.XDG_DATA_HOME = root
-  end)
-
-  after_each(function()
-    vim.env.XDG_DATA_HOME = saved_xdg
-    vim.fn.delete(root, 'rf')
-  end)
+  local data_home = use_temp_data_home()
 
   -- Create a branch dir holding a state file with the given mtime (seconds).
   local function write_branch(name, mtime)
-    local dir = root .. '/vgit/repo/' .. name
+    local dir = data_home.root .. '/vgit/repo/' .. name
     vim.fn.mkdir(dir, 'p')
     local path = dir .. '/by_commit.json'
     vim.fn.writefile({ '{}' }, path)
@@ -147,8 +117,8 @@ describe('ReviewPersistence.evict_lru:', function()
   end)
 
   it('prunes empty branch dirs but keeps ones with other content', function()
-    local empty = root .. '/vgit/repo/empty'
-    local objects_only = root .. '/vgit/repo/objects-only/objects'
+    local empty = data_home.root .. '/vgit/repo/empty'
+    local objects_only = data_home.root .. '/vgit/repo/objects-only/objects'
     vim.fn.mkdir(empty, 'p')
     vim.fn.mkdir(objects_only, 'p')
     write_branch('live', 1000)
@@ -165,20 +135,13 @@ describe('ReviewPersistence.evict_lru:', function()
 end)
 
 describe('ReviewPersistence name migration:', function()
-  local root, saved_xdg, dir
+  -- A fresh data home per spec, so the per-state-dir memo never carries over
+  local data_home = use_temp_data_home()
+  local dir
 
   before_each(function()
-    saved_xdg = vim.env.XDG_DATA_HOME
-    root = vim.fn.tempname()
-    -- A fresh data home per spec, so the per-state-dir memo never carries over
-    vim.env.XDG_DATA_HOME = root
-    dir = root .. '/vgit/repo/feature'
+    dir = data_home.root .. '/vgit/repo/feature'
     vim.fn.mkdir(dir, 'p')
-  end)
-
-  after_each(function()
-    vim.env.XDG_DATA_HOME = saved_xdg
-    vim.fn.delete(root, 'rf')
   end)
 
   -- Write a state file under the branch dir with the given contents and
@@ -299,5 +262,106 @@ describe('ReviewPersistence name migration:', function()
     eq(persistence.read_object('repo', 'feature', 'shared'), { 's' })
     eq(persistence.read_object('repo', 'feature', 'later'), { 'l' })
     eq(persistence.read_object('repo', 'feature', 'stale'), nil)
+  end)
+end)
+
+describe('ReviewPersistence v1 state file:', function()
+  local data_home = use_temp_data_home()
+
+  local A_LINES, A_HASH = { 'local a = 1', 'return a' }, 'c4bf756b1652fb667f82201cce2ec25db186b580efec27cf901074da364f4c14'
+  local BASE_LINES, BASE_HASH = { 'return 1' }, '486d9affb60dbb0063b03d8e23a6ccf6364ce203dc3a9f56f20e750eb41ecade'
+  local EMPTY_HASH = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+
+  -- A by_commit state file as vgit writes it. Live sessions on different
+  -- vgit versions share these files, so this must keep loading as is, and
+  -- saves must keep writing the same fields.
+  local FIXTURE = [[{"version":1,"lastUsed":1761200000,"branchName":"feature/x","entries":{]]
+    .. [["8df4a362:src/a.lua":{"approved":"]] .. A_HASH .. [[","base":"]] .. BASE_HASH
+    .. [[","change_id":"kzlnmouooqvwmnwmymlvpmmsuopnlkkt"},]]
+    .. [["7d0c6595:gone.lua":{"approved":"]] .. EMPTY_HASH .. [[","base":"]] .. BASE_HASH .. [[","deleted":true}}}]]
+
+  local function branch_dir()
+    return data_home.root .. '/vgit/repo/feature--x'
+  end
+
+  local function write_fixture()
+    vim.fn.mkdir(branch_dir() .. '/objects', 'p')
+    vim.fn.writefile({ FIXTURE }, branch_dir() .. '/by_commit.json')
+    vim.fn.writefile(A_LINES, branch_dir() .. '/objects/' .. A_HASH)
+    vim.fn.writefile(BASE_LINES, branch_dir() .. '/objects/' .. BASE_HASH)
+    vim.fn.writefile({}, branch_dir() .. '/objects/' .. EMPTY_HASH)
+  end
+
+  local function read_json()
+    return vim.json.decode(table.concat(vim.fn.readfile(branch_dir() .. '/by_commit.json'), '\n'))
+  end
+
+  local function keys(t)
+    local result = vim.tbl_keys(t)
+    table.sort(result)
+    return result
+  end
+
+  local function object_names()
+    local names = vim.fn.readdir(branch_dir() .. '/objects')
+    table.sort(names)
+    return names
+  end
+
+  -- A ReviewState module with an empty session store, as in a new nvim
+  local function fresh_review_state()
+    package.loaded['vgit.features.screens.ReviewState'] = nil
+    return require('vgit.features.screens.ReviewState')
+  end
+
+  local function new_state()
+    return fresh_review_state()({ branch_name = 'feature/x', review_type = 'by_commit', repo_name = 'repo' })
+  end
+
+  it('loads a frozen v1 by_commit state file', function()
+    write_fixture()
+    review.run(function()
+      local state = new_state()
+      state:load_from_disk()
+
+      eq(state:get_approved('8df4a362:src/a.lua'), {
+        lines = A_LINES,
+        deleted = false,
+        base_lines = BASE_LINES,
+        hash = A_HASH,
+        base_hash = BASE_HASH,
+      })
+      eq(state:get_approved('7d0c6595:gone.lua').lines, {})
+      eq(state:get_approved('7d0c6595:gone.lua').deleted, true)
+
+      state:save()
+    end)
+
+    local fixture, written = vim.json.decode(FIXTURE), read_json()
+    eq(keys(written), keys(fixture))
+    eq(written.entries, fixture.entries)
+    eq(written.branchName, 'feature/x')
+    eq(written.version, 1)
+    eq(object_names(), keys({ [A_HASH] = true, [BASE_HASH] = true, [EMPTY_HASH] = true }))
+  end)
+
+  it('saves the same state file and objects after a restart', function()
+    review.run(function()
+      local state = new_state()
+      state:set_approved('8df4a362:src/a.lua', A_LINES, false, BASE_LINES)
+      state:set_approved('7d0c6595:gone.lua', {}, true, BASE_LINES)
+      state:save()
+    end)
+    local before, objects = read_json(), object_names()
+
+    review.run(function()
+      local state = new_state()
+      state:load_from_disk()
+      state:save()
+    end)
+    local after = read_json()
+    before.lastUsed, after.lastUsed = nil, nil
+    eq(after, before)
+    eq(object_names(), objects)
   end)
 end)
