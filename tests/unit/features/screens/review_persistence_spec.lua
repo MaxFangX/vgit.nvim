@@ -1,5 +1,6 @@
 local fs = require('vgit.core.fs')
 local persistence = require('vgit.features.screens.review_persistence')
+local ReviewModel = require('vgit.features.screens.ReviewModel')
 -- Not a module path: plenary runs specs without the repo root on package.path
 local review = dofile('tests/helpers/review.lua')
 
@@ -17,6 +18,7 @@ local function write_review(root, branch_key, subjects, last_used)
   vim.fn.mkdir(dir, 'p')
   local data = { version = 1, lastUsed = last_used, branchName = branch_key, entries = entries }
   vim.fn.writefile({ vim.fn.json_encode(data) }, dir .. '/by_commit.json')
+  vim.loop.fs_utime(dir .. '/by_commit.json', last_used, last_used)
 end
 
 describe('review_persistence snapshot objects:', function()
@@ -40,16 +42,15 @@ describe('review_persistence snapshot objects:', function()
   end)
 
   it('round-trips binary snapshot lines through the object store', function()
-    local lines = { 'text line', '\0nul\0inside', '', 'trailing' }
-    local hash = persistence.hash_lines(lines)
-    persistence.write_objects('repo', 'feature', { [hash] = lines })
+    local record = { lines = { 'text line', '\0nul\0inside', '', 'trailing' }, base_lines = {} }
+    persistence.write_records('repo', 'feature', { ['a.bin'] = record })
 
-    eq(persistence.read_object('repo', 'feature', hash), lines)
+    eq(persistence.read_object('repo', 'feature', record.hash), record.lines)
     eq(persistence.read_object('repo', 'feature', 'missing-hash'), nil)
   end)
 end)
 
-describe('review_persistence.branch_by_subjects:', function()
+describe('ReviewModel.branch_by_subjects:', function()
   local data_home = use_temp_data_home()
 
   it('picks the review with the most overlap with HEAD subjects', function()
@@ -57,25 +58,25 @@ describe('review_persistence.branch_by_subjects:', function()
     write_review(data_home.root, 'other', { 's3', 'x9' }, 200)
 
     -- feature shares s1,s2,s3 (3); other shares only s3 (1).
-    eq(persistence.branch_by_subjects('repo', { s1 = true, s2 = true, s3 = true }), 'feature')
+    eq(ReviewModel.branch_by_subjects('repo', { s1 = true, s2 = true, s3 = true }), 'feature')
   end)
 
   it('breaks equal overlap toward the most recently used review', function()
     write_review(data_home.root, 'older', { 's1', 's2' }, 100)
     write_review(data_home.root, 'newer', { 's1', 's2' }, 200)
 
-    eq(persistence.branch_by_subjects('repo', { s1 = true, s2 = true }), 'newer')
+    eq(ReviewModel.branch_by_subjects('repo', { s1 = true, s2 = true }), 'newer')
   end)
 
   it('returns nil when overlap is below the threshold (coincidental)', function()
     write_review(data_home.root, 'feature', { 's1', 's2', 's3' }, 100)
 
     -- Only one shared subject — not enough to claim HEAD.
-    eq(persistence.branch_by_subjects('repo', { s1 = true, z = true }), nil)
+    eq(ReviewModel.branch_by_subjects('repo', { s1 = true, z = true }), nil)
   end)
 
   it('returns nil when no review exists for the repo', function()
-    eq(persistence.branch_by_subjects('repo', { s1 = true, s2 = true }), nil)
+    eq(ReviewModel.branch_by_subjects('repo', { s1 = true, s2 = true }), nil)
   end)
 end)
 
@@ -162,6 +163,14 @@ describe('review_persistence name migration:', function()
     return { entries = { [entries_key] = { approved = hash } } }
   end
 
+  -- Objects named as given rather than by their hash
+  local function write_objects(objects)
+    vim.fn.mkdir(dir .. '/objects', 'p')
+    for name, lines in pairs(objects) do
+      vim.fn.writefile(lines, dir .. '/objects/' .. name)
+    end
+  end
+
   local function read(name)
     local fd = assert(io.open(dir .. '/' .. name, 'rb'))
     local content = fd:read('*a')
@@ -173,14 +182,15 @@ describe('review_persistence name migration:', function()
     return vim.loop.fs_stat(dir .. '/' .. name) ~= nil
   end
 
+  -- The approved hash of each record in a review's state file
   local function load_entries(review_type)
-    return persistence.load('repo', 'feature', review_type).entries
+    return vim.tbl_map(function(ref) return ref.hash end, persistence.load('repo', 'feature', review_type).records)
   end
 
   it('copies an _indexed file when no state file exists, keeping the original', function()
     write_state('by_commit_indexed.json', approved('s:a.lua', 'old'), 1000)
 
-    eq(load_entries('by_commit'), { ['s:a.lua'] = { approved = 'old' } })
+    eq(load_entries('by_commit'), { ['s:a.lua'] = 'old' })
     eq(read('by_commit.json'), read('by_commit_indexed.json'))
   end)
 
@@ -188,9 +198,7 @@ describe('review_persistence name migration:', function()
     write_state('by_file.json', { marks = { ['a.lua:cid'] = true } }, 2000)
     write_state('by_file_indexed.json', approved('a.lua', 'old'), 1000)
 
-    local data = persistence.load('repo', 'feature', 'by_file')
-    eq(data.entries, { ['a.lua'] = { approved = 'old' } })
-    eq(data.marks, nil)
+    eq(load_entries('by_file'), { ['a.lua'] = 'old' })
     eq(exists('by_file_indexed.json'), true)
   end)
 
@@ -198,7 +206,7 @@ describe('review_persistence name migration:', function()
     write_state('by_commit.json', approved('s:a.lua', 'new'), 1000)
     write_state('by_commit_indexed.json', approved('s:a.lua', 'old'), 2000)
 
-    eq(load_entries('by_commit'), { ['s:a.lua'] = { approved = 'old' } })
+    eq(load_entries('by_commit'), { ['s:a.lua'] = 'old' })
   end)
 
   it('keeps a new-format file that is newer or equally new', function()
@@ -207,8 +215,8 @@ describe('review_persistence name migration:', function()
     write_state('by_file.json', approved('a.lua', 'new'), 1000)
     write_state('by_file_indexed.json', approved('a.lua', 'old'), 1000)
 
-    eq(load_entries('by_commit'), { ['s:a.lua'] = { approved = 'new' } })
-    eq(load_entries('by_file'), { ['a.lua'] = { approved = 'new' } })
+    eq(load_entries('by_commit'), { ['s:a.lua'] = 'new' })
+    eq(load_entries('by_file'), { ['a.lua'] = 'new' })
     eq(exists('by_commit_indexed.json'), true)
   end)
 
@@ -230,7 +238,7 @@ describe('review_persistence name migration:', function()
 
   it('copies again once a pre-rename session rewrites the _indexed file', function()
     write_state('by_commit_indexed.json', approved('s:a.lua', 'first'), 1000)
-    eq(load_entries('by_commit'), { ['s:a.lua'] = { approved = 'first' } })
+    eq(load_entries('by_commit'), { ['s:a.lua'] = 'first' })
 
     -- An old-code session saves after the copy; a later session (fresh
     -- memo, here a fresh module) picks the newer _indexed file up.
@@ -239,13 +247,13 @@ describe('review_persistence name migration:', function()
     local ok, fresh = pcall(require, 'vgit.features.screens.review_persistence')
     package.loaded['vgit.features.screens.review_persistence'] = persistence
     assert(ok, fresh)
-    eq(fresh.load('repo', 'feature', 'by_commit').entries, { ['s:a.lua'] = { approved = 'second' } })
+    eq(fresh.load('repo', 'feature', 'by_commit').records['s:a.lua'].hash, 'second')
   end)
 
   it('runs from the branch resolver too', function()
     write_state('by_commit_indexed.json', { lastUsed = 100, entries = { ['s1:a.lua'] = { approved = 'h' } } }, 1000)
 
-    eq(persistence.branch_by_subjects('repo', { s1 = true }), 'feature')
+    eq(ReviewModel.branch_by_subjects('repo', { s1 = true }), 'feature')
     eq(read('by_commit.json'), read('by_commit_indexed.json'))
   end)
 
@@ -254,14 +262,14 @@ describe('review_persistence name migration:', function()
     load_entries('by_commit')
 
     write_state('by_commit_indexed.json', approved('s:a.lua', 'second'), os.time() + 60)
-    eq(load_entries('by_commit'), { ['s:a.lua'] = { approved = 'first' } })
+    eq(load_entries('by_commit'), { ['s:a.lua'] = 'first' })
   end)
 
   it('sweeps nothing while a state file is unreadable', function()
     write_state('by_file.json', approved('a.lua', 'shared'), 2000)
     -- A newer vgit's file may reference any object
     write_state('by_commit.json', { version = 2, entries = { ['s:a.lua'] = { approved = 'newer' } } }, 2000)
-    persistence.write_objects('repo', 'feature', { shared = { 's' }, newer = { 'n' } })
+    write_objects({ shared = { 's' }, newer = { 'n' } })
 
     persistence.sweep_objects('repo', 'feature')
     eq(persistence.read_object('repo', 'feature', 'newer'), { 'n' })
@@ -272,7 +280,7 @@ describe('review_persistence name migration:', function()
     write_state('by_file.json', approved('a.lua', 'shared'), 2000)
     load_entries('by_file')
     write_state('by_file_indexed.json', { entries = { ['a.lua'] = { approved = 'shared' }, ['b.lua'] = { approved = 'later' } } }, 3000)
-    persistence.write_objects('repo', 'feature', { shared = { 's' }, later = { 'l' }, stale = { 'x' } })
+    write_objects({ shared = { 's' }, later = { 'l' }, stale = { 'x' } })
 
     persistence.sweep_objects('repo', 'feature')
     eq(persistence.read_object('repo', 'feature', 'shared'), { 's' })

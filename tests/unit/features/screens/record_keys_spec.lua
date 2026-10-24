@@ -168,10 +168,9 @@ describe('record_keys', function()
 
         -- The adopted record is now this branch's own, objects included
         current:save()
-        local data = persistence.load('repo', 'pool-current', 'by_commit')
-        local entry = data.entries['subj:src/a.lua']
-        eq(entry.change_id, cid)
-        eq(persistence.read_object('repo', 'pool-current', entry.approved), { 'approved' })
+        local ref = persistence.load('repo', 'pool-current', 'by_commit').records['subj:src/a.lua']
+        eq(ref.change_id, cid)
+        eq(persistence.read_object('repo', 'pool-current', ref.hash), { 'approved' })
       end)
     end)
 

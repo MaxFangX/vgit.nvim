@@ -69,23 +69,6 @@ local function state_stamp(self)
   return persistence.state_stamp(self.repo_key, self.branch_key, self.review_type)
 end
 
--- An entry's approved record, materialized from `branch_key`'s object store,
--- or nil if its snapshot or base object is missing.
-local function read_record(repo_key, branch_key, entry)
-  local lines = persistence.read_object(repo_key, branch_key, entry.approved)
-  local base_lines = entry.base and persistence.read_object(repo_key, branch_key, entry.base)
-  if not lines or not base_lines then return nil end
-
-  return {
-    lines = lines,
-    deleted = entry.deleted == true,
-    base_lines = base_lines,
-    -- Cache content hashes so save() doesn't re-hash unchanged records
-    hash = entry.approved,
-    base_hash = entry.base,
-  }
-end
-
 -- Merge the state file into the store if another session wrote (or deleted)
 -- it since this one last read or wrote it: every key this session hasn't
 -- changed since (see `dirty`) takes the file's version. Returns nil, err if
@@ -97,7 +80,7 @@ local function sync_from_disk(self, state)
   -- Never prompt or delete: other sessions, possibly on other vgit
   -- versions, share the file. Leave a newer or unreadable file alone; a
   -- corrupt one is replaced by the next save.
-  local data, err = persistence.load(self.repo_key, self.branch_key, self.review_type)
+  local state_file, err = persistence.load(self.repo_key, self.branch_key, self.review_type)
   if err and (err.newer or err.unreadable) then
     console.warn(string.format('%s; review progress will not be saved this session', err[1]))
     self._skip_persistence = true
@@ -110,8 +93,9 @@ local function sync_from_disk(self, state)
   end
 
   -- No file means it was never saved, or deleted since: nothing is approved
-  local entries, keys = data and data.entries or {}, {}
-  for _, map in ipairs({ entries, state.records, state.removed }) do
+  local refs, removed = state_file and state_file.records or {}, state_file and state_file.removed or {}
+  local keys = {}
+  for _, map in ipairs({ refs, removed, state.records, state.removed }) do
     for key in pairs(map) do
       if not state.dirty[key] then keys[key] = true end
     end
@@ -119,25 +103,24 @@ local function sync_from_disk(self, state)
 
   local missing = 0
   for key in pairs(keys) do
-    local entry, record = entries[key], state.records[key]
-    if type(entry) == 'table' and entry.approved then
+    local ref, record = refs[key], state.records[key]
+    if ref then
       local same = record
-        and record.hash == entry.approved
-        and record.base_hash == entry.base
-        and record.deleted == (entry.deleted == true)
+        and record.hash == ref.hash
+        and record.base_hash == ref.base_hash
+        and record.deleted == ref.deleted
       if not same then
         -- A missing object means the snapshot was lost (the file reverts to
         -- unseen), unless this session still holds one
-        record = read_record(self.repo_key, self.branch_key, entry) or record
+        record = persistence.read_record(self.repo_key, self.branch_key, ref) or record
         if not record then missing = missing + 1 end
       end
       state.records[key], state.removed[key] = record, nil
-      state.change_ids[key] = state.change_ids[key] or entry.change_id
-    elseif type(entry) == 'table' and entry.change_id then
-      state.records[key], state.removed[key] = nil, true
-      state.change_ids[key] = state.change_ids[key] or entry.change_id
+      state.change_ids[key] = state.change_ids[key] or ref.change_id
     else
-      state.records[key], state.removed[key] = nil, nil
+      state.records[key] = nil
+      state.removed[key] = removed[key] and true
+      state.change_ids[key] = state.change_ids[key] or removed[key]
     end
   end
   if missing > 0 then
@@ -170,7 +153,7 @@ end
 
 -- base_lines: the base content the approval was made against; lets the model
 -- rebase the snapshot when the base later changes (stack restructuring).
--- Content hashes are computed lazily on save() and cached on the record.
+-- Records are never modified once set, which lets saves cache their hashes.
 function ReviewState:set_record(record_key, lines, deleted, base_lines)
   local state = get_state(self)
   -- Marking again against the same base keeps its hash, saving a rehash of
@@ -205,6 +188,18 @@ local function held_keys(state)
   return held
 end
 
+-- Other branches' state files of this review type, most recently used first
+local function sibling_states(self)
+  local siblings = {}
+  for state_file, mtime in persistence.each_branch_state(self.repo_key, self.review_type) do
+    if state_file.branch_key ~= self.branch_key then
+      siblings[#siblings + 1] = { state_file = state_file, mtime = mtime }
+    end
+  end
+  table.sort(siblings, function(a, b) return a.mtime > b.mtime end)
+  return siblings
+end
+
 -- Copy approved records for `items` from other branches' reviews of the same
 -- type, matched by change id, most recently used branch first. Returns true
 -- if any were adopted. Objects are content-addressed, so the copied record
@@ -216,15 +211,15 @@ local function adopt_from_siblings(self, state, items)
   loop.free_textlock()
 
   local adopted = false
-  for _, sibling in ipairs(persistence.load_siblings(self.repo_key, self.branch_key, self.review_type)) do
-    local entries = sibling.data.entries or {}
+  for _, sibling in ipairs(sibling_states(self)) do
+    local refs = sibling.state_file.records
     local change_ids = {}
-    for key, entry in pairs(entries) do
-      if type(entry) == 'table' and entry.approved then change_ids[key] = entry.change_id end
+    for key, ref in pairs(refs) do
+      change_ids[key] = ref.change_id
     end
 
     for _, match in ipairs(record_keys.find(items, change_ids)) do
-      local record = read_record(self.repo_key, sibling.branch_key, entries[match.key])
+      local record = persistence.read_record(self.repo_key, sibling.state_file.branch_key, refs[match.key])
       if record then
         state.records[match.item.key], state.dirty[match.item.key], adopted = record, true, true
       end
@@ -312,18 +307,9 @@ local function write_to_disk(self, final)
   loop.free_textlock()
   local state = get_state(self)
 
-  -- Records are immutable once set (set_record replaces them wholesale),
-  -- so cached hashes stay valid; only records new this session get hashed.
-  local objects = {}
-  for _, record in pairs(state.records) do
-    record.hash = record.hash or persistence.hash_lines(record.lines)
-    record.base_hash = record.base_hash or persistence.hash_lines(record.base_lines)
-    objects[record.hash], objects[record.base_hash] = record.lines, record.base_lines
-  end
-
   -- Never write JSON referencing objects that failed to write. Records merged
   -- in from the file have their objects on disk already.
-  local _, err = persistence.write_objects(self.repo_key, self.branch_key, objects)
+  local _, err = persistence.write_records(self.repo_key, self.branch_key, state.records)
   if err then
     console.warn(string.format('Failed to save review state: %s', err[1]))
     return
@@ -331,23 +317,15 @@ local function write_to_disk(self, final)
   _, err = sync_from_disk(self, state)
   if err then return end
 
-  local entries = {}
-  for record_key, record in pairs(state.records) do
-    entries[record_key] = {
-      approved = record.hash,
-      deleted = record.deleted or nil,
-      base = record.base_hash,
-      change_id = state.change_ids[record_key],
-    }
-  end
-  -- Tombstones only matter for adoption, which goes by change id
-  for record_key in pairs(state.removed) do
-    local change_id = state.change_ids[record_key]
-    if change_id then entries[record_key] = { change_id = change_id } end
-  end
-
   local written
-  written, err = persistence.save(self.repo_key, self.branch_key, self.review_type, { entries = entries })
+  written, err = persistence.save(
+    self.repo_key,
+    self.branch_key,
+    self.review_type,
+    state.records,
+    state.change_ids,
+    state.removed
+  )
   if err then
     console.warn(string.format('Failed to save review state: %s', err[1]))
     return

@@ -1,27 +1,17 @@
 local fs = require('vgit.core.fs')
 
 --[[
-  review_persistence handles disk I/O for review state.
+  review_persistence owns review state on disk: one JSON state file per
+  (repo, branch, review type), with each approved snapshot stored once as a
+  content-addressed object under the branch:
 
-  Storage location: $XDG_DATA_HOME/vgit/<repo>/<branch>/<type>.json
-  (default: ~/.local/share/vgit/<repo>/<branch>/<type>.json)
-
-  Branch names with / are encoded as -- (e.g., feature/foo -> feature--foo)
-
-  Approved file snapshots are stored content-addressed, one file per unique
-  content, under the branch's state directory:
-
+    $XDG_DATA_HOME/vgit/<repo>/<branch>/<type>.json
     $XDG_DATA_HOME/vgit/<repo>/<branch>/objects/<sha256>
 
-  The by_file.json / by_commit.json files reference objects by hash;
-  content addressing dedupes identical approved contents (e.g. the same
-  lockfile approved in several commits). Objects are swept on save.
-
-  Features:
-    - LRU eviction: max 128 branches per repository (all review types for a
-      branch count as one), run from the quit-time save via evict_lru; it
-      removes the whole branch directory, objects included
-    - Automatic lastUsed timestamp updates
+  with / in branch keys encoded as --. Sessions on different vgit versions
+  share these files, so the format only grows compatibly (see the v1 pin in
+  the spec). Everything here that reads is libuv/io/vim.json only, so safe
+  in fast event contexts.
 ]]
 
 local review_persistence = {}
@@ -33,9 +23,7 @@ local MAX_BRANCHES = 128
 -- references from each.
 local REVIEW_TYPES = { 'by_file', 'by_commit' }
 
--- Get XDG data home directory. Prefers env vars (safe in fast event contexts)
--- over vim.fn.expand, since branch_by_subjects below may run from the branch
--- resolver.
+-- Prefers env vars over vim.fn.expand, which isn't fast-event safe
 local function get_data_home()
   local xdg = os.getenv('XDG_DATA_HOME')
   if xdg and xdg ~= '' then
@@ -48,9 +36,8 @@ local function get_data_home()
   return vim.fn.expand('~/.local/share')
 end
 
--- Encode branch name for filesystem (/ -> --)
 local function encode_branch(name)
-  return name:gsub('/', '--')
+  return (name:gsub('/', '--'))
 end
 
 -- Migration (added 2026-10-23): review state moved from <type>_indexed.json
@@ -121,22 +108,35 @@ local function migrate_indexed_names(state_dir)
   end
 end
 
--- Get state directory path for a repo. Every path into a repo's state comes
+-- The state directory of a repo. Every path into a repo's state comes
 -- through here, so this runs the name migration before anything reads it.
-function review_persistence.get_state_dir(repo_key)
+local function get_state_dir(repo_key)
   local state_dir = get_data_home() .. '/vgit/' .. repo_key
   migrate_indexed_names(state_dir)
   return state_dir
 end
 
--- Get state file path for a (repo, branch, review_type) tuple
 function review_persistence.get_state_path(repo_key, branch_key, review_type)
-  local dir = review_persistence.get_state_dir(repo_key)
-  return dir .. '/' .. encode_branch(branch_key) .. '/' .. review_type .. '.json'
+  return string.format('%s/%s/%s.json', get_state_dir(repo_key), encode_branch(branch_key), review_type)
 end
 
-function review_persistence.get_objects_dir(repo_key, branch_key)
-  return string.format('%s/%s/objects', review_persistence.get_state_dir(repo_key), encode_branch(branch_key))
+local function get_objects_dir(repo_key, branch_key)
+  return string.format('%s/%s/objects', get_state_dir(repo_key), encode_branch(branch_key))
+end
+
+-- Iterates (name, type) over the entries of `dir`; nothing if it can't be read
+local function each_dir_entry(dir)
+  local handle = vim.loop.fs_scandir(dir)
+  return function()
+    if handle then return vim.loop.fs_scandir_next(handle) end
+  end
+end
+
+-- Returns nil, err on failure
+local function ensure_dir(dir)
+  if vim.fn.mkdir(dir, 'p') == 0 and vim.fn.isdirectory(dir) == 0 then
+    return nil, { string.format('Failed to create %s', dir) }
+  end
 end
 
 -- Identifies one version of a file: a rewrite creates a new inode, so this
@@ -152,73 +152,40 @@ function review_persistence.state_stamp(repo_key, branch_key, review_type)
   return stat and stamp(stat)
 end
 
--- Ensure state directory exists. Returns nil, err on failure.
-local function ensure_dir(dir)
-  if vim.fn.mkdir(dir, 'p') == 0 and vim.fn.isdirectory(dir) == 0 then
-    return nil, { string.format('Failed to create %s', dir) }
-  end
-end
+--[[
+  A state file decodes to
 
--- Mtime (seconds) of the newest state file directly in `dir`, or nil if it
--- holds none. Stat only; save() writes lastUsed and the file at the same
--- instant, so mtime orders branches identically without parsing JSON.
-local function newest_state_mtime(dir)
-  local handle = vim.loop.fs_scandir(dir)
-  if not handle then return nil end
+    { branch_key, records = { [record_key] = ref }, removed = { [record_key] = change_id } }
 
-  local newest
-  while true do
-    local entry, entry_type = vim.loop.fs_scandir_next(handle)
-    if not entry then break end
-    if entry_type == 'file' and entry:match('%.json$') then
-      local stat = vim.loop.fs_stat(dir .. '/' .. entry)
-      if stat and (not newest or stat.mtime.sec > newest) then newest = stat.mtime.sec end
+  where a ref { hash, base_hash, deleted, change_id } names a record's
+  objects (see read_record), and `removed` holds tombstones: keys whose
+  record was removed, so it isn't adopted from another branch again. On
+  disk, each is an entry of `entries`: { approved, base, deleted, change_id }
+  for a record, { change_id } for a tombstone.
+]]
+local function decode(data)
+  local state_file = { branch_key = data.branchName, records = {}, removed = {} }
+  -- A file in the retired classic format has no entries
+  local entries = type(data.entries) == 'table' and data.entries or {}
+  for key, entry in pairs(entries) do
+    if type(entry) == 'table' and type(entry.approved) == 'string' then
+      state_file.records[key] = {
+        hash = entry.approved,
+        base_hash = entry.base,
+        deleted = entry.deleted == true,
+        change_id = entry.change_id,
+      }
+    elseif type(entry) == 'table' and entry.change_id then
+      state_file.removed[key] = entry.change_id
     end
   end
-  return newest
+  return state_file
 end
 
--- List branch dirs holding state, sorted by last use, oldest first. Branch
--- dirs with no state files left are pruned on the way (rmdir only succeeds
--- when empty, so an objects/ dir or stray file keeps the dir).
-local function list_branches(state_dir)
-  local handle = vim.loop.fs_scandir(state_dir)
-  if not handle then return {} end
-
-  local branches = {}
-  while true do
-    local entry, entry_type = vim.loop.fs_scandir_next(handle)
-    if not entry then break end
-    if entry_type == 'directory' then
-      local dir = state_dir .. '/' .. entry
-      local last_used = newest_state_mtime(dir)
-      if last_used then
-        branches[#branches + 1] = { dir = dir, last_used = last_used }
-      else
-        vim.loop.fs_rmdir(dir)
-      end
-    end
-  end
-
-  table.sort(branches, function(a, b) return a.last_used < b.last_used end)
-  return branches
-end
-
--- Evict least-recently-used branches until the repo is within capacity.
--- Called from the quit-time save (never the write-behind one): the current
--- branch was just saved, so it sorts newest and is never a candidate.
-function review_persistence.evict_lru(repo_key)
-  local branches = list_branches(review_persistence.get_state_dir(repo_key))
-  for i = 1, #branches - MAX_BRANCHES do
-    vim.fn.delete(branches[i].dir, 'rf') -- Remove the branch dir and all its state files
-  end
-end
-
--- The decoded state file at `path`, or nil if there is none. Returns nil, err
--- when it can't be used: `err.newer` marks a file from a newer vgit, and
--- `err.unreadable` an I/O failure rather than bad content. libuv/io only
--- (safe in fast event contexts).
-local function load_path(path)
+-- The decoded state file at `path` (see decode), or nil if there is none.
+-- Returns nil, err when it can't be used: `err.newer` marks a file from a
+-- newer vgit, and `err.unreadable` an I/O failure rather than bad content.
+local function read_state_file(path)
   local fd, open_err, err_name = vim.loop.fs_open(path, 'r', 438)
   if not fd then
     if err_name == 'ENOENT' then return nil end
@@ -237,72 +204,44 @@ local function load_path(path)
   if data.version ~= CURRENT_VERSION then
     return nil, { string.format('Unknown schema version %s in %s', tostring(data.version), path) }
   end
-
-  -- A file in the retired classic format has no entries
-  if type(data.entries) ~= 'table' then data.entries = {} end
-  return data
+  return decode(data)
 end
 
--- Load a state file; see load_path
+-- A review's decoded state file; see read_state_file
 function review_persistence.load(repo_key, branch_key, review_type)
-  return load_path(review_persistence.get_state_path(repo_key, branch_key, review_type))
+  return read_state_file(review_persistence.get_state_path(repo_key, branch_key, review_type))
 end
 
--- Decoded sibling state files by path, each tagged with the file's mtime, so
--- opening a review re-reads only the sibling files that changed since.
-local sibling_cache = {}
+-- Decoded state files by path, with the stamp they were read at, so walking
+-- every branch re-reads only the files that changed since
+local state_file_cache = {}
 
--- The other branches' readable state files for `review_type`, most recently
--- used first, as `{ branch_key, data }` tables.
-function review_persistence.load_siblings(repo_key, branch_key, review_type)
-  local state_dir = review_persistence.get_state_dir(repo_key)
-  local handle = vim.loop.fs_scandir(state_dir)
-  if not handle then return {} end
-
-  local own_dir = encode_branch(branch_key)
-  local siblings = {}
-  while true do
-    local entry, entry_type = vim.loop.fs_scandir_next(handle)
-    if not entry then break end
-    local path = state_dir .. '/' .. entry .. '/' .. review_type .. '.json'
-    local stat = entry_type == 'directory' and entry ~= own_dir and vim.loop.fs_stat(path)
-    if stat then
-      local mtime = string.format('%d.%d', stat.mtime.sec, stat.mtime.nsec)
-      local cached = sibling_cache[path]
-      if not cached or cached.mtime ~= mtime then
-        cached = { mtime = mtime, data = load_path(path) }
-        sibling_cache[path] = cached
-      end
-      if cached.data and cached.data.branchName then
-        siblings[#siblings + 1] = { branch_key = cached.data.branchName, data = cached.data }
+-- Iterates (state_file, mtime) over every branch's usable state file of
+-- `review_type`, mtime in fractional seconds. The decoded files are shared
+-- with later walks, so callers must not modify them.
+function review_persistence.each_branch_state(repo_key, review_type)
+  local state_dir = get_state_dir(repo_key)
+  local next_entry = each_dir_entry(state_dir)
+  return function()
+    for name, entry_type in next_entry do
+      local path = string.format('%s/%s/%s.json', state_dir, name, review_type)
+      local stat = entry_type == 'directory' and vim.loop.fs_stat(path)
+      if stat then
+        local cached = state_file_cache[path]
+        if not cached or cached.stamp ~= stamp(stat) then
+          cached = { stamp = stamp(stat), state_file = read_state_file(path) }
+          state_file_cache[path] = cached
+        end
+        if cached.state_file and cached.state_file.branch_key then
+          return cached.state_file, stat.mtime.sec + stat.mtime.nsec / 1e9
+        end
       end
     end
   end
-
-  table.sort(siblings, function(a, b) return (a.data.lastUsed or 0) > (b.data.lastUsed or 0) end)
-  return siblings
-end
-
--- Save state to disk. Does not evict; see evict_lru. Returns the written
--- file's stamp (see state_stamp), or nil, err on failure.
-function review_persistence.save(repo_key, branch_key, review_type, state_data)
-  local path = review_persistence.get_state_path(repo_key, branch_key, review_type)
-  local _, err = ensure_dir(fs.dirname(path))
-  if err then return nil, err end
-
-  -- Add metadata
-  state_data.version = CURRENT_VERSION
-  state_data.lastUsed = os.time()
-  state_data.branchName = branch_key
-
-  local stat
-  stat, err = fs.write_file_atomic(path, { vim.fn.json_encode(state_data) })
-  if err then return nil, err end
-  return stamp(stat)
 end
 
 -- Content hash used to address snapshot objects. Requires main-loop context
--- (vim.fn); callers already free_textlock around load/save.
+-- (vim.fn).
 -- NUL bytes (binary snapshots, e.g. .age secrets) are escaped first: nvim
 -- converts a Lua string containing NULs to a Blob at the vim.fn boundary,
 -- which sha256() rejects (E976). The escape (\1 -> \1\1, \0 -> \1\2) is
@@ -322,8 +261,7 @@ end
 -- NUL bytes and would corrupt binary snapshots on the round-trip; must mirror
 -- fs.write_file's raw format (each line followed by '\n').
 function review_persistence.read_object(repo_key, branch_key, hash)
-  local path = review_persistence.get_objects_dir(repo_key, branch_key) .. '/' .. hash
-  local fd = io.open(path, 'rb')
+  local fd = io.open(get_objects_dir(repo_key, branch_key) .. '/' .. hash, 'rb')
   if not fd then return nil end
   local content = fd:read('*a')
   fd:close()
@@ -333,22 +271,73 @@ function review_persistence.read_object(repo_key, branch_key, hash)
   return vim.split(content, '\n', { plain = true })
 end
 
--- Write snapshot objects: objects is a map of hash -> lines. Existing objects
--- are left alone (content-addressed, so contents are immutable), which is
--- only safe because writes are atomic: a truncated object would otherwise be
--- kept forever. Stops at the first failure, returning nil, err.
-function review_persistence.write_objects(repo_key, branch_key, objects)
-  local dir = review_persistence.get_objects_dir(repo_key, branch_key)
+-- The record a ref (see decode) names in `branch_key`'s object store:
+-- { lines, deleted, base_lines, hash, base_hash }, or nil if an object is
+-- missing.
+function review_persistence.read_record(repo_key, branch_key, ref)
+  local lines = review_persistence.read_object(repo_key, branch_key, ref.hash)
+  local base_lines = ref.base_hash and review_persistence.read_object(repo_key, branch_key, ref.base_hash)
+  if not lines or not base_lines then return nil end
+
+  -- The hashes ride along so saves don't rehash unchanged records
+  return { lines = lines, deleted = ref.deleted, base_lines = base_lines, hash = ref.hash, base_hash = ref.base_hash }
+end
+
+-- Write the objects of `records` (a map of records), hashing each record
+-- that isn't yet and caching the hashes on it; records are never modified
+-- once set, so the hashes stay valid. Existing objects are left alone
+-- (content-addressed, so contents are immutable), which is only safe because
+-- writes are atomic: a truncated object would otherwise be kept forever.
+-- Stops at the first failure, returning nil, err.
+function review_persistence.write_records(repo_key, branch_key, records)
+  local dir = get_objects_dir(repo_key, branch_key)
   local _, err = ensure_dir(dir)
   if err then return nil, err end
 
-  for hash, lines in pairs(objects) do
+  local function write_object(hash, lines)
     local path = dir .. '/' .. hash
-    if not fs.exists(path) then
-      _, err = fs.write_file_atomic(path, lines)
-      if err then return nil, err end
-    end
+    if fs.exists(path) then return end
+    return fs.write_file_atomic(path, lines)
   end
+
+  for _, record in pairs(records) do
+    record.hash = record.hash or review_persistence.hash_lines(record.lines)
+    record.base_hash = record.base_hash or review_persistence.hash_lines(record.base_lines)
+    _, err = write_object(record.hash, record.lines)
+    if not err then _, err = write_object(record.base_hash, record.base_lines) end
+    if err then return nil, err end
+  end
+end
+
+-- Save a review's state file: `records` (written by write_records), with
+-- their `change_ids`, and the tombstones of `removed` (a set) that have a
+-- change id; tombstones only matter for adoption, which goes by change id.
+-- Does not evict; see evict_lru. Returns the written file's stamp (see
+-- state_stamp), or nil, err on failure.
+function review_persistence.save(repo_key, branch_key, review_type, records, change_ids, removed)
+  local entries = {}
+  for key, record in pairs(records) do
+    entries[key] = {
+      approved = record.hash,
+      base = record.base_hash,
+      deleted = record.deleted or nil,
+      change_id = change_ids[key],
+    }
+  end
+  for key in pairs(removed) do
+    if change_ids[key] then entries[key] = { change_id = change_ids[key] } end
+  end
+
+  local path = review_persistence.get_state_path(repo_key, branch_key, review_type)
+  local _, err = ensure_dir(fs.dirname(path))
+  if err then return nil, err end
+
+  -- Readers order branches by mtime now, but older sessions still read lastUsed
+  local data = { version = CURRENT_VERSION, lastUsed = os.time(), branchName = branch_key, entries = entries }
+  local stat
+  stat, err = fs.write_file_atomic(path, { vim.fn.json_encode(data) })
+  if err then return nil, err end
+  return stamp(stat)
 end
 
 -- Collect object hashes referenced by a branch's state files, or nil if one
@@ -359,15 +348,11 @@ local function referenced_hashes(repo_key, branch_key)
     -- Migration: a pre-rename session may have written approvals to the
     -- _indexed file since this session copied it to <type>.json.
     for _, name in ipairs({ review_type, review_type .. '_indexed' }) do
-      local data, err = review_persistence.load(repo_key, branch_key, name)
+      local state_file, err = review_persistence.load(repo_key, branch_key, name)
       if err then return nil end
-      if data then
-        for _, entry in pairs(data.entries) do
-          if type(entry) == 'table' and entry.approved then
-            referenced[entry.approved] = true
-            if entry.base then referenced[entry.base] = true end
-          end
-        end
+      for _, ref in pairs(state_file and state_file.records or {}) do
+        referenced[ref.hash] = true
+        if ref.base_hash then referenced[ref.base_hash] = true end
       end
     end
   end
@@ -377,94 +362,58 @@ end
 -- Delete objects no longer referenced by either review type.
 -- Call after saving state so the JSON files reflect current references.
 function review_persistence.sweep_objects(repo_key, branch_key)
-  local dir = review_persistence.get_objects_dir(repo_key, branch_key)
-  local handle = vim.loop.fs_scandir(dir)
-  if not handle then return end
-
-  local referenced = referenced_hashes(repo_key, branch_key)
+  local dir = get_objects_dir(repo_key, branch_key)
+  local referenced = vim.loop.fs_stat(dir) and referenced_hashes(repo_key, branch_key)
   if not referenced then return end
 
-  while true do
-    local entry, entry_type = vim.loop.fs_scandir_next(handle)
-    if not entry then break end
-    if entry_type == 'file' and not referenced[entry] then
-      fs.remove_file(dir .. '/' .. entry)
-    end
+  for name, entry_type in each_dir_entry(dir) do
+    if entry_type == 'file' and not referenced[name] then fs.remove_file(dir .. '/' .. name) end
   end
 end
 
--- Minimum shared commit-subjects for a stored review to be considered "the review
--- for HEAD" — guards against a coincidental one-commit overlap between branches.
-local MIN_SUBJECT_OVERLAP = 2
-
--- Count how many of a by-commit review's approved entries have a
--- subject hash (the prefix of each entry key) present in head_subjects.
-local function subject_overlap(path, head_subjects)
-  local fd = io.open(path, 'r')
-  if not fd then return 0, nil, 0 end
-  local content = fd:read('*a')
-  fd:close()
-
-  local ok, data = pcall(vim.json.decode, content)
-  if not ok or type(data) ~= 'table' or type(data.entries) ~= 'table' or not data.branchName then
-    return 0, nil, 0, 0
+-- Mtime (seconds) of the newest state file directly in `dir`, or nil if it
+-- holds none. Stat only; save() writes lastUsed and the file at the same
+-- instant, so mtime orders branches identically without parsing JSON.
+local function newest_state_mtime(dir)
+  local newest
+  for name, entry_type in each_dir_entry(dir) do
+    if entry_type == 'file' and name:match('%.json$') then
+      local stat = vim.loop.fs_stat(dir .. '/' .. name)
+      if stat and (not newest or stat.mtime.sec > newest) then newest = stat.mtime.sec end
+    end
   end
+  return newest
+end
 
-  -- Also count the review's distinct stored subjects, so the caller can scale
-  -- its overlap threshold to reviews smaller than the absolute minimum.
-  local overlap, stored, counted = 0, 0, {}
-  for key, entry in pairs(data.entries) do
-    if type(entry) == 'table' and entry.approved then
-      local subject = key:match('^([^:]+)')
-      if subject and not counted[subject] then
-        counted[subject] = true
-        stored = stored + 1
-        if head_subjects[subject] then overlap = overlap + 1 end
+-- List branch dirs holding state, sorted by last use, oldest first. Branch
+-- dirs with no state files left are pruned on the way (rmdir only succeeds
+-- when empty, so an objects/ dir or stray file keeps the dir).
+local function list_branches(state_dir)
+  local branches = {}
+  for name, entry_type in each_dir_entry(state_dir) do
+    if entry_type == 'directory' then
+      local dir = state_dir .. '/' .. name
+      local last_used = newest_state_mtime(dir)
+      if last_used then
+        branches[#branches + 1] = { dir = dir, last_used = last_used }
+      else
+        vim.loop.fs_rmdir(dir)
       end
     end
   end
-  return overlap, data.branchName, data.lastUsed or 0, stored
+
+  table.sort(branches, function(a, b) return a.last_used < b.last_used end)
+  return branches
 end
 
--- Resolve which stored review (branch) best covers HEAD's current commits, keyed on
--- commit subjects (rebase-stable, like the entry keys) so a review is followed across
--- rebases regardless of where the branch bookmark sits. A review qualifies with
--- `MIN_SUBJECT_OVERLAP` matching subjects; below that (a single-commit stack can
--- otherwise never match) it qualifies only if *all* its stored subjects match AND
--- they cover at least half of HEAD's stack — one stray subject (e.g. entries saved
--- under a misresolved key) must not claim a larger stack away from its bookmark.
--- Returns the qualifying branch with the most overlap (ties break toward the most
--- recently used), or nil. Uses libuv/io/vim.json so it's safe in the fast event
--- contexts where the branch resolver runs.
-function review_persistence.branch_by_subjects(repo_key, head_subjects)
-  local head_count = 0
-  for _ in pairs(head_subjects) do
-    head_count = head_count + 1
+-- Evict least-recently-used branches until the repo is within capacity.
+-- Called from the quit-time save (never the write-behind one): the current
+-- branch was just saved, so it sorts newest and is never a candidate.
+function review_persistence.evict_lru(repo_key)
+  local branches = list_branches(get_state_dir(repo_key))
+  for i = 1, #branches - MAX_BRANCHES do
+    vim.fn.delete(branches[i].dir, 'rf') -- Remove the branch dir and all its state files
   end
-  if head_count == 0 then return nil end
-
-  local state_dir = review_persistence.get_state_dir(repo_key)
-  local handle = vim.loop.fs_scandir(state_dir)
-  if not handle then return nil end
-
-  local best_name, best_overlap, best_used = nil, 0, 0
-  local function consider(overlap, branch_key, last_used, stored)
-    local qualifies = overlap >= MIN_SUBJECT_OVERLAP
-      or (overlap > 0 and overlap == stored and 2 * overlap >= head_count)
-    if qualifies and (overlap > best_overlap or (overlap == best_overlap and last_used > best_used)) then
-      best_name, best_overlap, best_used = branch_key, overlap, last_used
-    end
-  end
-
-  while true do
-    local entry, entry_type = vim.loop.fs_scandir_next(handle)
-    if not entry then break end
-    if entry_type == 'directory' and entry ~= 'objects' then
-      consider(subject_overlap(state_dir .. '/' .. entry .. '/by_commit.json', head_subjects))
-    end
-  end
-
-  return best_name
 end
 
 return review_persistence

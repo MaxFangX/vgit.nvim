@@ -26,7 +26,7 @@ describe('ReviewState', function()
         eq(b:get_record('README.md'), nil)
 
         b:save()
-        eq(persistence.load('repo-b', 'main', 'by_file').entries['README.md'], nil)
+        eq(persistence.load('repo-b', 'main', 'by_file').records['README.md'], nil)
       end)
     end)
 
@@ -81,7 +81,7 @@ describe('ReviewState', function()
         state:set_record('b.lua', { 'b' }, false, { 'old' })
         state:save()
       end)
-      eq(vim.tbl_keys(persistence.load('repo', 'feature', 'by_file').entries), { 'b.lua' })
+      eq(vim.tbl_keys(persistence.load('repo', 'feature', 'by_file').records), { 'b.lua' })
       eq(#warnings, 1)
     end)
   end)
@@ -113,7 +113,7 @@ describe('ReviewState', function()
         state:save()
       end)
 
-      eq(vim.tbl_keys(persistence.load('repo', 'feature', 'by_file').entries), { 'a.lua' })
+      eq(vim.tbl_keys(persistence.load('repo', 'feature', 'by_file').records), { 'a.lua' })
       eq(warnings, { 'Failed to save review state: No space left on device' })
     end)
   end)
@@ -159,8 +159,8 @@ describe('ReviewState', function()
       state:set_record('c.lua', { 'c' }, false, { 'old' })
       assert(vim.wait(200, function() return vim.loop.fs_stat(path) ~= nil end, 10), 'not saved yet')
 
-      local entries = persistence.load('repo', 'feature', 'by_file').entries
-      eq(entries['a.lua'] ~= nil and entries['b.lua'] ~= nil, true)
+      local records = persistence.load('repo', 'feature', 'by_file').records
+      eq(records['a.lua'] ~= nil and records['b.lua'] ~= nil, true)
       run(function() state:save() end)
     end)
   end)
@@ -175,8 +175,8 @@ describe('ReviewState', function()
 
     local function saved_lines()
       local lines = {}
-      for key, entry in pairs(persistence.load('repo', 'feature', 'by_file').entries) do
-        lines[key] = persistence.read_object('repo', 'feature', entry.approved)[1]
+      for key, ref in pairs(persistence.load('repo', 'feature', 'by_file').records) do
+        lines[key] = persistence.read_object('repo', 'feature', ref.hash)[1]
       end
       return lines
     end

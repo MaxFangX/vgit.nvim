@@ -6,6 +6,7 @@ local git_repo = require('vgit.git.git_repo')
 local git_hunks = require('vgit.git.git_hunks')
 local git_branch = require('vgit.git.git_branch')
 local hunk_apply = require('vgit.features.screens.hunk_apply')
+local record_keys = require('vgit.features.screens.record_keys')
 local persistence = require('vgit.features.screens.review_persistence')
 
 --[[
@@ -108,6 +109,48 @@ function ReviewModel:get_review_state()
   return self.review_state
 end
 
+-- Minimum shared commit subjects for a stored review to be "the review for
+-- HEAD": guards against a coincidental one-commit overlap between branches.
+local MIN_SUBJECT_OVERLAP = 2
+
+-- The stored by-commit review (its branch key) that best covers HEAD's
+-- commits, given the set of their subject keys (see record_keys). Subjects
+-- survive rebases, like the record keys, so a review is followed across
+-- rebases regardless of where the branch bookmark sits. A review qualifies
+-- with `MIN_SUBJECT_OVERLAP` matching subjects; below that (a single-commit
+-- stack can otherwise never match) it qualifies only if *all* its stored
+-- subjects match AND they cover at least half of HEAD's stack: one stray
+-- subject (e.g. records saved under a misresolved key) must not claim a
+-- larger stack away from its bookmark. Returns the qualifying branch with
+-- the most overlap (ties break toward the most recently used), or nil. Safe
+-- in the fast event contexts where the branch resolver runs.
+function ReviewModel.branch_by_subjects(repo_key, head_subjects)
+  local head_count = vim.tbl_count(head_subjects)
+  if head_count == 0 then return nil end
+
+  local best_key, best_overlap, best_mtime = nil, 0, 0
+  for state_file, mtime in persistence.each_branch_state(repo_key, 'by_commit') do
+    -- Count the review's distinct stored subjects too, to scale the
+    -- threshold to reviews smaller than the absolute minimum
+    local overlap, stored, counted = 0, 0, {}
+    for key in pairs(state_file.records) do
+      local subject = record_keys.split(key)
+      if subject and not counted[subject] then
+        counted[subject] = true
+        stored = stored + 1
+        if head_subjects[subject] then overlap = overlap + 1 end
+      end
+    end
+
+    local qualifies = overlap >= MIN_SUBJECT_OVERLAP
+      or (overlap > 0 and overlap == stored and 2 * overlap >= head_count)
+    if qualifies and (overlap > best_overlap or (overlap == best_overlap and mtime > best_mtime)) then
+      best_key, best_overlap, best_mtime = state_file.branch_key, overlap, mtime
+    end
+  end
+  return best_key
+end
+
 -- Resolve what to review (git_branch.review_target) and the repo name the
 -- index persists under. For a detached jj HEAD no bookmark claims, the branch
 -- is resolved by which stored review covers HEAD's commits (rebase-stable),
@@ -118,9 +161,9 @@ function ReviewModel:resolve_target(reponame, base_arg)
   local target, err = git_branch.review_target(reponame, base_arg, function(base, head)
     local subjects = {}
     for _, commit in ipairs(git_branch.commits_in_range(reponame, base, head) or {}) do
-      subjects[utils.str.fnv1a(vim.trim(commit.message))] = true
+      subjects[record_keys.subject_key(commit.message)] = true
     end
-    return persistence.branch_by_subjects(repo_name, subjects)
+    return ReviewModel.branch_by_subjects(repo_name, subjects)
   end)
   if not target then return nil, err end
 
