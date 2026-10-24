@@ -852,11 +852,14 @@ function ProjectReviewScreen:toggle_focus()
 
   if list_component:is_focused() then
     diff_component:focus()
-    self._current_focus = 'diff'
   else
     list_component:focus()
-    self._current_focus = 'list'
   end
+end
+
+-- 'list' or 'diff'. Derived, since a mouse click switches panes too.
+function ProjectReviewScreen:focused_pane()
+  return self.scene:get('list'):is_focused() and 'list' or 'diff'
 end
 
 function ProjectReviewScreen:handle_list_move()
@@ -1455,12 +1458,10 @@ function ProjectReviewScreen:create(args)
   local saved_focus = review_state:get_position().focus
   if saved_focus == 'list' then
     self.scene:get('list'):focus()
-    self._current_focus = 'list'
   else
     local hunk_alignment = 'smart'
     self.scene:get('current'):focus()
     self.diff_view:move_to_hunk(1, hunk_alignment)
-    self._current_focus = 'diff'
   end
 
   -- Position cursor at source file line (must be after focus logic which resets to first hunk)
@@ -1477,7 +1478,7 @@ function ProjectReviewScreen:create(args)
 end
 
 function ProjectReviewScreen:on_quit()
-  local is_diff_focused = (self._current_focus or 'diff') == 'diff'
+  local is_diff_focused = self:focused_pane() == 'diff'
 
   -- State is saved by destroy() below
 
@@ -1529,12 +1530,11 @@ function ProjectReviewScreen:destroy()
 
   -- Save review state before destroying (handles :q, window close, etc.)
   -- Use pcall since destroy may be called from various contexts
-  local current_focus = self._current_focus
+  local focus = self:focused_pane()
   local ok, err = pcall(function()
     local entry = self.model:get_entry()
     local review_state = self.model:get_review_state()
     if review_state and entry then
-      local focus = current_focus or 'diff'
       local commit_message = entry.commit and entry.commit.message or nil
       review_state:set_position({
         type = entry.type,
