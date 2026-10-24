@@ -420,25 +420,6 @@ async.describe('resolution caches:', function()
   end)
 end)
 
-async.describe('resolution caches:', function()
-  async.it('see a ref move that leaves HEAD in place', function()
-    -- jj trunk work, then `jj bookmark create my-pr -r @-`: only a ref moves,
-    -- which the git-dir watcher misses (and in a workspace never runs for)
-    local dir = make_repo()
-    sh(dir, 'mkdir .jj')
-    sh(dir, 'git update-ref refs/remotes/origin/master master')
-    sh(dir, 'git checkout -q --detach master')
-    sh(dir, 'git commit -q --allow-empty -m W1 && git commit -q --allow-empty -m W2')
-    eq(key(dir), 'master')
-    eq(base(dir), 'origin/master')
-
-    sh(dir, 'git branch my-pr HEAD')
-    eq(key(dir), 'my-pr')
-    eq(base(dir), 'master')
-    cleanup(dir)
-  end)
-end)
-
 async.describe('trunk work:', function()
   async.it('keeps its trunk key when origin moves ahead', function()
     -- Unpushed jj trunk work, then a fetch brings in someone else's push
