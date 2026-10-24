@@ -38,7 +38,7 @@ function ReviewState:constructor(opts)
     review_type = opts.review_type or 'by_file',
     repo_name = opts.repo_name,
     _loaded = false,           -- Whether state has been loaded from disk
-    _skip_persistence = false, -- Set if user declines to delete corrupted state
+    _skip_persistence = false, -- Set when the state file must not be overwritten
   }
 end
 
@@ -97,16 +97,15 @@ function ReviewState:load_from_disk()
   loop.free_textlock()
   local data, err = persistence.load(self.repo_name, self.branch_name, self.review_type)
 
-  if err then
-    local path = persistence.get_state_path(self.repo_name, self.branch_name, self.review_type)
-    local should_delete = persistence.handle_load_error(path, err)
-    if should_delete then
-      persistence.delete(self.repo_name, self.branch_name, self.review_type)
-    else
-      self._skip_persistence = true -- Don't overwrite
-    end
+  -- Never prompt or delete: other sessions, possibly on other vgit
+  -- versions, share the file. Leave a newer or unreadable file alone; a
+  -- corrupt one is replaced by the next save.
+  if err and (err.newer or err.unreadable) then
+    console.warn(string.format('%s; review progress will not be saved this session', err[1]))
+    self._skip_persistence = true
     return
   end
+  if err then console.warn(string.format('Ignoring review state: %s', err[1])) end
 
   -- No file (never saved, or deleted since): nothing is approved
   if not data or type(data.entries) ~= 'table' then

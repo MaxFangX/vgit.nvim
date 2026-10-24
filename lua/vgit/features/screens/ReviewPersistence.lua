@@ -1,6 +1,4 @@
 local fs = require('vgit.core.fs')
-local console = require('vgit.core.console')
-local loop = require('vgit.core.loop')
 
 --[[
   ReviewPersistence handles disk I/O for review state.
@@ -23,7 +21,6 @@ local loop = require('vgit.core.loop')
     - LRU eviction: max 128 branches per repository (all review types for a
       branch count as one), run from the quit-time save via evict_lru; it
       removes the whole branch directory, objects included
-    - Schema versioning: graceful migration with user prompts
     - Automatic lastUsed timestamp updates
 ]]
 
@@ -204,31 +201,36 @@ function ReviewPersistence.evict_lru(repo_name)
   end
 end
 
--- Load a state file by path. Returns: state_data or nil, error_message or nil
+-- The decoded state file at `path`, or nil if there is none. Returns nil, err
+-- when it can't be used: `err.newer` marks a file from a newer vgit, and
+-- `err.unreadable` an I/O failure rather than bad content. libuv/io only
+-- (safe in fast event contexts).
 local function load_path(path)
-  if not fs.exists(path) then
-    return nil, nil -- No existing state (not an error)
+  local fd, open_err, err_name = vim.loop.fs_open(path, 'r', 438)
+  if not fd then
+    if err_name == 'ENOENT' then return nil end
+    return nil, { string.format('Failed to open %s: %s', path, open_err), unreadable = true }
   end
+  local stat = vim.loop.fs_fstat(fd)
+  local content = stat and vim.loop.fs_read(fd, stat.size, 0)
+  vim.loop.fs_close(fd)
+  if not content then return nil, { string.format('Failed to read %s', path), unreadable = true } end
 
-  local content = fs.read_file(path)
-  if not content then
-    return nil, 'Failed to read file'
+  local ok, data = pcall(vim.json.decode, content)
+  if not ok or type(data) ~= 'table' then return nil, { string.format('Failed to parse %s', path) } end
+  if type(data.version) == 'number' and data.version > CURRENT_VERSION then
+    return nil, { string.format('%s is from a newer vgit (schema version %d)', path, data.version), newer = true }
   end
-
-  local ok, data = pcall(vim.fn.json_decode, table.concat(content, '\n'))
-  if not ok or not data then
-    return nil, 'Failed to parse JSON'
-  end
-
   if data.version ~= CURRENT_VERSION then
-    return nil, string.format('Schema version mismatch (got %s, expected %s)', data.version, CURRENT_VERSION)
+    return nil, { string.format('Unknown schema version %s in %s', tostring(data.version), path) }
   end
 
-  return data, nil
+  -- A file in the retired classic format has no entries
+  if type(data.entries) ~= 'table' then data.entries = {} end
+  return data
 end
 
--- Load state from disk
--- Returns: state_data or nil, error_message or nil
+-- Load a state file; see load_path
 function ReviewPersistence.load(repo_name, branch_name, review_type)
   return load_path(ReviewPersistence.get_state_path(repo_name, branch_name, review_type))
 end
@@ -279,25 +281,6 @@ function ReviewPersistence.save(repo_name, branch_name, review_type, state_data)
   state_data.branchName = branch_name
 
   fs.write_file_atomic(path, { vim.fn.json_encode(state_data) })
-end
-
--- Delete state file
-function ReviewPersistence.delete(repo_name, branch_name, review_type)
-  local path = ReviewPersistence.get_state_path(repo_name, branch_name, review_type)
-  if fs.exists(path) then
-    fs.remove_file(path)
-  end
-end
-
--- Handle load error with user prompt
--- Returns: true if user chose to delete, false otherwise
-function ReviewPersistence.handle_load_error(path, error_msg)
-  loop.free_textlock()
-  console.warn(string.format('Failed to load review state: %s', error_msg))
-  console.warn(string.format('State file: %s', path))
-
-  local decision = console.input('Delete corrupted state and start fresh? (y/N) '):lower()
-  return decision == 'y' or decision == 'yes'
 end
 
 -- Content hash used to address snapshot objects. Requires main-loop context

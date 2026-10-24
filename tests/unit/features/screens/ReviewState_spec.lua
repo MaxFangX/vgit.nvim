@@ -43,4 +43,46 @@ describe('ReviewState', function()
       end)
     end)
   end)
+
+  describe('unusable state files:', function()
+    local console = require('vgit.core.console')
+    local path, warnings, warn
+
+    before_each(function()
+      path = persistence.get_state_path('repo', 'feature', 'by_file')
+      vim.fn.mkdir(vim.fn.fnamemodify(path, ':h'), 'p')
+      warnings, warn = {}, console.warn
+      console.warn = function(msg) warnings[#warnings + 1] = msg end
+    end)
+    after_each(function() console.warn = warn end)
+
+    local function feature_review()
+      local state = review.fresh_review_state()({ branch_name = 'feature', review_type = 'by_file', repo_name = 'repo' })
+      state:load_from_disk()
+      return state
+    end
+
+    it('leaves a file from a newer vgit untouched', function()
+      local newer = '{"version":2,"entries":{"a.lua":{"approved":"h"}}}'
+      vim.fn.writefile({ newer }, path)
+      run(function()
+        local state = feature_review()
+        state:set_approved('b.lua', { 'b' }, false, { 'old' })
+        state:save()
+      end)
+      eq(vim.fn.readfile(path), { newer })
+      eq(#warnings, 1)
+    end)
+
+    it('starts fresh from a corrupt file and replaces it on save', function()
+      vim.fn.writefile({ '{"version":1,"entr' }, path)
+      run(function()
+        local state = feature_review()
+        state:set_approved('b.lua', { 'b' }, false, { 'old' })
+        state:save()
+      end)
+      eq(vim.tbl_keys(persistence.load('repo', 'feature', 'by_file').entries), { 'b.lua' })
+      eq(#warnings, 1)
+    end)
+  end)
 end)
