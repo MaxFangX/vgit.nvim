@@ -277,15 +277,12 @@ function ProjectReviewScreen:get_current_file_index(all_files)
     end
   end
 
-  -- On a section header: return first file of the active commit
-  if self.list_view.get_active_commit then
-    local active = self.list_view:get_active_commit()
-    if active and active.hash then
-      for i, info in ipairs(all_files) do
-        if info.commit_hash == active.hash and info.section == active.section then
-          return i, true
-        end
-      end
+  -- On a section header: the section's first file. By-file section rows
+  -- carry the title only as their value.
+  if not current_item.node_type and not current_item.commit_hash then
+    local section = current_item.section_type or current_item.value
+    for i, info in ipairs(all_files) do
+      if info.section == section then return i, true end
     end
   end
 
