@@ -12,11 +12,26 @@ local function sh(dir, cmd)
   assert(vim.v.shell_error == 0, 'command failed: ' .. cmd)
 end
 
--- `branch_for_head` leaves us in a fast event context (async git via vim.schedule),
+-- Git calls leave us in a fast event context (async git via vim.schedule),
 -- where vim.fn.delete is forbidden — hop back to the main loop before cleanup.
 local function cleanup(dir)
   loop.free_textlock()
   vim.fn.delete(dir, 'rf')
+end
+
+-- The review target for `dir`, failing the test on error
+local function target(dir, base_arg, resolve_detached)
+  local result, err = git_branch.review_target(dir, base_arg, resolve_detached)
+  assert(result, vim.inspect(err))
+  return result
+end
+
+local function key(dir, resolve_detached)
+  return target(dir, nil, resolve_detached).branch_key
+end
+
+local function base(dir)
+  return target(dir).base
 end
 
 -- Fresh repo with a single `master` commit. Caller adds topology.
@@ -29,9 +44,10 @@ local function make_repo()
   return dir
 end
 
-async.describe('branch_for_head:', function()
+async.describe('branch key, claimed by a live bookmark (jj):', function()
   async.it('prefers the feature branch over a backup/* snapshot at the same commit', function()
     local dir = make_repo()
+    sh(dir, 'mkdir .jj')
     sh(dir, 'git checkout -q -b feature')
     sh(dir, 'printf "b\\n" >> f.txt && git add f.txt && git commit -q -m B')
     sh(dir, 'git branch backup/feature feature') -- backup sits at the same commit
@@ -39,12 +55,13 @@ async.describe('branch_for_head:', function()
 
     -- backup/feature ties feature at distance 0; without the guard it would win
     -- the alphabetical tie-break and hijack the persistence key.
-    eq(git_branch.branch_for_head(dir), 'feature')
+    eq(key(dir), 'feature')
     cleanup(dir)
   end)
 
   async.it('finds the feature branch when HEAD has moved ahead of its bookmark', function()
     local dir = make_repo()
+    sh(dir, 'mkdir .jj')
     sh(dir, 'git checkout -q -b feature')
     sh(dir, 'printf "b\\n" >> f.txt && git add f.txt && git commit -q -m B')
     -- Leave the `feature` bookmark at B and advance a detached HEAD past it, as jj
@@ -53,7 +70,7 @@ async.describe('branch_for_head:', function()
     sh(dir, 'printf "c\\n" >> f.txt && git add f.txt && git commit -q -m C')
 
     -- feature is the only non-trunk candidate, so it resolves even with HEAD ahead of it.
-    eq(git_branch.branch_for_head(dir), 'feature')
+    eq(key(dir), 'feature')
     cleanup(dir)
   end)
 
@@ -62,6 +79,7 @@ async.describe('branch_for_head:', function()
     -- the branch's stack — different hashes, same subjects — while an
     -- unrelated branch sits fewer commits away.
     local dir = make_repo() -- master @ A
+    sh(dir, 'mkdir .jj')
     sh(dir, 'git checkout -q -b feature && printf "1\\n">>f.txt && git add f.txt && git commit -q -m F1')
     sh(dir, 'printf "2\\n">>f.txt && git add f.txt && git commit -q -m F2') -- feature: A->F1->F2
     sh(dir, 'git checkout -q -b near master && printf "n\\n">>f.txt && git add f.txt && git commit -q -m N') -- near: A->N
@@ -70,7 +88,7 @@ async.describe('branch_for_head:', function()
     sh(dir, 'printf "2x\\n">>f.txt && git add f.txt && git commit -q -m F2') -- F1'->F2'
 
     -- near is closer by raw distance but shares no subjects; feature shares both.
-    eq(git_branch.branch_for_head(dir), 'feature')
+    eq(key(dir), 'feature')
     cleanup(dir)
   end)
 
@@ -78,6 +96,7 @@ async.describe('branch_for_head:', function()
     -- A merged branch's bookmark left sitting on master inherits the trunk's
     -- proximity; it must not hijack the key from the real (diverged) branch.
     local dir = make_repo()
+    sh(dir, 'mkdir .jj')
     sh(dir, 'printf "m\\n">>f.txt && git add f.txt && git commit -q -m M') -- master: A->M
     sh(dir, 'git branch merged-thing master') -- parked on the trunk tip
     sh(dir, 'git checkout -q -b feature && printf "1\\n">>f.txt && git add f.txt && git commit -q -m F1')
@@ -86,40 +105,42 @@ async.describe('branch_for_head:', function()
     sh(dir, 'printf "2\\n">>f.txt && git add f.txt && git commit -q -m F2')
 
     -- merged-thing has no commits past the trunk (zero overlap by construction)
-    eq(git_branch.branch_for_head(dir), 'feature')
+    eq(key(dir), 'feature')
     cleanup(dir)
   end)
 
-  async.it('returns nil when no branch shares HEAD stack subjects', function()
+  async.it('is not claimed when no branch shares HEAD stack subjects', function()
     local dir = make_repo()
+    sh(dir, 'mkdir .jj')
     sh(dir, 'git checkout -q -b stale && printf "s\\n">>f.txt && git add f.txt && git commit -q -m S')
     sh(dir, 'git checkout -q --detach master')
     sh(dir, 'printf "d\\n">>f.txt && git add f.txt && git commit -q -m D')
 
     -- stale is the only candidate but shares no subjects with HEAD's stack;
     -- claiming it would key the review to an unrelated branch.
-    eq(git_branch.branch_for_head(dir), nil)
+    eq(key(dir), 'HEAD')
     cleanup(dir)
   end)
 
-  async.it('ignores trunk, returning nil when only master/backup are candidates', function()
+  async.it('ignores trunk and backups as claimants', function()
     local dir = make_repo()
+    sh(dir, 'mkdir .jj')
     sh(dir, 'git branch backup/master master')
     sh(dir, 'git checkout -q --detach master')
 
-    -- Both candidates are excluded, so there is no feature branch to key on.
-    eq(git_branch.branch_for_head(dir), nil)
+    -- Both candidates are excluded, leaving the trunk containing HEAD
+    eq(key(dir), 'master')
     cleanup(dir)
   end)
 end)
 
-async.describe('detect_base:', function()
+async.describe('base:', function()
   async.it('redirects to origin/master when master has unpushed commits', function()
     local dir = make_repo()
     sh(dir, 'git update-ref refs/remotes/origin/master master')
     sh(dir, 'printf "b\\n" >> f.txt && git add f.txt && git commit -q -m B')
 
-    eq(git_branch.detect_base(dir), 'origin/master')
+    eq(base(dir), 'origin/master')
     cleanup(dir)
   end)
 
@@ -129,7 +150,7 @@ async.describe('detect_base:', function()
     sh(dir, 'git update-ref refs/remotes/origin/main main')
     sh(dir, 'printf "b\\n" >> f.txt && git add f.txt && git commit -q -m B')
 
-    eq(git_branch.detect_base(dir), 'origin/main')
+    eq(base(dir), 'origin/main')
     cleanup(dir)
   end)
 
@@ -139,7 +160,7 @@ async.describe('detect_base:', function()
     sh(dir, 'printf "b\\n" >> f.txt && git add f.txt && git commit -q -m B')
     sh(dir, 'git checkout -q --detach master^') -- jj working-copy parent mid-stack
 
-    eq(git_branch.detect_base(dir), 'origin/master')
+    eq(base(dir), 'origin/master')
     cleanup(dir)
   end)
 
@@ -149,7 +170,7 @@ async.describe('detect_base:', function()
     sh(dir, 'git checkout -q -b feature')
     sh(dir, 'printf "b\\n" >> f.txt && git add f.txt && git commit -q -m B')
 
-    eq(git_branch.detect_base(dir), 'master')
+    eq(base(dir), 'master')
     cleanup(dir)
   end)
 
@@ -162,7 +183,7 @@ async.describe('detect_base:', function()
     sh(dir, 'git checkout -q --detach master')
     sh(dir, 'printf "b\\n" >> f.txt && git add f.txt && git commit -q -m B')
 
-    eq(git_branch.detect_base(dir), 'origin/master')
+    eq(base(dir), 'origin/master')
     cleanup(dir)
   end)
 
@@ -174,7 +195,7 @@ async.describe('detect_base:', function()
     sh(dir, 'printf "b\\n" >> f.txt && git add f.txt && git commit -q -m B')
     sh(dir, 'git branch feature') -- bookmark at HEAD: feature work, not trunk work
 
-    eq(git_branch.detect_base(dir), 'master')
+    eq(base(dir), 'master')
     cleanup(dir)
   end)
 
@@ -186,7 +207,7 @@ async.describe('detect_base:', function()
     sh(dir, 'git checkout -q --detach master')
     sh(dir, 'git branch -f master master^') -- rewind master to A (the PR's pre-merge base)
 
-    eq(git_branch.detect_base(dir), 'master')
+    eq(base(dir), 'master')
     cleanup(dir)
   end)
 
@@ -198,7 +219,7 @@ async.describe('detect_base:', function()
     sh(dir, 'git checkout -q --detach master')
     sh(dir, 'printf "b\\n" >> f.txt && git add f.txt && git commit -q -m B')
 
-    eq(git_branch.detect_base(dir), 'master')
+    eq(base(dir), 'master')
     cleanup(dir)
   end)
 
@@ -206,12 +227,12 @@ async.describe('detect_base:', function()
     local dir = make_repo()
     sh(dir, 'printf "b\\n" >> f.txt && git add f.txt && git commit -q -m B')
 
-    eq(git_branch.detect_base(dir), 'master')
+    eq(base(dir), 'master')
     cleanup(dir)
   end)
 end)
 
-async.describe('current_persistent:', function()
+async.describe('branch key:', function()
   async.it('keys detached trunk work as the trunk in a jj repo', function()
     local dir = make_repo()
     sh(dir, 'mkdir .jj') -- jj.is_repo only checks for this directory
@@ -219,7 +240,7 @@ async.describe('current_persistent:', function()
     sh(dir, 'git branch feature') -- the topology fallback would key on this
     sh(dir, 'git checkout -q --detach master')
 
-    eq(git_branch.current_persistent(dir), 'master')
+    eq(key(dir), 'master')
     cleanup(dir)
   end)
 
@@ -232,7 +253,7 @@ async.describe('current_persistent:', function()
     sh(dir, 'git checkout -q --detach master')
     sh(dir, 'printf "b\\n" >> f.txt && git add f.txt && git commit -q -m B')
 
-    eq(git_branch.current_persistent(dir), 'master')
+    eq(key(dir), 'master')
     cleanup(dir)
   end)
 
@@ -246,7 +267,7 @@ async.describe('current_persistent:', function()
     sh(dir, 'git checkout -q --detach master')
     sh(dir, 'printf "b\\n">>f.txt && git add f.txt && git commit -q -m B')
 
-    eq(git_branch.current_persistent(dir), 'master')
+    eq(key(dir), 'master')
     cleanup(dir)
   end)
 
@@ -258,7 +279,7 @@ async.describe('current_persistent:', function()
     sh(dir, 'printf "b\\n" >> f.txt && git add f.txt && git commit -q -m B')
     sh(dir, 'git branch feature')
 
-    eq(git_branch.current_persistent(dir), 'feature')
+    eq(key(dir), 'feature')
     cleanup(dir)
   end)
 
@@ -272,7 +293,7 @@ async.describe('current_persistent:', function()
     sh(dir, 'git checkout -q -b super && printf "2\\n">>f.txt && git add f.txt && git commit -q -m X1')
     sh(dir, 'git checkout -q --detach super')
 
-    eq(git_branch.current_persistent(dir, function() return 'sub' end), 'super')
+    eq(key(dir, function() return 'sub' end), 'super')
     cleanup(dir)
   end)
 
@@ -283,7 +304,7 @@ async.describe('current_persistent:', function()
     sh(dir, 'mkdir .jj')
     sh(dir, 'git checkout -q --detach master')
 
-    eq(git_branch.current_persistent(dir, function() return 'feature' end), 'feature')
+    eq(key(dir, function() return 'feature' end), 'feature')
     cleanup(dir)
   end)
 end)
@@ -395,12 +416,12 @@ async.describe('resolution caches:', function()
     sh(dir, 'git update-ref refs/remotes/origin/master master')
     sh(dir, 'git checkout -q --detach master')
     sh(dir, 'git commit -q --allow-empty -m W1 && git commit -q --allow-empty -m W2')
-    eq(git_branch.current_persistent(dir), 'master')
-    eq(git_branch.detect_base(dir), 'origin/master')
+    eq(key(dir), 'master')
+    eq(base(dir), 'origin/master')
 
     sh(dir, 'git branch my-pr HEAD')
-    eq(git_branch.current_persistent(dir), 'my-pr')
-    eq(git_branch.detect_base(dir), 'master')
+    eq(key(dir), 'my-pr')
+    eq(base(dir), 'master')
     cleanup(dir)
   end)
 end)
@@ -414,12 +435,12 @@ async.describe('resolution caches:', function()
     sh(dir, 'git update-ref refs/remotes/origin/master master')
     sh(dir, 'git checkout -q --detach master')
     sh(dir, 'git commit -q --allow-empty -m W1 && git commit -q --allow-empty -m W2')
-    eq(git_branch.current_persistent(dir), 'master')
-    eq(git_branch.detect_base(dir), 'origin/master')
+    eq(key(dir), 'master')
+    eq(base(dir), 'origin/master')
 
     sh(dir, 'git branch my-pr HEAD')
-    eq(git_branch.current_persistent(dir), 'my-pr')
-    eq(git_branch.detect_base(dir), 'master')
+    eq(key(dir), 'my-pr')
+    eq(base(dir), 'master')
     cleanup(dir)
   end)
 end)
@@ -434,30 +455,32 @@ async.describe('trunk work:', function()
     sh(dir, 'git checkout -q --detach master')
     sh(dir, 'git commit -q --allow-empty -m U1 && git commit -q --allow-empty -m U2')
 
-    eq(git_branch.current_persistent(dir), 'master')
-    eq(git_branch.detect_base(dir), 'origin/master')
+    eq(key(dir), 'master')
+    eq(base(dir), 'origin/master')
     cleanup(dir)
   end)
 end)
 
-async.describe('branch_for_head threshold:', function()
+async.describe('branch key claim threshold (jj):', function()
   async.it('ignores a stale bookmark sharing one generic subject', function()
     local dir = make_repo()
+    sh(dir, 'mkdir .jj')
     sh(dir, 'git checkout -q -b old-pr && git commit -q --allow-empty -m "Old work"')
     sh(dir, 'git commit -q --allow-empty -m fmt')
     sh(dir, 'git checkout -q --detach master')
     sh(dir, 'git commit -q --allow-empty -m "New feature A" && git commit -q --allow-empty -m fmt')
 
-    eq(git_branch.branch_for_head(dir), nil)
+    eq(key(dir), 'HEAD')
     cleanup(dir)
   end)
 
   async.it('keeps a single-commit stack claimed by its rewritten bookmark', function()
     local dir = make_repo()
+    sh(dir, 'mkdir .jj')
     sh(dir, 'git checkout -q -b feature && git commit -q --allow-empty -m F1')
     sh(dir, 'git checkout -q --detach master && git commit -q --allow-empty -m F1 -m rewritten')
 
-    eq(git_branch.branch_for_head(dir), 'feature')
+    eq(key(dir), 'feature')
     cleanup(dir)
   end)
 end)
@@ -512,6 +535,87 @@ async.describe('fetch_ref_if_stale:', function()
     local log = fetch_log(dir)
     eq(log:find('BatchMode', 1, true), nil)
     assert.is_truthy(log:find('prompt=0', 1, true))
+    cleanup(dir)
+  end)
+end)
+
+async.describe('review head:', function()
+  local function rev(dir, ref)
+    loop.free_textlock()
+    return vim.trim(vim.fn.system({ 'git', '-C', dir, 'rev-parse', ref }))
+  end
+
+  async.it('runs to the claiming bookmark when HEAD is parked mid-stack (jj)', function()
+    local dir = make_repo()
+    sh(dir, 'mkdir .jj')
+    sh(dir, 'git checkout -q -b feature && git commit -q --allow-empty -m F1 && git commit -q --allow-empty -m F2')
+    sh(dir, 'git checkout -q --detach feature~1')
+
+    local t = target(dir)
+    eq({ t.branch_key, t.head_ref, t.head_hash }, { 'feature', 'feature', rev(dir, 'feature') })
+    eq(t.merge_base, rev(dir, 'master'))
+    cleanup(dir)
+  end)
+
+  async.it('stays at HEAD for a diverged bookmark (jj)', function()
+    local dir = make_repo()
+    sh(dir, 'mkdir .jj')
+    sh(dir, 'git checkout -q -b feature && git commit -q --allow-empty -m F1 && git commit -q --allow-empty -m F2')
+    sh(dir, 'git checkout -q --detach master && git commit -q --allow-empty -m F1 && git commit -q --allow-empty -m F2x')
+
+    local t = target(dir)
+    eq({ t.branch_key, t.head_ref, t.head_hash }, { 'feature', 'HEAD', rev(dir, 'HEAD') })
+    cleanup(dir)
+  end)
+
+  async.it('runs to the trunk tip when HEAD is behind it (jj)', function()
+    local dir = make_repo()
+    sh(dir, 'git update-ref refs/remotes/origin/master master')
+    sh(dir, 'mkdir .jj && git commit -q --allow-empty -m B && git checkout -q --detach master~1')
+
+    local t = target(dir)
+    eq({ t.branch_key, t.base, t.head_ref }, { 'master', 'origin/master', 'master' })
+    eq({ t.is_trunk_review, t.unpushed_count }, { true, 1 })
+    cleanup(dir)
+  end)
+
+  async.it('stays at HEAD outside jj', function()
+    local dir = make_repo()
+    sh(dir, 'git checkout -q -b feature && git commit -q --allow-empty -m F1 && git commit -q --allow-empty -m F2')
+    sh(dir, 'git checkout -q --detach feature~1')
+
+    local t = target(dir)
+    eq({ t.branch_key, t.head_ref, t.is_trunk_review, t.unpushed_count }, { 'HEAD', 'HEAD', false, nil })
+    cleanup(dir)
+  end)
+end)
+
+async.describe('stored-review fallback:', function()
+  async.it('is asked with the base and head only when no bookmark claims HEAD', function()
+    local dir = make_repo()
+    sh(dir, 'mkdir .jj && git checkout -q --detach && git commit -q --allow-empty -m D')
+    local asked
+    eq(key(dir, function(...)
+      asked = { ... }
+      return 'stored'
+    end), 'stored')
+    eq(asked[1], 'master')
+    eq(#asked[2], 40)
+
+    sh(dir, 'git branch feature HEAD')
+    asked = nil
+    eq(key(dir, function(...)
+      asked = { ... }
+    end), 'feature')
+    eq(asked, nil)
+    cleanup(dir)
+  end)
+
+  async.it('uses the given base', function()
+    local dir = make_repo()
+    sh(dir, 'git checkout -q -b feature && git commit -q --allow-empty -m F1')
+    eq(target(dir, 'HEAD~1').base, 'HEAD~1')
+    eq(target(dir, '').base, 'master')
     cleanup(dir)
   end)
 end)

@@ -78,44 +78,82 @@ local function split_nul(output)
   return vim.split(output, '\0', { plain = true })
 end
 
-function git_branch.current(reponame)
-  if not reponame then return nil, { 'reponame is required' } end
+-- Resolve a ref to its commit hash, or nil.
+local function rev_parse(reponame, ref)
+  local result, err = gitcli.run({ '-C', reponame, 'rev-parse', '--verify', ref })
+  if err then return nil end
+  return result[1]
+end
 
-  local result, err = gitcli.run({
-    '-C',
-    reponame,
-    'rev-parse',
-    '--abbrev-ref',
-    'HEAD',
-  })
+-- Get the merge-base between two commits/branches
+function git_branch.merge_base(reponame, ref1, ref2)
+  local result, err = gitcli.run({ '-C', reponame, 'merge-base', ref1, ref2 })
   if err then return nil, err end
-  if not result[1] or result[1] == '' then return nil, { 'Could not determine current branch' } end
+  if not result[1] or result[1] == '' then return nil, { 'Could not find merge-base' } end
 
   return result[1]
 end
+
+local TRUNKS = { 'main', 'master' }
+
+-- Mirrors the stored-review resolver's threshold (ReviewPersistence)
+local MIN_SUBJECT_OVERLAP = 2
 
 -- Local branches to ignore when inferring HEAD's branch: trunk (we want the
 -- feature branch, not the base) and `backup/*` snapshots (e.g. from a backup
 -- alias), which otherwise tie with and hijack the real branch.
 local function is_ignored_branch(name)
-  return name == 'master' or name == 'main' or name:match('^backup/') ~= nil
+  return vim.tbl_contains(TRUNKS, name) or name:match('^backup/') ~= nil
+end
+
+-- HEAD's hash and symbolic name ('HEAD' when detached), in one process.
+local function read_head(reponame)
+  local result, err = gitcli.run({ '-C', reponame, 'rev-parse', 'HEAD', '--abbrev-ref', 'HEAD' })
+  if err then return nil, err end
+  if not result[1] or not result[2] then return nil, { 'Could not determine HEAD' } end
+  return result[1], result[2]
+end
+
+-- Every local and remote-tracking branch tip, in one process: `heads` and
+-- `remotes` map short names to hashes, `origin_head` is origin/HEAD's target
+-- ('origin/main'), and `output` is the raw listing (for the fingerprint).
+local function read_refs(reponame)
+  local output, err = gitcli.run({
+    '-C', reponame, 'for-each-ref', '--format=%(objectname) %(refname) %(symref)', 'refs/heads', 'refs/remotes',
+  })
+  if err then return nil, err end
+
+  local refs = { heads = {}, remotes = {}, output = output }
+  for _, line in ipairs(output) do
+    local hash, refname, symref = line:match('^(%x+) (%S+) ?(.*)$')
+    local head = refname and refname:match('^refs/heads/(.+)$')
+    local remote = refname and refname:match('^refs/remotes/(.+)$')
+    if head then
+      refs.heads[head] = hash
+    elseif remote == 'origin/HEAD' then
+      refs.origin_head = symref:match('^refs/remotes/(.+)$')
+    elseif remote then
+      refs.remotes[remote] = hash
+    end
+  end
+  return refs
 end
 
 -- Symmetric distance (commits reachable from one side but not the other) ranks a
 -- branch whether it's ahead of, behind, or diverged from HEAD; runs in parallel.
 -- Assumes `candidates` is sorted, so ties break by name and the key stays stable.
-local function nearest_by_distance(reponame, candidates)
+local function nearest_by_distance(reponame, head, candidates)
   if #candidates == 1 then return candidates[1] end
 
   local commands = {}
   for _, name in ipairs(candidates) do
-    commands[#commands + 1] = { '-C', reponame, 'rev-list', '--count', name .. '...HEAD' }
+    commands[#commands + 1] = { '-C', reponame, 'rev-list', '--count', name .. '...' .. head }
   end
   local results = gitcli.run_parallel(commands)
 
   local best, best_dist
   for i, name in ipairs(candidates) do
-    local out = results[i] and results[i].result
+    local out = results[i].result
     local dist = out and tonumber(out[1]) or math.huge
     if not best_dist or dist < best_dist then
       best, best_dist = name, dist
@@ -124,10 +162,7 @@ local function nearest_by_distance(reponame, candidates)
   return best
 end
 
--- Mirrors the stored-review resolver's threshold (ReviewPersistence)
-local MIN_SUBJECT_OVERLAP = 2
-
--- Resolve HEAD's branch from the live bookmarks. In a jj repo git HEAD
+-- The live bookmark claiming HEAD's stack, or nil. In a jj repo git HEAD
 -- is the working copy's parent, which roams as you rewrite history: it can sit
 -- behind the branch bookmark (which doesn't auto-advance with new work), ahead of
 -- it, or — right after a mid-stack amend, before jj re-exports the bookmark — on a
@@ -138,29 +173,20 @@ local MIN_SUBJECT_OVERLAP = 2
 -- marks are keyed by. A candidate qualifies by sharing a commit with HEAD past
 -- the trunk, or by the stored-review resolver's subject threshold (one shared
 -- generic subject like "fmt" must not let a stale bookmark claim a new
--- stack); nil means no branch claims HEAD's stack. Ties (e.g. a stack and its
--- pristine copy) break by symmetric distance, then by sorted name so the key
--- stays stable.
-local function branch_for_head_uncached(reponame)
-  local refs = gitcli.run({
-    '-C', reponame, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/',
-  })
-
+-- stack). Ties (e.g. a stack and its pristine copy) break by symmetric
+-- distance, then by sorted name so the key stays stable.
+local function claim_head(reponame, head, refs)
   local candidates = {}
-  for _, name in ipairs(refs or {}) do
-    if name ~= '' and not is_ignored_branch(name) then
-      candidates[#candidates + 1] = name
-    end
+  for name in pairs(refs.heads) do
+    if not is_ignored_branch(name) then candidates[#candidates + 1] = name end
   end
-
   if #candidates == 0 then return nil end
   table.sort(candidates)
 
   -- The trunk anchors stack identity (subjects past it); without one there is
   -- no stack notion to compare, so fall back to pure distance.
-  local trunk = (git_branch.exists(reponame, 'main') and 'main')
-    or (git_branch.exists(reponame, 'master') and 'master')
-  if not trunk then return nearest_by_distance(reponame, candidates) end
+  local trunk = (refs.heads.main and 'main') or (refs.heads.master and 'master')
+  if not trunk then return nearest_by_distance(reponame, head, candidates) end
 
   -- Commits past the trunk, as `<hash> <subject>` lines
   local function log_args(ref)
@@ -168,7 +194,7 @@ local function branch_for_head_uncached(reponame)
   end
 
   local head_hashes, head_subjects, head_count = {}, {}, 0
-  for _, line in ipairs(gitcli.run(log_args('HEAD')) or {}) do
+  for _, line in ipairs(gitcli.run(log_args(head)) or {}) do
     local hash, subject = line:match('^(%x+) (.*)$')
     if hash then
       head_hashes[hash] = true
@@ -188,7 +214,7 @@ local function branch_for_head_uncached(reponame)
   local best, best_overlap = {}, 0
   for i, name in ipairs(candidates) do
     local overlap, subjects, shares_commit, counted = 0, 0, false, {}
-    for _, line in ipairs((results[i] and results[i].result) or {}) do
+    for _, line in ipairs(results[i].result or {}) do
       local hash, subject = line:match('^(%x+) (.*)$')
       if hash then
         shares_commit = shares_commit or head_hashes[hash] == true
@@ -212,45 +238,217 @@ local function branch_for_head_uncached(reponame)
   end
 
   if best_overlap == 0 then return nil end
-  return nearest_by_distance(reponame, best)
+  return nearest_by_distance(reponame, head, best)
 end
 
--- Branch and base resolution answer from refs alone, so their caches key on
--- a fingerprint of HEAD and every branch tip: any ref move then misses the
--- cache. The git-dir watcher can't be relied on for that: it doesn't see
--- writes under refs/, and in linked worktrees it doesn't run at all. Its
--- VGitSync (the emit carrying data) still clears the caches, bounding them.
-local function ref_fingerprint(reponame)
-  local head = git_branch.head(reponame)
-  local refs = gitcli.run({
-    '-C', reponame, 'for-each-ref', '--format=%(objectname) %(refname)', 'refs/heads', 'refs/remotes',
-  })
-  if not head or not refs then return nil end
-  return string.format('%s|%s|%s', reponame, head, utils.str.fnv1a(table.concat(refs, '\n')))
+-- Where HEAD sits relative to the trunk and the live bookmarks:
+--   trunk_containing  the trunk HEAD is at or behind ("working on the trunk",
+--                     incl. a jj HEAD detached mid-trunk)
+--   trunk_behind      jj only: the trunk strictly behind HEAD when the commits
+--                     past it are unclaimed, unpushed trunk work (jj bookmarks
+--                     don't auto-advance). In plain git a detached descendant
+--                     HEAD is a deliberate checkout (e.g. reviewing a merged
+--                     PR). HEAD must have commits origin/<trunk> lacks: when
+--                     origin already contains HEAD (a local trunk rewound
+--                     behind it), it is a historical review; origin moving
+--                     ahead (someone else pushed) doesn't make HEAD's commits
+--                     pushed.
+--   claim             jj only: the bookmark claiming HEAD's stack
+--   claim_ahead       whether the claim's tip is strictly ahead of HEAD (a
+--                     bookmark diverged mid-rewrite is not)
+local function locate_head(reponame, head, detached, refs)
+  local loc = { head = head, refs = refs, jj = jj.is_repo(reponame) }
+
+  for _, trunk in ipairs(TRUNKS) do
+    local tip = refs.heads[trunk]
+    local fork = tip and git_branch.merge_base(reponame, tip, head)
+    if fork == head then
+      loc.trunk_containing = loc.trunk_containing or trunk
+    elseif fork == tip and loc.jj and not loc.trunk_behind then
+      local origin_tip = refs.remotes['origin/' .. trunk]
+      if origin_tip and git_branch.merge_base(reponame, origin_tip, head) ~= head then loc.trunk_behind = trunk end
+    end
+  end
+
+  -- Claims only matter for a detached jj HEAD, or to void trunk work
+  if loc.jj and (detached or loc.trunk_behind) then
+    loc.claim = claim_head(reponame, head, refs)
+    local tip = loc.claim and refs.heads[loc.claim]
+    loc.claim_ahead = tip ~= nil and tip ~= head and git_branch.merge_base(reponame, tip, head) == head
+    -- Trunk work only when no feature branch claims the stack
+    if loc.claim then loc.trunk_behind = nil end
+  end
+
+  return loc
 end
 
--- Resolution runs one log per local branch, so it is cached per ref
--- fingerprint. `false` caches a nil resolution.
-local branch_for_head_cache = {}
+-- Locating HEAD runs a log per local branch, yet answers from refs alone, so
+-- it is cached per fingerprint of HEAD and every branch tip: any ref move
+-- misses the cache. The git-dir watcher can't be relied on for that: it
+-- doesn't see writes under refs/, and in linked worktrees it doesn't run at
+-- all. Its VGitSync (the emit carrying data) still clears the cache,
+-- bounding it.
+local locations = {}
 event.custom_on('VGitSync', function(args)
-  if args and args.data then branch_for_head_cache = {} end
+  if args and args.data then locations = {} end
 end)
 
-function git_branch.branch_for_head(reponame)
-  local key = ref_fingerprint(reponame)
+-- Returns the location and HEAD's symbolic name, or nil, err.
+local function locate_head_cached(reponame)
+  local head, branch = read_head(reponame)
+  if not head then return nil, branch end
+  local refs, err = read_refs(reponame)
+  if not refs then return nil, err end
 
-  local cached = key and branch_for_head_cache[key]
-  if cached ~= nil then return cached or nil end
-
-  local result = branch_for_head_uncached(reponame)
-  if key then branch_for_head_cache[key] = result or false end
-  return result
+  local detached = branch == 'HEAD'
+  local fingerprint = utils.str.fnv1a(table.concat(refs.output, '\n'))
+  local key = string.format('%s|%s|%s|%s', reponame, head, tostring(detached), fingerprint)
+  locations[key] = locations[key] or locate_head(reponame, head, detached, refs)
+  return locations[key], branch
 end
 
--- Set of FNV-1a subject hashes for the commits in `base_ref..HEAD`. Subjects
--- survive rebases (unlike commit hashes), and this hash matches the one review
--- marks are keyed by — so callers can identify which stored review covers HEAD's
--- current commits regardless of where any bookmark sits.
+-- The default review base, first that exists:
+--   1. origin/<trunk> when HEAD sits on the trunk itself (at/behind its tip,
+--      where the local trunk would diff as empty, or past a lagging jj
+--      bookmark): reviewing unpushed trunk work
+--   2. local main, then master. Preferred over origin to make it easy to
+--      review a PR *after* it merged: point local master at the PR's
+--      pre-merge base (`git branch -f master <sha>`) and reopen
+--   3. origin/HEAD's target
+--   4. origin/main, then origin/master
+local function detect_base(loc)
+  local refs = loc.refs
+  local trunk = loc.trunk_containing or loc.trunk_behind
+  if trunk and refs.remotes['origin/' .. trunk] then return 'origin/' .. trunk end
+
+  for _, name in ipairs(TRUNKS) do
+    if refs.heads[name] then return name end
+  end
+  if refs.origin_head then return refs.origin_head end
+  for _, name in ipairs(TRUNKS) do
+    if refs.remotes['origin/' .. name] then return 'origin/' .. name end
+  end
+
+  return nil, { 'Could not detect base branch. Please specify it as an argument.' }
+end
+
+-- The persistence key for HEAD's review: its branch, stable across rebases
+-- and in jj-colocated repos. A rebase in progress keys by the branch being
+-- rebased. A detached HEAD is the normal working state in jj (git HEAD sits
+-- at the working copy's parent), so it recovers the branch instead of
+-- collapsing to the literal "HEAD" (a cross-branch dumping ground); in plain
+-- git a deliberate detached checkout still keys as "HEAD".
+--
+-- Live bookmarks outrank the stored-review resolver (`resolve_detached`):
+-- with stacked branches, a substack's reviewed subjects all sit inside the
+-- superstack, so content overlap alone would key the superstack to the
+-- substack's review — only topology can tell "this stack, rebased" from "a
+-- superstack built on it". Both rank by the same subject identity, so a
+-- lagging or diverged bookmark still wins whenever it claims HEAD's stack;
+-- stored reviews remain the fallback for deleted or out-of-reach bookmarks.
+-- Then trunk work keys as the trunk.
+local function branch_key(reponame, loc, branch, base, resolve_detached)
+  local rebase_branch = read_rebase_head_name(reponame)
+  if rebase_branch then return rebase_branch end
+  if branch ~= 'HEAD' or not loc.jj then return branch end
+
+  return loc.claim
+    or (resolve_detached and resolve_detached(base, loc.head))
+    or loc.trunk_containing
+    or loc.trunk_behind
+    or branch
+end
+
+-- The ref (and hash) the review diffs run to. Normally HEAD, but in a jj
+-- repo the working copy is routinely parked mid-stack, and reviewing to HEAD
+-- would silently truncate the review to the commits below the parking spot.
+-- So for a detached jj HEAD, when the claiming branch (or the trunk
+-- containing HEAD) has its tip strictly ahead of HEAD, the review runs to
+-- that tip instead.
+local function review_head(loc, branch)
+  if not loc.jj or branch ~= 'HEAD' then return 'HEAD', loc.head end
+
+  local candidate = loc.claim or loc.trunk_containing
+  local tip = candidate and loc.refs.heads[candidate]
+  local ahead
+  if candidate == loc.claim then
+    ahead = loc.claim_ahead
+  else
+    ahead = tip ~= loc.head
+  end
+  if not ahead then return 'HEAD', loc.head end
+  return candidate, tip
+end
+
+-- Resolve what to review: the base (`base_arg`, else detected), the branch
+-- key the review persists under, the head it runs to (`head_ref` for display,
+-- `head_hash` for every git call, so a ref moving mid-fetch can't mix
+-- commits), and their merge base. A trunk review (base = origin/<branch key>)
+-- also counts its unpushed commits. `resolve_detached(base, head_hash)` is
+-- the stored-review fallback for a detached jj HEAD that no bookmark claims;
+-- it returns a branch key or nil.
+function git_branch.review_target(reponame, base_arg, resolve_detached)
+  local loc, branch = locate_head_cached(reponame)
+  if not loc then return nil, branch end
+
+  local base = base_arg ~= '' and base_arg or nil
+  if not base then
+    local base_err
+    base, base_err = detect_base(loc)
+    if not base then return nil, base_err end
+  end
+
+  local key = branch_key(reponame, loc, branch, base, resolve_detached)
+  local head_ref, head_hash = review_head(loc, branch)
+  local merge_base, mb_err = git_branch.merge_base(reponame, base, head_hash)
+  if not merge_base then return nil, mb_err end
+
+  local is_trunk_review = base == 'origin/' .. key
+  local unpushed_count
+  if is_trunk_review then
+    local count = gitcli.run({ '-C', reponame, 'rev-list', '--count', merge_base .. '..' .. head_hash })
+    unpushed_count = count and tonumber(count[1])
+    if unpushed_count == 0 then unpushed_count = nil end
+  end
+
+  return {
+    base = base,
+    branch_key = key,
+    head_ref = head_ref,
+    head_hash = head_hash,
+    merge_base = merge_base,
+    is_trunk_review = is_trunk_review,
+    unpushed_count = unpushed_count,
+  }
+end
+
+-- Pre-review_target entry points, until the review models move over
+function git_branch.detect_base(reponame)
+  local loc, branch = locate_head_cached(reponame)
+  if not loc then return nil, branch end
+  return detect_base(loc)
+end
+
+function git_branch.current_persistent(reponame, resolve_detached)
+  local loc, branch = locate_head_cached(reponame)
+  if not loc then return nil, branch end
+  return branch_key(reponame, loc, branch, nil, resolve_detached)
+end
+
+function git_branch.review_head(reponame)
+  local loc, branch = locate_head_cached(reponame)
+  if not loc then return 'HEAD' end
+  return (review_head(loc, branch))
+end
+
+-- Get a ref's commit hash (HEAD by default)
+function git_branch.head(reponame, ref)
+  local result, err = gitcli.run({ '-C', reponame, 'rev-parse', ref or 'HEAD' })
+  if err then return nil, err end
+  return result[1]
+end
+
+-- Set of FNV-1a subject hashes for the commits in `base_ref..HEAD`
 function git_branch.head_subject_hashes(reponame, base_ref)
   local subjects = {}
   local commits = git_branch.commits_in_range(reponame, base_ref, 'HEAD')
@@ -258,146 +456,6 @@ function git_branch.head_subject_hashes(reponame, base_ref)
     subjects[utils.str.fnv1a(vim.trim(commit.message))] = true
   end
   return subjects
-end
-
--- Get the original branch name, even when HEAD isn't on a branch ref.
--- Use this for persistence keys that should stay stable across rebases and in
--- jj-colocated repos (where git HEAD sits detached within the branch's stack).
--- `resolve_detached()` (optional) is consulted only for a detached jj HEAD; it
--- returns a branch name (e.g. by matching HEAD's commits to a stored review) or
--- nil to fall through to the topology-based `branch_for_head`.
-function git_branch.current_persistent(reponame, resolve_detached)
-  if not reponame then return nil, { 'reponame is required' } end
-
-  -- Check for rebase-in-progress first (HEAD is detached during rebases)
-  local rebase_branch = read_rebase_head_name(reponame)
-  if rebase_branch then return rebase_branch end
-
-  local branch, err = git_branch.current(reponame)
-  if err then return nil, err end
-
-  -- Detached HEAD. In a jj-colocated repo this is the normal working state (git
-  -- HEAD sits at the working copy's parent), so recover the branch instead of
-  -- collapsing to the literal "HEAD" (a cross-branch dumping ground). Gated on jj
-  -- so a deliberate detached checkout in a plain-git repo still keys as "HEAD".
-  --
-  -- Live bookmarks (`branch_for_head`) outrank the stored-review resolver:
-  -- with stacked branches, a substack's reviewed subjects all sit inside the
-  -- superstack, so content overlap alone would key the superstack to the
-  -- substack's review — only topology can tell "this stack, rebased" from "a
-  -- superstack built on it". Both rank by the same subject identity, so a
-  -- lagging or diverged bookmark still wins whenever it claims HEAD's stack;
-  -- stored reviews remain the fallback for deleted or out-of-reach bookmarks.
-  if branch == 'HEAD' and jj.is_repo(reponame) then
-    local resolved = git_branch.branch_for_head(reponame)
-      or (resolve_detached and resolve_detached())
-    if resolved then return resolved end
-    -- HEAD at/behind the trunk means trunk work (reviewed against origin);
-    -- `branch_for_head` ignores trunk branches, so check here. HEAD *past*
-    -- the trunk with no feature branch in reach is trunk work too: jj
-    -- bookmarks don't auto-advance, so unpushed trunk commits leave the
-    -- bookmark behind HEAD.
-    return git_branch.trunk_containing_head(reponame)
-      or git_branch.trunk_behind_head(reponame)
-      or branch
-  end
-
-  return branch
-end
-
--- Get a ref's commit hash (HEAD by default)
-function git_branch.head(reponame, ref)
-  if not reponame then return nil, { 'reponame is required' } end
-
-  local result, err = gitcli.run({
-    '-C',
-    reponame,
-    'rev-parse',
-    ref or 'HEAD',
-  })
-  if err then return nil, err end
-  if not result[1] or result[1] == '' then return nil, { 'Could not determine HEAD' } end
-
-  return result[1]
-end
-
--- Check if a local branch exists
-function git_branch.exists(reponame, branch_name)
-  if not reponame then return false end
-  if not branch_name then return false end
-
-  -- Note: Don't use --quiet here, as gitcli.run detects errors via stderr.
-  -- Without --quiet, git outputs to stderr when ref doesn't exist.
-  local _, err = gitcli.run({
-    '-C',
-    reponame,
-    'show-ref',
-    '--verify',
-    'refs/heads/' .. branch_name,
-  })
-
-  return err == nil
-end
-
--- Check if a ref exists (can be local branch, remote-tracking, tag, etc.)
-function git_branch.ref_exists(reponame, ref)
-  if not reponame then return false end
-  if not ref then return false end
-
-  local _, err = gitcli.run({
-    '-C',
-    reponame,
-    'rev-parse',
-    '--verify',
-    ref,
-  })
-
-  return err == nil
-end
-
--- Get the merge-base between two commits/branches
-function git_branch.merge_base(reponame, ref1, ref2)
-  if not reponame then return nil, { 'reponame is required' } end
-  if not ref1 then return nil, { 'ref1 is required' } end
-  if not ref2 then return nil, { 'ref2 is required' } end
-
-  local result, err = gitcli.run({
-    '-C',
-    reponame,
-    'merge-base',
-    ref1,
-    ref2,
-  })
-  if err then return nil, err end
-  if not result[1] or result[1] == '' then return nil, { 'Could not find merge-base' } end
-
-  return result[1]
-end
-
--- The local trunk branch (main/master) that HEAD sits on — i.e. HEAD is at or
--- behind its tip. This identifies "working on the trunk itself", including in
--- jj-colocated repos where HEAD is detached at the working-copy parent, as
--- opposed to a feature branch with commits past the trunk (a descendant HEAD
--- returns nil; see `trunk_behind_head` for the descendant case).
-function git_branch.trunk_containing_head(reponame)
-  local head = git_branch.head(reponame)
-  if not head then return nil end
-
-  for _, trunk in ipairs({ 'main', 'master' }) do
-    -- HEAD is ancestor-or-equal of the trunk iff merge-base(trunk, HEAD) == HEAD
-    if git_branch.exists(reponame, trunk) and git_branch.merge_base(reponame, trunk, 'HEAD') == head then
-      return trunk
-    end
-  end
-
-  return nil
-end
-
--- Resolve a ref to its commit hash, or nil.
-local function rev_parse(reponame, ref)
-  local result, err = gitcli.run({ '-C', reponame, 'rev-parse', '--verify', ref })
-  if err then return nil end
-  return result[1]
 end
 
 local FETCH_INTERVAL_SECS = 3600
@@ -456,142 +514,6 @@ function git_branch.fetch_ref_if_stale(reponame, ref)
       console.info(string.format('Fetched %s — reopen to see updated diff', ref))
     end
   end)()
-end
-
--- The local trunk branch (main/master) sitting strictly behind HEAD, when the
--- commits past it are unclaimed trunk work rather than a feature branch. This
--- is the jj-colocated shape of "on the trunk with unpushed commits": bookmarks
--- don't auto-advance, so committing on the trunk leaves HEAD ahead of the
--- trunk bookmark, with no feature branch anywhere near HEAD. Guards:
---   - jj repos only: in plain git a detached descendant HEAD is a deliberate
---     checkout (e.g. reviewing a merged PR), not everyday trunk work.
---   - HEAD must have commits origin/<trunk> lacks: when origin already
---     contains HEAD (a local trunk rewound behind it), this is a historical
---     review, not trunk work. Origin moving ahead (someone else pushed)
---     doesn't change that HEAD's commits are unpushed.
---   - no feature branch may claim HEAD's stack (`branch_for_head`, which
---     matches by shared commit subjects — stale unrelated bookmarks don't
---     block the trunk fallback).
-function git_branch.trunk_behind_head(reponame)
-  if not jj.is_repo(reponame) then return nil end
-
-  local head = git_branch.head(reponame)
-  if not head then return nil end
-
-  for _, trunk in ipairs({ 'main', 'master' }) do
-    local tip = rev_parse(reponame, 'refs/heads/' .. trunk)
-    local behind = tip and tip ~= head and git_branch.merge_base(reponame, trunk, 'HEAD') == tip
-    local origin_tip = behind and rev_parse(reponame, 'refs/remotes/origin/' .. trunk) or nil
-    if origin_tip and git_branch.merge_base(reponame, 'origin/' .. trunk, 'HEAD') ~= head then
-      return git_branch.branch_for_head(reponame) == nil and trunk or nil
-    end
-  end
-
-  return nil
-end
-
--- The ref review diffs run to. Normally HEAD, but in a jj-colocated repo the
--- working copy is routinely parked mid-stack (git HEAD sits at the working
--- copy's parent), and reviewing to HEAD would silently truncate the review
--- to the commits below the parking spot. So for a detached jj HEAD, when the
--- branch claiming HEAD's stack (or the trunk containing HEAD) has its tip
--- strictly ahead of HEAD, the review runs to that tip instead. A bookmark
--- that has diverged from HEAD (mid-rewrite, before jj re-exports) is not
--- ahead of it, so it falls through to HEAD rather than dropping HEAD's
--- commits from the range.
-function git_branch.review_head(reponame)
-  if not reponame or not jj.is_repo(reponame) then return 'HEAD' end
-  if git_branch.current(reponame) ~= 'HEAD' then return 'HEAD' end
-
-  local head = git_branch.head(reponame)
-  if not head then return 'HEAD' end
-
-  local candidate = git_branch.branch_for_head(reponame) or git_branch.trunk_containing_head(reponame)
-  if not candidate then return 'HEAD' end
-
-  local tip = rev_parse(reponame, 'refs/heads/' .. candidate)
-  local ahead = tip and tip ~= head and git_branch.merge_base(reponame, candidate, 'HEAD') == head
-  return ahead and candidate or 'HEAD'
-end
-
--- Try to detect the default branch (main/master)
--- Prefers a local main/master branch over origin/<branch>. This makes it easy
--- to review a PR *after* it has merged: just point local master at the PR's
--- pre-merge base (`git branch -f master <sha>`) and reopen the review.
--- Exception: when HEAD sits on the trunk itself — at/behind its tip (where
--- the local trunk would diff as empty) or ahead of a lagging jj bookmark —
--- the origin counterpart is used: reviewing unpushed trunk work.
-local function detect_base_uncached(reponame)
-  -- On the trunk itself: review against origin so unpushed commits show up
-  local trunk = git_branch.trunk_containing_head(reponame) or git_branch.trunk_behind_head(reponame)
-  if trunk and git_branch.ref_exists(reponame, 'origin/' .. trunk) then
-    return 'origin/' .. trunk
-  end
-
-  -- Prefer a local main/master branch (easy to point wherever you want)
-  local has_main = git_branch.exists(reponame, 'main')
-  local has_master = git_branch.exists(reponame, 'master')
-
-  if has_main and not has_master then
-    return 'main'
-  end
-  if has_master and not has_main then
-    return 'master'
-  end
-  if has_main then
-    return 'main'
-  end
-
-  -- Fall back to origin/HEAD (most reliable remote default)
-  local result, _ = gitcli.run({
-    '-C',
-    reponame,
-    'symbolic-ref',
-    'refs/remotes/origin/HEAD',
-  })
-
-  if result and result[1] then
-    -- Result is like "refs/remotes/origin/main"
-    local branch = result[1]:match('refs/remotes/origin/(.+)')
-    if branch and branch ~= '' then
-      return 'origin/' .. branch
-    end
-  end
-
-  -- Fall back to checking for origin/main or origin/master
-  local has_origin_main = git_branch.ref_exists(reponame, 'origin/main')
-  local has_origin_master = git_branch.ref_exists(reponame, 'origin/master')
-
-  if has_origin_main and not has_origin_master then
-    return 'origin/main'
-  end
-  if has_origin_master and not has_origin_main then
-    return 'origin/master'
-  end
-  if has_origin_main then
-    return 'origin/main'
-  end
-
-  -- Could not detect (avoid network operations)
-  return nil, { 'Could not detect base branch. Please specify it as an argument.' }
-end
-
--- Detection runs several git calls (~200ms in a large repo), so it is
--- cached per ref fingerprint, like `branch_for_head`.
-local detect_base_cache = {}
-event.custom_on('VGitSync', function(args)
-  if args and args.data then detect_base_cache = {} end
-end)
-
-function git_branch.detect_base(reponame)
-  if not reponame then return nil, { 'reponame is required' } end
-
-  local key = ref_fingerprint(reponame)
-  if key and detect_base_cache[key] then return detect_base_cache[key] end
-
-  local base, err = detect_base_uncached(reponame)
-  if key and base then detect_base_cache[key] = base end
-  return base, err
 end
 
 -- Get commits between merge-base and HEAD (the PR commits)
