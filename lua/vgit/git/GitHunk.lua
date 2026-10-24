@@ -103,11 +103,10 @@ function GitHunk:push(line)
   return self
 end
 
--- Return the inverse hunk: sides swapped, removed and added lines flipped.
--- Forward-applying the inverse undoes the hunk. This positions better than
--- `git apply --reverse`: git locates a patch by its old-side line numbers
--- even when reversing, and only the inverse hunk is numbered by the side
--- the undo actually targets (e.g. the index, for a HEAD->index hunk).
+-- Return the inverse hunk, which undoes this one when applied. Even when
+-- reversing, `git apply` locates a patch by its old-side line numbers, but
+-- only the inverse hunk numbers that side by the target of the undo (e.g. the
+-- index, for a HEAD->index hunk), so it applies where `--reverse` can miss.
 function GitHunk:invert()
   local previous, current = self:parse_header()
   local removed, added = self:parse_diff()
@@ -123,11 +122,10 @@ function GitHunk:invert()
   return inverted
 end
 
--- Build a sub-hunk containing only the selected pair rows (row r pairs
--- removed[r]/added[r], the pairing the diff layouts render). The selection
--- must be contiguous (it comes from a visual range); the sub-hunk gets a
--- renumbered header so it can be applied on its own. Returns self when the
--- selection covers the whole hunk, nil when it selects nothing.
+-- Return a sub-hunk of only the selected rows, renumbered to apply on its own.
+-- Row r pairs removed[r] with added[r], as the diff layouts render them. `rows`
+-- is a set of contiguous rows. Returns self when it covers the whole hunk, nil
+-- when it selects nothing.
 function GitHunk:select_rows(rows)
   local lo, hi
   for r in pairs(rows) do
@@ -153,10 +151,10 @@ function GitHunk:select_rows(rows)
 
   local previous, current = self:parse_header()
 
-  -- A selected span starts at its row offset into the hunk's span. When the
-  -- selection leaves a side empty, git numbers that zero-count side by the
-  -- line BEFORE the change: the last unselected line of the hunk preceding
-  -- the selection (or the original anchor if that side was already empty).
+  -- A selected side starts at its row offset into the hunk. Git numbers a
+  -- zero-count side by the line before the change, so a side the selection
+  -- leaves empty is numbered by its last line before the selection, or keeps
+  -- the original anchor if it was already empty.
   local old_start
   if removed_count > 0 then
     old_start = previous[1] + lo - 1

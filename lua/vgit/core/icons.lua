@@ -1,7 +1,7 @@
 local icons = {}
 
--- nvim-web-devicons, or false when it isn't installed. Required once: a
--- failing require costs ~80 us, paid per list row.
+-- nvim-web-devicons, or false when it isn't installed. A failing require costs
+-- ~80 us per list row, so the failure is cached too.
 local web_devicons
 
 function icons.get(fname, extension)

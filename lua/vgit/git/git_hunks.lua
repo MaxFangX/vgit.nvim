@@ -5,7 +5,6 @@ local git_setting = require('vgit.settings.git')
 
 local git_hunks = {}
 
--- Parse raw diff output lines into GitHunk objects
 local function parse(lines)
   local result = {}
   for i = 1, #lines do
@@ -19,8 +18,9 @@ local function parse(lines)
   return result
 end
 
--- Hunks between two line arrays via in-process xdiff (sub-millisecond at
--- thousands of lines, and unlike `git diff --no-index`, fine with NULs).
+-- Hunks between two line arrays, diffed in process by xdiff. Unlike
+-- `git diff --no-index`, this takes under a millisecond at thousands of lines
+-- and handles NULs.
 function git_hunks.live(reponame, original_lines, current_lines)
   local function join(lines)
     return #lines == 0 and '' or table.concat(lines, '\n') .. '\n'

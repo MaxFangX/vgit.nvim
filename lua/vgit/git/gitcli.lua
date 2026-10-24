@@ -5,8 +5,8 @@ local git_setting = require('vgit.settings.git')
 
 local gitcli = {}
 
--- Returns stdout lines, or with `opts.raw` stdout as one unsplit string (for
--- `-z` output). By default any stderr output is a failure. `opts.by_exit_code`
+-- Returns stdout lines, or with `opts.raw` one unsplit string (for `-z`
+-- output). By default any stderr output is a failure. `opts.by_exit_code`
 -- judges by the exit code instead, for read-only commands whose stderr can
 -- carry warnings on success (rename-limit, ambiguous refnames, signatures).
 -- `opts.env` replaces the environment (luv's `KEY=value` list).
@@ -56,11 +56,9 @@ local function to_lines(content)
 end
 
 -- Parse `cat-file --batch` output for `count` requests. Each response is a
--- '<oid> <type> <size>' header plus content, or '<request> missing' (also
--- 'ambiguous'). Only blobs count as found: a tree (file <-> dir change) or a
--- gitlink (submodule) isn't file content. Requests naming the same blob
--- (a commit's parent side is often the previous commit's current side)
--- share one line array, so callers must treat line arrays as immutable.
+-- '<oid> <type> <size>' header plus content, or '<request> missing' (or
+-- 'ambiguous'). Only blobs are file content, so a tree (file <-> dir change)
+-- or a gitlink (submodule) counts as missing.
 local function parse_batch(output, count)
   local results = {}
   local blob_lines = {} -- oid -> lines
@@ -89,10 +87,10 @@ local function parse_batch(output, count)
 end
 
 -- Fetch many objects' contents through one `git cat-file --batch` process.
--- `requests` is a list of object names (e.g. '<rev>:<path>'); returns a list
--- aligned with it: { lines = {...} } or { missing = true } per request, or
--- nil, err if git fails. Responses are framed by byte-length headers, so any
--- content (including binary) parses safely.
+-- `requests` is a list of object names (e.g. '<rev>:<path>'). Returns a list
+-- aligned with it of { lines = {...} } or { missing = true }, or nil, err if
+-- git fails. Requests for the same blob share one line array, so line arrays
+-- must not be modified.
 gitcli.cat_file_batch = loop.suspend(function(reponame, requests, callback)
   if #requests == 0 then return callback({}) end
 

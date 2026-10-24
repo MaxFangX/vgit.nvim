@@ -6,20 +6,15 @@ local jj = {}
 --[[
   jj (Jujutsu) awareness.
 
-  vgit is a git plugin, but jj is commonly used colocated with git. In a colocated
-  repo jj keeps git's HEAD detached at the working copy's parent, so git-only logic
-  that assumes an attached branch (e.g. persistence keys) misbehaves. These helpers
-  let vgit detect a jj repo and adapt. Resolution stays git-native (jj's bookmark
-  namespace can diverge from git branches, so it isn't a reliable source for
-  git-keyed state); the jj binary is only consulted for change ids
-  (`attach_change_ids`: display, and following marks across rewording), with
-  graceful fallback when it's absent. No helper here ever moves the user's
-  checkout.
+  In a repo colocated with git, jj keeps git HEAD detached at the working
+  copy's parent, so logic that assumes an attached branch (e.g. persistence
+  keys) must adapt. Branch resolution stays git-native, since jj bookmarks can
+  diverge from git branches. The jj binary is only consulted for change ids,
+  which are shown in place of hashes and follow a commit's records across
+  rewording, and vgit works without it.
 ]]
 
--- Whether `reponame` is managed by jj (has a `.jj` store at its root). Used to
--- gate jj-aware behavior so plain-git users are unaffected. Uses libuv, so it's
--- safe in fast event contexts.
+-- Whether `reponame` has a `.jj` store at its root. Safe in fast event contexts.
 function jj.is_repo(reponame)
   if not reponame then return false end
   local stat = vim.loop.fs_stat(reponame .. '/.jj')
@@ -27,19 +22,17 @@ function jj.is_repo(reponame)
 end
 
 -- jj stores an unresolved conflict in the git tree as sidecar paths
--- (.jjconflict-base-N/…, .jjconflict-side-N/…) plus a JJ-CONFLICT-README. These
--- are jj bookkeeping, not reviewable changes — and they can number in the
--- thousands, dominating diff/review load time — so vgit filters them out. The
--- names are jj-reserved, so the check is safe to run unconditionally.
+-- (.jjconflict-base-N/…, .jjconflict-side-N/…) plus a JJ-CONFLICT-README.
+-- jj reserves these names, so the check is safe outside jj repos too.
 function jj.is_conflict_artifact(filepath)
   if not filepath then return false end
   return filepath:match('^%.jjconflict%-') ~= nil or filepath == 'JJ-CONFLICT-README'
 end
 
 -- Run a jj subcommand under `reponame`, returning its stdout, or nil if jj is
--- missing or exits nonzero. Every call passes `--ignore-working-copy`: jj
--- would otherwise snapshot the working copy and reset it to git HEAD, and a
--- viewer must never move the user's checkout.
+-- missing or exits nonzero. Without `--ignore-working-copy`, jj would snapshot
+-- the working copy and reset it to git HEAD, but a viewer must never move the
+-- user's checkout.
 local run_jj = loop.suspend(function(reponame, args, callback)
   local argv = { '-R', reponame, '--ignore-working-copy', '--color', 'never' }
   for _, arg in ipairs(args) do
@@ -61,11 +54,10 @@ local run_jj = loop.suspend(function(reponame, args, callback)
   }):start()
 end, 3)
 
--- Map full git commit hashes -> `{ id, short }` jj change ids in one `jj log`
--- call, where `short` is the shortest unique prefix `jj log` shows.
--- `present()` drops commits jj hasn't imported instead of erroring, so an
--- unknown commit is just missing from the map. Returns nil when jj is
--- missing or fails; callers then keep git hashes.
+-- Map full git commit hashes to `{ id, short }` jj change ids in one `jj log`
+-- call, where `short` is the shortest unique prefix. `present()` skips commits
+-- jj hasn't imported instead of erroring, so they are missing from the map.
+-- Returns nil if jj is missing or fails.
 local function fetch_change_ids(reponame, commit_hashes)
   local revset = {}
   for i, hash in ipairs(commit_hashes) do
@@ -90,8 +82,8 @@ end
 -- Attach jj change ids to each commit (`{ hash = ... }` tables) in a jj repo.
 -- `change_id` is the full id, which identifies a commit across rewording.
 -- `change_id_short` is the shortest unique prefix, for display. Outside jj
--- repos, or when jj is unavailable, this is a no-op and git short hashes
--- remain the display. Must be called from a coroutine context.
+-- repos, or when jj is unavailable, this is a no-op. Must be called from a
+-- coroutine.
 function jj.attach_change_ids(reponame, commits)
   if not jj.is_repo(reponame) then return end
 

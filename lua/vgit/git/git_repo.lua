@@ -26,7 +26,7 @@ function git_repo.discover(filepath)
   return result[1]
 end
 
--- The absolute git dir. In a linked worktree (or jj workspace) that is the
+-- The absolute git dir. In a linked worktree or jj workspace, this is the
 -- per-worktree dir under the main repo's `.git/worktrees/`.
 function git_repo.dirname()
   local reponame, err = git_repo.discover()
@@ -124,10 +124,9 @@ function git_repo.clean(reponame, filepath)
   })
 end
 
--- The repo's name: origin's URL basename (`git@h:u/repo.git`,
--- `https://h/u/repo`), or the directory name without one. It names the
--- review state dir, and every review open asks, so it is cached per repo
--- until the git dir changes.
+-- The repo's name: the basename of origin's URL (`git@h:u/repo.git` and
+-- `https://h/u/repo` both give `repo`), else of the repo dir. Every review
+-- open asks, so names are cached until the git dir changes.
 local names = {}
 event.custom_on('VGitSync', function(args)
   if args and args.data then names = {} end

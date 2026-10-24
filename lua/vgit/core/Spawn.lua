@@ -71,8 +71,8 @@ function Spawn:start()
     env = self.spec.env,
   }, on_exit)
 
-  -- Spawn failed (e.g. command not found): report it as stderr and exit -1,
-  -- so callers waiting on on_exit don't hang
+  -- If spawning failed (e.g. command not found), report it as stderr and exit
+  -- -1, so callers waiting on on_exit don't hang
   if not handle then
     stderr_result[1] = err
     on_exit(-1, 0)

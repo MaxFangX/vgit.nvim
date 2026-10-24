@@ -7,8 +7,8 @@ local event = require('vgit.core.event')
 
 local git_branch = {}
 
--- Read a file's first line, or nil. Uses io.open rather than fs.read_file
--- (vim.fn.readfile) so it's safe in fast event contexts, where this may run.
+-- Read a file's first line, or nil. This may run in fast event contexts,
+-- where fs.read_file (vim.fn.readfile) isn't allowed, so it uses io.open.
 local function read_first_line(path)
   local fd = io.open(path, 'r')
   if not fd then return nil end
@@ -17,13 +17,12 @@ local function read_first_line(path)
   return line
 end
 
--- Resolve a repo's git dir. For a normal repo this is `<reponame>/.git`; for a
--- linked worktree `<reponame>/.git` is a file ("gitdir: <path>") pointing at the
--- main repo's `.git/worktrees/<name>/`, where that worktree's state actually lives.
+-- Resolve a repo's git dir: `<reponame>/.git`, or in a linked worktree, the
+-- dir that file points to ("gitdir: <path>") under the main repo's
+-- `.git/worktrees/`.
 local function resolve_git_dir(reponame)
   local dotgit = reponame .. '/.git'
 
-  -- A regular file (not a dir) means a linked worktree; follow its gitdir pointer.
   local stat = vim.loop.fs_stat(dotgit)
   if stat and stat.type == 'file' then
     local gitdir = (read_first_line(dotgit) or ''):match('^gitdir:%s*(.-)%s*$')
@@ -36,11 +35,8 @@ local function resolve_git_dir(reponame)
   return dotgit
 end
 
--- Read the original branch name during a rebase.
--- Interactive rebase stores in rebase-merge/, regular rebase in rebase-apply/.
--- Resolving the git dir first (rather than hand-building `<reponame>/.git/...`)
--- keeps this correct in linked worktrees, where that literal path doesn't exist
--- and we'd otherwise fall back to a detached "HEAD" as the persistence key.
+-- Read the original branch name during a rebase. Git keeps it under
+-- rebase-merge/ or rebase-apply/, depending on the rebase backend.
 local function read_rebase_head_name(reponame)
   local git_dir = resolve_git_dir(reponame)
 
@@ -53,12 +49,11 @@ local function read_rebase_head_name(reponame)
   return nil
 end
 
--- Parse `--name-status -z` records from NUL-split `tokens`, starting at
--- index `i`, into `files`. Stops at the first token that isn't a status (or
--- the trailing empty token) and returns its index. A rename or copy carries
--- two paths, source first; git's first status after a log header is
--- preceded by a newline. jj conflict artifacts aren't reviewable changes,
--- and can number in the thousands, so they are dropped here.
+-- Parse `--name-status -z` records from NUL-split `tokens` into `files`,
+-- starting at index `i`. Returns the index of the first token that isn't a
+-- status. In `git log` output, a newline precedes the first status after a
+-- commit's header. jj conflict artifacts aren't reviewable changes and can
+-- number in the thousands, so they are dropped.
 local function parse_name_status(tokens, i, files)
   while tokens[i] do
     local status = tokens[i]:match('^\n?(%u)%d*$')
@@ -88,7 +83,6 @@ local function rev_parse(reponame, ref)
   return result[1]
 end
 
--- Get the merge-base between two commits/branches
 local function merge_base(reponame, ref1, ref2)
   local result, err = gitcli.run({ '-C', reponame, 'merge-base', ref1, ref2 })
   if err then return nil, err end
@@ -99,12 +93,12 @@ end
 
 local TRUNKS = { 'main', 'master' }
 
--- Mirrors the stored-review resolver's threshold (ReviewPersistence)
+-- Matches ReviewModel.branch_by_subjects's threshold
 local MIN_SUBJECT_OVERLAP = 2
 
--- Local branches to ignore when inferring HEAD's branch: trunk (we want the
--- feature branch, not the base) and `backup/*` snapshots (e.g. from a backup
--- alias), which otherwise tie with and hijack the real branch.
+-- Local branches that never claim HEAD: the trunk, which is the base rather
+-- than the feature branch, and `backup/*` snapshots, which would otherwise tie
+-- with the real branch.
 local function is_ignored_branch(name)
   return vim.tbl_contains(TRUNKS, name) or name:match('^backup/') ~= nil
 end
@@ -142,9 +136,10 @@ local function read_refs(reponame)
   return refs
 end
 
--- Symmetric distance (commits reachable from one side but not the other) ranks a
--- branch whether it's ahead of, behind, or diverged from HEAD; runs in parallel.
--- Assumes `candidates` is sorted, so ties break by name and the key stays stable.
+-- The candidate nearest HEAD by symmetric distance (commits reachable from one
+-- side but not the other), which ranks a branch whether it is ahead of, behind,
+-- or diverged from HEAD. `candidates` must be sorted, so ties break by name and
+-- the result stays stable.
 local function nearest_by_distance(reponame, head, candidates)
   if #candidates == 1 then return candidates[1] end
 
@@ -165,19 +160,20 @@ local function nearest_by_distance(reponame, head, candidates)
   return best
 end
 
--- The live bookmark claiming HEAD's stack, or nil. In a jj repo git HEAD
--- is the working copy's parent, which roams as you rewrite history: it can sit
--- behind the branch bookmark (which doesn't auto-advance with new work), ahead of
--- it, or — right after a mid-stack amend, before jj re-exports the bookmark — on a
--- sibling that has *diverged* from it. Geometry can't tell those apart from stale
--- unrelated branches (or merged bookmarks parked on the trunk, which inherit the
--- trunk's proximity), so candidates are ranked by stack identity instead: overlap
--- of commit subjects past the trunk — the same rewrite-stable identity the review
--- marks are keyed by. A candidate qualifies by sharing a commit with HEAD past
--- the trunk, or by the stored-review resolver's subject threshold (one shared
--- generic subject like "fmt" must not let a stale bookmark claim a new
--- stack). Ties (e.g. a stack and its pristine copy) break by symmetric
--- distance, then by sorted name so the key stays stable.
+-- The live bookmark claiming HEAD's stack, or nil.
+--
+-- In a jj repo, git HEAD is the working copy's parent, which moves as history
+-- is rewritten. It can sit behind the branch bookmark; ahead of it, since
+-- bookmarks don't advance with new work; or, right after a mid-stack amend and
+-- before jj re-exports the bookmark, on a sibling that diverged from it.
+-- Distance can't tell those apart from stale unrelated branches, or from merged
+-- bookmarks parked on the trunk. So candidates are ranked by stack identity
+-- instead: the commit subjects past the trunk they share with HEAD, which
+-- record keys also use because they survive rewrites. A candidate qualifies by
+-- sharing a commit with HEAD past the trunk, or by meeting the stored-review
+-- resolver's subject threshold, so one shared generic subject like "fmt" can't
+-- let a stale bookmark claim a new stack. Ties, e.g. a stack and its pristine
+-- copy, break by distance.
 local function claim_head(reponame, head, refs)
   local candidates = {}
   for name in pairs(refs.heads) do
@@ -186,8 +182,8 @@ local function claim_head(reponame, head, refs)
   if #candidates == 0 then return nil end
   table.sort(candidates)
 
-  -- The trunk anchors stack identity (subjects past it); without one there is
-  -- no stack notion to compare, so fall back to pure distance.
+  -- Stack identity is the subjects past the trunk, so without a trunk fall
+  -- back to distance.
   local trunk = (refs.heads.main and 'main') or (refs.heads.master and 'master')
   if not trunk then return nearest_by_distance(reponame, head, candidates) end
 
@@ -245,21 +241,19 @@ local function claim_head(reponame, head, refs)
 end
 
 -- Where HEAD sits relative to the trunk and the live bookmarks:
---   trunk_containing  the trunk HEAD is at or behind ("working on the trunk",
---                     incl. a jj HEAD detached mid-trunk)
---   trunk_behind      jj only: the trunk strictly behind HEAD when the commits
---                     past it are unclaimed, unpushed trunk work (jj bookmarks
---                     don't auto-advance). In plain git a detached descendant
---                     HEAD is a deliberate checkout (e.g. reviewing a merged
---                     PR). HEAD must have commits origin/<trunk> lacks: when
---                     origin already contains HEAD (a local trunk rewound
---                     behind it), it is a historical review; origin moving
---                     ahead (someone else pushed) doesn't make HEAD's commits
---                     pushed.
+--   trunk_containing  the trunk HEAD is at or behind, including a jj HEAD
+--                     detached mid-trunk
+--   trunk_behind      jj only, since jj bookmarks don't advance with new
+--                     work: the trunk strictly behind HEAD, when the commits
+--                     past it are unclaimed trunk work that origin/<trunk>
+--                     lacks. If origin contains HEAD, e.g. a local trunk
+--                     rewound behind it, this is a historical review instead.
+--                     In plain git, a detached HEAD past the trunk is a
+--                     deliberate checkout, e.g. of a merged PR.
 --   claim             jj only: the bookmark claiming HEAD's stack
---   ahead             detached jj only: the claim (else the trunk containing
---                     HEAD) when its tip is strictly ahead of HEAD (a
---                     bookmark diverged mid-rewrite is not)
+--   ahead             detached jj only: the claim, else the trunk containing
+--                     HEAD, if its tip is strictly ahead of HEAD. A bookmark
+--                     diverged mid-rewrite is not.
 local function locate_head(reponame, head, detached, refs)
   local loc = { head = head, refs = refs, jj = jj.is_repo(reponame) }
 
@@ -293,12 +287,11 @@ local function locate_head(reponame, head, detached, refs)
   return loc
 end
 
--- Locating HEAD runs a log per local branch, yet answers from refs alone, so
--- it is cached per fingerprint of HEAD and every branch tip: any ref move
--- misses the cache. The git-dir watcher can't be relied on for that: it
--- doesn't see writes under refs/, and in linked worktrees it doesn't run at
--- all. Its VGitSync (the emit carrying data) still clears the cache,
--- bounding it.
+-- Locating HEAD runs a log per local branch but depends only on the refs, so
+-- it is cached by HEAD and a fingerprint of every branch tip. The git-dir
+-- watcher can't invalidate it, since the watcher doesn't see writes under
+-- refs/ and doesn't run in linked worktrees. Its VGitSync still clears the
+-- cache, which bounds its size.
 local locations = {}
 event.custom_on('VGitSync', function(args)
   if args and args.data then locations = {} end
@@ -319,12 +312,11 @@ local function locate_head_cached(reponame)
 end
 
 -- The default review base, first that exists:
---   1. origin/<trunk> when HEAD sits on the trunk itself (at/behind its tip,
---      where the local trunk would diff as empty, or past a lagging jj
---      bookmark): reviewing unpushed trunk work
---   2. local main, then master. Preferred over origin to make it easy to
---      review a PR *after* it merged: point local master at the PR's
---      pre-merge base (`git branch -f master <sha>`) and reopen
+--   1. origin/<trunk> when HEAD is on the trunk (at or behind its tip, or
+--      past a lagging jj bookmark), to review unpushed trunk work
+--   2. local main, then master. These beat origin so that a PR can be
+--      reviewed after it merged: point local master at the PR's pre-merge
+--      base (`git branch -f master <sha>`) and reopen
 --   3. origin/HEAD's target
 --   4. origin/main, then origin/master
 local function detect_base(loc)
@@ -343,21 +335,18 @@ local function detect_base(loc)
   return nil, { 'Could not detect base branch. Please specify it as an argument.' }
 end
 
--- The persistence key for HEAD's review: its branch, stable across rebases
--- and in jj-colocated repos. A rebase in progress keys by the branch being
--- rebased. A detached HEAD is the normal working state in jj (git HEAD sits
--- at the working copy's parent), so it recovers the branch instead of
--- collapsing to the literal "HEAD" (a cross-branch dumping ground); in plain
--- git a deliberate detached checkout still keys as "HEAD".
+-- The persistence key for HEAD's review: its branch, which is stable across
+-- rebases. A rebase in progress keys by the branch being rebased. In plain
+-- git, a deliberately detached HEAD keys as "HEAD". In jj, however, git HEAD
+-- is always detached at the working copy's parent, so the branch is recovered
+-- instead of keying every branch's work under "HEAD".
 --
--- Live bookmarks outrank the stored-review resolver (`resolve_detached`):
--- with stacked branches, a substack's reviewed subjects all sit inside the
+-- With stacked branches, a substack's reviewed subjects all sit inside the
 -- superstack, so content overlap alone would key the superstack to the
--- substack's review — only topology can tell "this stack, rebased" from "a
--- superstack built on it". Both rank by the same subject identity, so a
--- lagging or diverged bookmark still wins whenever it claims HEAD's stack;
--- stored reviews remain the fallback for deleted or out-of-reach bookmarks.
--- Then trunk work keys as the trunk.
+-- substack's review. Only topology can tell "this stack, rebased" from "a
+-- superstack built on it", so live bookmarks outrank the stored-review
+-- resolver (`resolve_detached`). Stored reviews are the fallback for deleted
+-- or unreachable bookmarks, then trunk work keys as the trunk.
 local function branch_key(reponame, loc, branch, base, resolve_detached)
   local rebase_branch = read_rebase_head_name(reponame)
   if rebase_branch then return rebase_branch end
@@ -380,12 +369,12 @@ local function review_head(loc)
 end
 
 -- Resolve what to review: the base (`base_arg`, else detected), the branch
--- key the review persists under, the head it runs to (`head_ref` for display,
--- `head_hash` for every git call, so a ref moving mid-fetch can't mix
--- commits), and their merge base. A trunk review (base = origin/<branch key>)
--- also counts its unpushed commits. `resolve_detached(base, head_hash)` is
--- the stored-review fallback for a detached jj HEAD that no bookmark claims;
--- it returns a branch key or nil.
+-- key the review persists under, the head it runs to, and their merge base.
+-- `head_ref` is for display, and every git call uses `head_hash`, so a ref
+-- moving mid-fetch can't mix commits. A trunk review (base = origin/<branch
+-- key>) also counts its unpushed commits. `resolve_detached(base, head_hash)`
+-- is the stored-review fallback for a detached jj HEAD that no bookmark
+-- claims, returning a branch key or nil.
 function git_branch.review_target(reponame, base_arg, resolve_detached)
   local loc, branch = locate_head_cached(reponame)
   if not loc then return nil, branch end
@@ -479,7 +468,7 @@ function git_branch.fetch_ref_if_stale(reponame, ref)
   end)()
 end
 
--- Get commits between merge-base and HEAD (the PR commits)
+-- Commits in `base_ref..head_ref`, oldest first
 function git_branch.commits_in_range(reponame, base_ref, head_ref)
   if not reponame then return nil, { 'reponame is required' } end
   if not base_ref then return nil, { 'base_ref is required' } end
@@ -517,9 +506,8 @@ end
 
 -- The by-commit review's commits in `merge_base..head`, oldest first, from one
 -- git log: { hash, short_hash, message, body, files }. `message` is the
--- subject (%s, which joins a multi-line first paragraph; record keys hash
--- it), `body` the full message as lines (like `git show -s --format=%B`),
--- `files` the name-status list.
+-- subject (%s), which joins a multi-line first paragraph and which record keys
+-- hash. `body` is the full message as lines, and `files` the name-status list.
 function git_branch.review_commits(reponame, merge_base, head)
   -- Per commit: '\1<hash>', short hash, subject, body, then name-status records
   local output, err = gitcli.run({
@@ -557,7 +545,7 @@ function git_branch.review_commits(reponame, merge_base, head)
   return commits
 end
 
--- Get files changed between two refs
+-- Files changed on `head_ref` since its merge base with `base_ref`
 function git_branch.changed_files(reponame, base_ref, head_ref)
   if not reponame then return nil, { 'reponame is required' } end
   if not base_ref then return nil, { 'base_ref is required' } end
