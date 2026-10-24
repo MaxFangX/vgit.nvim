@@ -199,7 +199,8 @@ end
 
 function Component:set_filetype(filetype)
   self.buffer:set_option('filetype', filetype)
-  self.buffer:set_option('syntax', filetype)
+  -- The FileType autocmd loads the syntax; load it here only if it didn't
+  if self.buffer:get_option('syntax') ~= filetype then self.buffer:set_option('syntax', filetype) end
 
   return self
 end

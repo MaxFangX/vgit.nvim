@@ -306,7 +306,8 @@ end
 
 -- Neovim disables regex syntax for a buffer once a redraw exceeds
 -- 'redrawtime' (easy under heavy system load), and only a syntax reset
--- re-enables it. Called on every render and hunk jump so it self-heals.
+-- re-enables it. Called on every render so it self-heals; not on hunk
+-- jumps, where re-sourcing the syntax cost more than the jump itself.
 function DiffView:reset_syntax()
   local filetype = self.props.filetype()
   if not filetype then return end
@@ -869,7 +870,6 @@ function DiffView:move_to_hunk(mark_index, pos)
   end
 
   self:move_to_mark(marks, mark_index, pos)
-  self:reset_syntax()
 
   local msg = string.format('%s%s/%s Changes', string.rep(' ', 1), mark_index, #marks)
   self:notify(msg)

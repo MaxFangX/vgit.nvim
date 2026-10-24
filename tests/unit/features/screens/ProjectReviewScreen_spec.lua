@@ -248,6 +248,16 @@ describe('ProjectReviewScreen', function()
       H.assert_consistent()
     end)
 
+    it('doesn\'t reload syntax to step hunks within a file', function()
+      H.open('file')
+      local loads = 0
+      local autocmd = vim.api.nvim_create_autocmd('Syntax', { callback = function() loads = loads + 1 end })
+      H.keys('j')
+      H.keys('k')
+      vim.api.nvim_del_autocmd(autocmd)
+      eq({ 'unseen a/x.lua', 0 }, { H.entry(), loads })
+    end)
+
     it('jumps to the file edge with J/K, then crosses', function()
       H.open('file')
       H.keys('J')
