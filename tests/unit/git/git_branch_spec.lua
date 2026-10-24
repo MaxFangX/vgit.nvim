@@ -303,3 +303,69 @@ async.describe('review listings:', function()
     cleanup(dir)
   end)
 end)
+
+async.describe('file listings:', function()
+  local git_show = require('vgit.git.git_show')
+
+  -- HEAD~1: base files; HEAD: one commit adding awkward paths, a rename with
+  -- spaces, and a copy of a modified file (C under diff.renames=copies)
+  local function make_paths_repo()
+    local dir = make_repo()
+    sh(dir, 'git config diff.renames copies')
+    sh(dir, [[printf "x\n" > "old name.txt" && seq 1 50 > src.txt && git add -A && git commit -q -m base]])
+    sh(dir, [[printf "u\n" > "café.txt" && printf "q\n" > 'q"uote.txt' && printf "t\n" > "$(printf 'ta\tb.txt')"]])
+    sh(dir, [[git mv "old name.txt" "new name.txt" && cp src.txt dst.txt && echo 51 >> src.txt]])
+    sh(dir, 'git add -A && git commit -q -m paths')
+    return dir
+  end
+
+  local expected = {
+    { status = 'A', filepath = 'café.txt' },
+    { status = 'C', filepath = 'dst.txt', old_filepath = 'src.txt' },
+    { status = 'R', filepath = 'new name.txt', old_filepath = 'old name.txt' },
+    { status = 'A', filepath = 'q"uote.txt' },
+    { status = 'M', filepath = 'src.txt' },
+    { status = 'A', filepath = 'ta\tb.txt' },
+  }
+
+  local function sorted(files)
+    table.sort(files, function(a, b)
+      return a.filepath < b.filepath
+    end)
+    return files
+  end
+
+  async.it('parse quoted, non-ASCII, tab, renamed and copied paths', function()
+    local dir = make_paths_repo()
+
+    eq(sorted(git_branch.changed_files(dir, 'HEAD~1', 'HEAD')), expected)
+    local by_commit = git_branch.all_commit_files(dir, 'HEAD~1', 'HEAD')
+    eq(sorted(vim.tbl_values(by_commit)[1]), expected)
+
+    -- Every parsed path names a real object
+    local specs = {}
+    for _, file in ipairs(expected) do
+      specs[#specs + 1] = 'HEAD:' .. file.filepath
+    end
+    for _, result in ipairs(git_show.lines_batch(dir, specs)) do
+      eq(result.missing, nil)
+    end
+    cleanup(dir)
+  end)
+
+  async.it('keep empty commits in the per-commit map', function()
+    local dir = make_paths_repo()
+    sh(dir, 'git commit -q --allow-empty -m empty')
+    sh(dir, 'printf "b\\n" >> f.txt && git commit -q -am after')
+
+    local by_commit = git_branch.all_commit_files(dir, 'HEAD~3', 'HEAD')
+    loop.free_textlock()
+    local function files_of(rev)
+      return by_commit[vim.trim(vim.fn.system({ 'git', '-C', dir, 'rev-parse', rev }))]
+    end
+    eq(#files_of('HEAD~2'), #expected)
+    eq(files_of('HEAD~1'), {})
+    eq(files_of('HEAD'), { { status = 'M', filepath = 'f.txt' } })
+    cleanup(dir)
+  end)
+end)

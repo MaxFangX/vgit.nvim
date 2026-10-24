@@ -51,31 +51,29 @@ local function read_rebase_head_name(reponame)
   return nil
 end
 
--- Parse file status lines from git diff --name-status or diff-tree --name-status
-local function parse_file_status_lines(lines)
-  local files = {}
-  for _, line in ipairs(lines) do
-    if line ~= '' then
-      -- Handle renames: R100\told_name\tnew_name
-      local status, old_name, new_name = line:match('^(R%d*)%s+(.+)%s+(.+)$')
-      if status then
-        files[#files + 1] = {
-          status = 'R',
-          filepath = new_name,
-          old_filepath = old_name,
-        }
-      else
-        status, old_name = line:match('^(%a)%s+(.+)$')
-        if status then
-          files[#files + 1] = {
-            status = status,
-            filepath = old_name,
-          }
-        end
-      end
+-- Parse `--name-status -z` records from NUL-split `tokens`, starting at
+-- index `i`, into `files`. Stops at the first token that isn't a status (or
+-- the trailing empty token) and returns its index. A rename or copy carries
+-- two paths, source first; git's first status after a log header is
+-- preceded by a newline.
+local function parse_name_status(tokens, i, files)
+  while tokens[i] do
+    local status = tokens[i]:match('^\n?(%u)%d*$')
+    if not status then break end
+
+    if status == 'R' or status == 'C' then
+      files[#files + 1] = { status = status, old_filepath = tokens[i + 1], filepath = tokens[i + 2] }
+      i = i + 3
+    else
+      files[#files + 1] = { status = status, filepath = tokens[i + 1] }
+      i = i + 2
     end
   end
-  return files
+  return i
+end
+
+local function split_nul(output)
+  return vim.split(output, '\0', { plain = true })
 end
 
 function git_branch.current(reponame)
@@ -667,17 +665,20 @@ function git_branch.changed_files(reponame, base_ref, head_ref)
 
   head_ref = head_ref or 'HEAD'
 
-  local result, err = gitcli.run({
+  local output, err = gitcli.run({
     '-C',
     reponame,
     '--no-pager',
     'diff',
     '--name-status',
+    '-z',
     base_ref .. '...' .. head_ref,
-  }, { by_exit_code = true })
+  }, { by_exit_code = true, raw = true })
   if err then return nil, err end
 
-  return parse_file_status_lines(result)
+  local files = {}
+  parse_name_status(split_nul(output), 1, files)
+  return files
 end
 
 -- Get files changed in a specific commit
@@ -685,19 +686,22 @@ function git_branch.commit_files(reponame, commit_hash)
   if not reponame then return nil, { 'reponame is required' } end
   if not commit_hash then return nil, { 'commit_hash is required' } end
 
-  local result, err = gitcli.run({
+  local output, err = gitcli.run({
     '-C',
     reponame,
     '--no-pager',
     'diff-tree',
     '--no-commit-id',
     '--name-status',
+    '-z',
     '-r',
     commit_hash,
-  })
+  }, { raw = true })
   if err then return nil, err end
 
-  return parse_file_status_lines(result)
+  local files = {}
+  parse_name_status(split_nul(output), 1, files)
+  return files
 end
 
 -- Get files changed for all commits in a range (batched, single git command)
@@ -708,57 +712,31 @@ function git_branch.all_commit_files(reponame, base_ref, head_ref)
 
   head_ref = head_ref or 'HEAD'
 
-  -- Use git log with --name-status to get files for all commits in one call
-  -- Format: commit hash on one line, then file status lines, then empty line
-  local result, err = gitcli.run({
+  -- Each commit is a `COMMIT:<hash>` token followed by its name-status records
+  local output, err = gitcli.run({
     '-C',
     reponame,
     '--no-pager',
     'log',
     '--reverse',
     '--name-status',
-    '--pretty=format:COMMIT:%H',
+    '-z',
+    '--format=COMMIT:%H',
     base_ref .. '..' .. head_ref,
-  }, { by_exit_code = true })
+  }, { by_exit_code = true, raw = true })
   if err then return nil, err end
 
   local commit_files = {}
-  local current_hash = nil
-  local current_files = {}
-
-  for _, line in ipairs(result) do
-    local hash = line:match('^COMMIT:(.+)$')
+  local tokens = split_nul(output)
+  local i = 1
+  while tokens[i] do
+    local hash = tokens[i]:match('^COMMIT:(%x+)$')
     if hash then
-      -- Save previous commit's files
-      if current_hash then
-        commit_files[current_hash] = current_files
-      end
-      current_hash = hash
-      current_files = {}
-    elseif line ~= '' and current_hash then
-      -- Parse file status line
-      local status, old_name, new_name = line:match('^(R%d*)%s+(.+)%s+(.+)$')
-      if status then
-        current_files[#current_files + 1] = {
-          status = 'R',
-          filepath = new_name,
-          old_filepath = old_name,
-        }
-      else
-        status, old_name = line:match('^(%a)%s+(.+)$')
-        if status then
-          current_files[#current_files + 1] = {
-            status = status,
-            filepath = old_name,
-          }
-        end
-      end
+      commit_files[hash] = {}
+      i = parse_name_status(tokens, i + 1, commit_files[hash])
+    else
+      i = i + 1
     end
-  end
-
-  -- Save last commit's files
-  if current_hash then
-    commit_files[current_hash] = current_files
   end
 
   return commit_files

@@ -60,9 +60,10 @@ local function spawn_fast(spec)
   stderr:read_start(on_stderr)
 end
 
--- By default any stderr output is a failure. `opts.by_exit_code` judges by
--- the exit code instead, for read-only commands whose stderr can carry
--- warnings on success (rename-limit, ambiguous refnames, signatures).
+-- Returns stdout lines, or with `opts.raw` stdout as one unsplit string (for
+-- `-z` output). By default any stderr output is a failure. `opts.by_exit_code`
+-- judges by the exit code instead, for read-only commands whose stderr can
+-- carry warnings on success (rename-limit, ambiguous refnames, signatures).
 gitcli.run = loop.suspend(function(args, opts, callback)
   local cmd = git_setting:get('cmd')
 
@@ -80,9 +81,12 @@ gitcli.run = loop.suspend(function(args, opts, callback)
     on_stderr = function(line)
       err[#err + 1] = line
     end,
-    on_stdout = function(line)
+    on_stdout = not opts.raw and function(line)
       stdout[#stdout + 1] = line
-    end,
+    end or nil,
+    on_stdout_raw = opts.raw and function(output)
+      stdout = output
+    end or nil,
     on_exit = function(code)
       local failed
       if opts.by_exit_code then
