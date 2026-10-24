@@ -168,6 +168,12 @@ describe('fs:', function()
       eq(err, nil)
       eq(data, { 'foo', 'baz' })
     end)
+
+    a.it('reports why it failed, path included', function()
+      local path = vim.fn.tempname() .. '/missing/dir/file'
+      local _, err = fs.write_file(path, { 'foo' })
+      eq(err, { path .. ': No such file or directory' })
+    end)
   end)
 
   a.describe('remove_file', function()

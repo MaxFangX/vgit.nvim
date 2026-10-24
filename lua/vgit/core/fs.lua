@@ -39,8 +39,8 @@ function fs.read_file(filepath)
 end
 
 function fs.write_file(filepath, lines)
-  local fd = io.open(filepath, 'wb')
-  if not fd then return nil, { 'no file descriptor found' } end
+  local fd, open_err = io.open(filepath, 'wb')
+  if not fd then return nil, { open_err } end
 
   local ok, err = true, nil
   for i = 1, #lines do
