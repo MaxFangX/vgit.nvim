@@ -2,43 +2,30 @@
 local review = dofile('tests/helpers/review.lua')
 local ReviewState = require('vgit.features.screens.ReviewState')
 local ReviewModel = require('vgit.features.screens.ReviewModel')
+local ByFileModel = require('vgit.features.screens.ProjectReviewByFileScreen.Model')
 local hunk_apply = require('vgit.features.screens.hunk_apply')
 
 local eq = assert.are.same
 
--- Minimal concrete model: contents are injected directly, entries are static.
-local TestModel = ReviewModel:extend()
-
-function TestModel:constructor(opts)
-  return ReviewModel.constructor(self, opts)
-end
-
-function TestModel:get_entry_key(entry)
-  return entry.filepath
-end
-
-function TestModel:get_review_type()
-  return 'by_file'
-end
-
-function TestModel:rebuild_entries() end
-
 local FILE = 'foo.lua'
 
+-- A by-file model of one modified file with the given contents
 local function make_model(contents)
-  local model = TestModel({ layout_type = 'unified' })
+  local model = ByFileModel({ layout_type = 'unified' })
   model.state.reponame = '.'
   model.review_state = ReviewState({ review_type = 'by_file' })
-  model:set_contents(FILE, contents)
+  local item = ReviewModel.new_item({ filepath = FILE, status = 'M' }, { id = FILE, record_key = FILE })
+  item.contents = contents
+  model:set_items({ item })
   return model
 end
 
 local function unseen_entry()
-  return { filepath = FILE, type = 'unseen' }
+  return { id = FILE .. '|unseen', filepath = FILE, type = 'unseen' }
 end
 
 local function seen_entry()
-  return { filepath = FILE, type = 'seen' }
+  return { id = FILE .. '|seen', filepath = FILE, type = 'seen' }
 end
 
 describe('ReviewModel reconcile:', function()
@@ -125,13 +112,13 @@ describe('ReviewModel reconcile:', function()
     local new_base = { 'a', 'b-rewritten', 'c' }
     model = make_model({ base = new_base, current = { 'a', 'B', 'c' } })
 
-    eq(model:reconcile_record(FILE, model:get_contents(unseen_entry())), nil)
+    eq(model:reconcile_record(model.state.items[1]), nil)
     eq(model.review_state:get_record(FILE), nil)
   end)
 
   it('titles a trunk review with its unpushed commit count', function()
     local model = make_model({ base = {}, current = {} })
-    model.state.branch_name = 'master'
+    model.state.branch_key = 'master'
     model.state.base_branch = 'origin/master'
 
     model.state.unpushed_count = 4
@@ -172,6 +159,8 @@ describe('ReviewModel chained marking:', function()
       local kind = rand(4)
       if kind == 1 then base = {} elseif kind == 2 then current = {} end
       local model = make_model({ base = base, current = current, current_deleted = kind == 2 })
+      -- Contents are shared line arrays (see ReviewModel), so ops must not touch them
+      local base_copy, current_copy = vim.deepcopy(base), vim.deepcopy(current)
 
       for _ = 1, 12 do
         local entry = rand(2) == 1 and unseen_entry() or seen_entry()
@@ -200,6 +189,8 @@ describe('ReviewModel chained marking:', function()
         eq(hunk_apply.apply_selections(approved, unseen, 'apply'), current)
         eq(hunk_apply.apply_selections(base, seen, 'apply'), approved)
       end
+      eq(base, base_copy)
+      eq(current, current_copy)
     end
   end)
 end)

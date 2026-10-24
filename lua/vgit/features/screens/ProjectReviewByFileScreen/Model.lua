@@ -1,206 +1,31 @@
-local loop = require('vgit.core.loop')
-local git_repo = require('vgit.git.git_repo')
-local git_show = require('vgit.git.git_show')
 local git_branch = require('vgit.git.git_branch')
-local ReviewState = require('vgit.features.screens.ReviewState')
 local ReviewModel = require('vgit.features.screens.ReviewModel')
 
 --[[
-  By-file review model. Each entry is a file diffed cumulatively from
-  the merge-base to HEAD. Contents (merge-base and HEAD versions per file)
-  are preloaded via one batched `git cat-file`; all diffs derive from those
-  in-process.
-  record_key = entry_key = filepath.
+  By-file review model. Each item is a file diffed cumulatively from the
+  merge-base to the review head; its id and record key are its path.
 ]]
-
--- Session-wide contents cache, reused across screen instances so re-entering
--- a review skips the preload. Contents are keyed to the exact (merge_base,
--- HEAD) pair, so a move of either starts a fresh cache.
-local session_contents = { id = nil, contents = {} }
 
 local Model = ReviewModel:extend()
 
-function Model:constructor(opts)
-  local base = ReviewModel.constructor(self, opts)
-  base.state.changed_files = {}
-  return base
-end
+Model.review_type = 'by_file'
 
-function Model:reset()
-  self.state = {
-    id = nil,
-    entries = nil,
-    reponame = nil,
-    base_branch = self.state.base_branch,
-    merge_base = nil,
-    branch_name = nil,
-    list_entries = {},
-    changed_files = {},
-    contents = {},
-    diffs = {},
-    seen_flags = {},
-    entry_keys_by_record_key = {},
-    layout_type = self.state.layout_type,
-  }
-end
+function Model:fetch_items(target)
+  local files, err = git_branch.changed_files(self.state.reponame, target.merge_base, target.head_hash)
+  if not files then return nil, err end
 
--- Entry key for by-file mode is just the filepath
-function Model:get_entry_key(entry)
-  return entry.filepath
-end
-
-function Model:get_review_type()
-  return 'by_file'
-end
-
-function Model:fetch(base_branch_arg)
-  self:reset()
-
-  loop.free_textlock()
-  local reponame, repo_err = git_repo.discover()
-  if repo_err then return nil, { 'Project has no .git folder' } end
-  self.state.reponame = reponame
-
-  -- Resolve the base, branch key and review head (parked mid-stack in jj,
-  -- the review runs to the stack tip, not HEAD)
-  local target, repo_name = self:resolve_target(reponame, base_branch_arg)
-  if not target then return nil, repo_name end
-  local base_branch, merge_base, head_hash = target.base, target.merge_base, target.head_hash
-  local branch_name = target.branch_key
-  self.state.merge_base = merge_base
-  self.state.head_hash = head_hash
-
-  -- Async fetch if stale — notifies user to reopen if base was updated
-  git_branch.fetch_ref_if_stale(reponame, base_branch)
-
-  local cache_id = string.format('%s|%s|%s', reponame, merge_base, head_hash)
-  if session_contents.id ~= cache_id then
-    session_contents = { id = cache_id, contents = {} }
-  end
-  self.state.contents = session_contents.contents
-
-  -- Initialize or restore the index
-  self.review_state = ReviewState({
-    branch_key = branch_name,
-    review_type = self:get_review_type(),
-    repo_key = repo_name,
-  })
-  -- Load persisted state from disk (must be called from coroutine context)
-  self.review_state:load_from_disk()
-
-  -- Get files changed between merge-base and the review head
-  local changed_files, files_err = git_branch.changed_files(reponame, merge_base, head_hash)
-  if files_err then return nil, files_err end
-
-  if #changed_files == 0 then
-    return nil, { string.format('Branch is the same as %s', base_branch) }
-  end
-
-  self.state.changed_files = changed_files
-
-  -- Preload base and current contents in parallel
-  local preload_err = self:preload_contents_parallel(changed_files)
-  if preload_err then return nil, preload_err end
-
-  self:rebuild_entries()
-  return self.state.entries
-end
-
--- Preload all contents in one `git cat-file --batch` process (2 objects per
--- file: merge-base + review head). A missing object means the file doesn't exist at
--- that revision (added / deleted side of the diff). Returns an error if git
--- fails, caching nothing.
-function Model:preload_contents_parallel(changed_files)
-  local merge_base = self.state.merge_base
-
-  local jobs = {}
-  for _, file in ipairs(changed_files) do
-    if not self.state.contents[file.filepath] then
-      jobs[#jobs + 1] = file
-    end
-  end
-  if #jobs == 0 then return end
-
-  local specs = {}
-  for _, file in ipairs(jobs) do
-    specs[#specs + 1] = string.format('%s:%s', merge_base, file.old_filepath or file.filepath)
-    specs[#specs + 1] = string.format('%s:%s', self.state.head_hash, file.filepath)
-  end
-
-  local results, err = git_show.lines_batch(self.state.reponame, specs)
-  if err then return err end
-
-  for i, file in ipairs(jobs) do
-    local base = results[(i - 1) * 2 + 1]
-    local current = results[(i - 1) * 2 + 2]
-
-    self:set_contents(file.filepath, {
-      base = base.lines or {},
-      current = current.lines or {},
-      current_deleted = current.missing == true,
+  return vim.tbl_map(function(file)
+    return ReviewModel.new_item(file, {
+      id = file.filepath,
+      record_key = file.filepath,
+      base_spec = string.format('%s:%s', target.merge_base, file.old_filepath or file.filepath),
+      current_spec = string.format('%s:%s', target.head_hash, file.filepath),
     })
-  end
+  end, files)
 end
 
--- Fetch contents for a single entry (fallback when the preload missed it)
-function Model:load_contents(entry)
-  local reponame = self.state.reponame
-  local merge_base = self.state.merge_base
-
-  local base_lines = git_show.lines(reponame, entry.old_filepath or entry.filepath, merge_base)
-  local current_lines, current_err = git_show.lines(reponame, entry.filepath, self.state.head_hash)
-
-  self:set_contents(entry.filepath, {
-    base = base_lines or {},
-    current = current_lines or {},
-    current_deleted = current_err ~= nil,
-  })
-end
-
--- Generate stable entry ID from filepath and type
-local function entry_id(filepath, entry_type)
-  return string.format('%s|%s', filepath, entry_type)
-end
-
--- Rebuild entries after marking/unmarking (uses stored changed_files)
-function Model:rebuild_entries()
-  local changed_files = self.state.changed_files
-  if not changed_files then return end
-
-  -- Clear old list entries but keep contents/diffs cached
-  self.state.list_entries = {}
-
-  local unseen_files = {}
-  local seen_files = {}
-
-  for _, file in ipairs(changed_files) do
-    local status = ReviewModel.create_status(file.filepath, file.status, file.old_filepath)
-    local flags = self:get_seen_flags(file.filepath, file.filepath)
-
-    if flags.has_unseen then
-      local id = entry_id(file.filepath, 'unseen')
-      local data = { id = id, status = status, type = 'unseen', filepath = file.filepath, old_filepath = file.old_filepath }
-      self.state.list_entries[id] = data
-      unseen_files[#unseen_files + 1] = data
-    end
-
-    if flags.has_seen then
-      local id = entry_id(file.filepath, 'seen')
-      local data = { id = id, status = status, type = 'seen', filepath = file.filepath, old_filepath = file.old_filepath }
-      self.state.list_entries[id] = data
-      seen_files[#seen_files + 1] = data
-    end
-  end
-
-  local entries = {}
-  if #seen_files > 0 then
-    entries[#entries + 1] = { title = 'Seen', entries = seen_files }
-  end
-  if #unseen_files > 0 then
-    entries[#entries + 1] = { title = 'Unseen', entries = unseen_files }
-  end
-
-  self.state.entries = entries
+function Model:group_entries(entries)
+  return { entries = entries }
 end
 
 return Model

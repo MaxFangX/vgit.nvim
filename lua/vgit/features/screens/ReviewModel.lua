@@ -1,117 +1,79 @@
-local fs = require('vgit.core.fs')
 local Diff = require('vgit.core.Diff')
-local utils = require('vgit.core.utils')
+local loop = require('vgit.core.loop')
 local Object = require('vgit.core.Object')
 local git_repo = require('vgit.git.git_repo')
+local git_show = require('vgit.git.git_show')
 local git_hunks = require('vgit.git.git_hunks')
+local GitStatus = require('vgit.git.GitStatus')
 local git_branch = require('vgit.git.git_branch')
 local hunk_apply = require('vgit.features.screens.hunk_apply')
 local record_keys = require('vgit.features.screens.record_keys')
+local ReviewState = require('vgit.features.screens.ReviewState')
 local persistence = require('vgit.features.screens.review_persistence')
 
 --[[
-  ReviewModel contains shared logic for the review models
-  (ProjectReviewByFileScreen and ProjectReviewByCommitScreen).
-
-  These models keep an *index*: an approved content snapshot per record_key.
-  Three contents exist per entry:
+  ReviewModel holds what the review models (ProjectReviewByFileScreen and
+  ProjectReviewByCommitScreen) share. A review is a list of items, each one
+  reviewable (revision, file) pair, with three contents:
 
     base     - what the review diffs against (merge-base / commit parent)
-    approved - the index; absent record means approved == base
-    current  - HEAD version (by-file) or the commit's version (by-commit)
+    approved - the approved snapshot (ReviewState's record); without a
+               record, approved == base
+    current  - the review head's version (by-file) or the commit's (by-commit)
 
   The unseen view is diff(approved, current); the seen view is
-  diff(base, approved). Marking applies hunks (or selected rows) of the unseen
-  diff onto the approved snapshot; unmarking reverse-applies hunks of the seen
-  diff. All diffs are computed from stored contents via git_hunks.live
-  (in-process xdiff, git CLI only for very large files), so after the initial
-  fetch marking rarely shells out.
+  diff(base, approved). Marking applies hunks (or selected rows or lines) of
+  the unseen diff onto the approved snapshot; unmarking reverse-applies hunks
+  of the seen diff. Diffs are computed in-process from the contents loaded at
+  fetch, so marking never shells out.
 
   Records also store the base they were approved against. When the live base
   differs (commits inserted/reordered below), the approved delta is rebased
-  onto the new base hunk by hunk before use (reconcile_record) —
-  otherwise ancestor drift would pollute both views with phantom hunks.
+  onto the new base hunk by hunk before use (reconcile_record); otherwise
+  ancestor drift would pollute both views with phantom hunks.
 
-  Subclasses must implement:
-    - get_entry_key(entry) - key for content/diff caching
-    - get_review_type() - 'by_file' or 'by_commit'
-    - fetch(base_branch_arg) - fetches commits/files and preloads contents
-    - rebuild_entries() - builds the entry structure
-    - load_contents(entry) - fetch base/current contents for one entry
-
-  Key concepts:
-    - filepath: path relative to repo root
-    - entry_key: content/diff cache key (by-file: filepath,
-      by-commit: commit_hash:filepath)
-    - record_key: index storage key (by-file: filepath,
-      by-commit: subject_hash:filepath — rebase-stable)
+  An item is
+    { id, record_key, filepath, old_filepath, status, commit?, base_spec,
+      current_spec, contents = { base, current, current_deleted }, cache }
+  where `id` is unique within the review, `record_key` names its record,
+  the specs name its two sides' git objects, and `cache` holds what derives
+  from its record (flags, and the seen and unseen Diffs). Subclasses list the
+  items (`fetch_items`) and group entries for the list (`group_entries`).
+  An entry is an item's seen or unseen view, as the list shows it.
 ]]
 
 local ReviewModel = Object:extend()
 
--- Create a status object that mimics GitStatus for display in list views
-function ReviewModel.create_status(filepath, file_status, old_filepath)
-  local filetype = fs.detect_filetype(filepath)
-  local status_char = file_status or 'M'
-
-  return {
-    id = utils.math.uuid(),
-    value = status_char .. ' ',
-    first = status_char,
-    second = ' ',
-    filepath = filepath,
-    old_filepath = old_filepath,
-    filetype = filetype,
-    is_staged = function() return false end,
-    is_unstaged = function() return true end,
-    is_unmerged = function() return false end,
-    has = function(_, s)
-      local f = s:sub(1, 1)
-      if f == '*' then return true end
-      return f == status_char
-    end,
-    has_either = function(_, s)
-      local f, sec = s:sub(1, 1), s:sub(2, 2)
-      return f == status_char or sec == ' '
-    end,
-    has_both = function(_, s)
-      local f, sec = s:sub(1, 1), s:sub(2, 2)
-      return f == status_char and sec == ' '
-    end,
-  }
-end
-
-function ReviewModel:constructor(opts)
-  return {
-    state = {
-      id = nil,
-      entries = nil,
-      reponame = nil,
-      base_branch = nil,
-      merge_base = nil,
-      branch_name = nil,
-      list_entries = {},
-      contents = {},         -- entry_key -> { base, current, current_deleted }
-      diffs = {},            -- entry_key .. '|' .. entry_type -> Diff
-      seen_flags = {},       -- entry_key -> { has_seen, has_unseen }
-      entry_keys_by_record_key = {}, -- record_key -> set of entry_keys (for invalidation)
-      layout_type = opts.layout_type or 'unified',
-    },
-    review_state = nil,
-  }
-end
-
-function ReviewModel:get_layout_type()
-  return self.state.layout_type
-end
-
-function ReviewModel:get_review_state()
-  return self.review_state
-end
+-- Object contents by spec ('<hash>:<path>' / '<hash>^:<path>', full hashes
+-- only). Specs name immutable objects, so these never go stale; each fetch
+-- keeps only the specs it asked for, bounding this to one review per type.
+-- Line arrays are shared between items and with git_show, so nothing may
+-- modify them.
+local session_objects = { by_file = {}, by_commit = {} }
 
 -- Minimum shared commit subjects for a stored review to be "the review for
 -- HEAD": guards against a coincidental one-commit overlap between branches.
 local MIN_SUBJECT_OVERLAP = 2
+
+function ReviewModel:constructor(opts)
+  return {
+    state = { layout_type = opts.layout_type or 'unified' },
+    review_state = nil,
+  }
+end
+
+-- A new item for `file` (a changed-files entry: { filepath, old_filepath,
+-- status }), completing `item`'s other fields
+function ReviewModel.new_item(file, item)
+  -- The constructor parses a porcelain line, which can't carry every path
+  -- (it strips quotes), so the paths are set afterwards
+  local status = GitStatus(string.format('%s  %s', file.status, file.filepath))
+  status.filepath, status.old_filepath = file.filepath, file.old_filepath
+
+  item.filepath, item.old_filepath, item.status = file.filepath, file.old_filepath, status
+  item.cache = {}
+  return item
+end
 
 -- The stored by-commit review (its branch key) that best covers HEAD's
 -- commits, given the set of their subject keys (see record_keys). Subjects
@@ -151,13 +113,13 @@ function ReviewModel.branch_by_subjects(repo_key, head_subjects)
   return best_key
 end
 
--- Resolve what to review (git_branch.review_target) and the repo name the
--- index persists under. For a detached jj HEAD no bookmark claims, the branch
--- is resolved by which stored review covers HEAD's commits (rebase-stable),
--- so the review follows the stack across rebases.
--- Returns target, repo_name, or nil, err.
-function ReviewModel:resolve_target(reponame, base_arg)
-  local repo_name = git_repo.get_name(reponame)
+-- Resolve what to review (git_branch.review_target) and the repo key the
+-- review persists under. For a detached jj HEAD no bookmark claims, the
+-- branch is resolved by which stored review covers HEAD's commits
+-- (rebase-stable), so the review follows the stack across rebases.
+-- Returns target, repo_key, or nil, err.
+local function resolve_target(reponame, base_arg)
+  local repo_key = git_repo.get_name(reponame)
   local target, err = git_branch.review_target(reponame, base_arg, function(base, head)
     -- Keyed as the by-commit review keys them, repeats included
     local commits = git_branch.commits_in_range(reponame, base, head) or {}
@@ -166,180 +128,200 @@ function ReviewModel:resolve_target(reponame, base_arg)
     for _, subject_key in ipairs(record_keys.subject_keys(messages)) do
       subjects[subject_key] = true
     end
-    return ReviewModel.branch_by_subjects(repo_name, subjects)
+    return ReviewModel.branch_by_subjects(repo_key, subjects)
   end)
   if not target then return nil, err end
-
-  self.state.base_branch = target.base
-  self.state.branch_name = target.branch_key
-  self.state.unpushed_count = target.unpushed_count
-  return target, repo_name
+  return target, repo_key
 end
 
--- Header for the review list: the branch key the index persists under, plus
--- the base it's diffed against. A trunk review also shows how many unpushed
--- commits it covers — the branch key names the trunk there, not the ref diffed
--- (the diff runs to HEAD, past the lagging trunk ref).
-function ReviewModel:get_list_title()
-  local count = self.state.unpushed_count
-  if count then
-    local plural = count == 1 and '' or 's'
-    return string.format('%s (+%d unpushed commit%s) vs %s', self.state.branch_name, count, plural, self.state.base_branch)
+-- Load both sides of every item in one `git cat-file --batch`, through the
+-- session object cache. A missing object means the file doesn't exist at
+-- that revision (added / deleted side, or the parent of a root commit).
+-- Returns nil, err if git fails.
+function ReviewModel:load_contents(items)
+  local cached, objects, misses = session_objects[self.review_type], {}, {}
+  for _, item in ipairs(items) do
+    for _, spec in ipairs({ item.base_spec, item.current_spec }) do
+      if objects[spec] == nil then
+        objects[spec] = cached[spec] or false
+        if not objects[spec] then misses[#misses + 1] = spec end
+      end
+    end
   end
-  return string.format('%s (vs %s)', self.state.branch_name, self.state.base_branch)
+
+  if #misses > 0 then
+    local results, err = git_show.lines_batch(self.state.reponame, misses)
+    if err then return nil, err end
+    for i, spec in ipairs(misses) do
+      objects[spec] = results[i]
+    end
+  end
+  session_objects[self.review_type] = objects
+
+  for _, item in ipairs(items) do
+    local base, current = objects[item.base_spec], objects[item.current_spec]
+    item.contents = {
+      base = base.lines or {},
+      current = current.lines or {},
+      current_deleted = current.missing == true,
+    }
+  end
 end
 
-function ReviewModel:set_entry_id(id)
-  self.state.id = id
-end
+-- Fetch the review: resolve its target, load its stored records, then list
+-- its items and their contents. Must run in a coroutine. Returns the entries
+-- (see get_entries), or nil, err.
+function ReviewModel:fetch(base_arg)
+  self.state = { layout_type = self.state.layout_type }
 
-function ReviewModel:get_entry(id)
-  if id then self.state.id = id end
-  return self.state.list_entries[self.state.id]
-end
+  loop.free_textlock()
+  local reponame, repo_err = git_repo.discover()
+  if repo_err then return nil, { 'Project has no .git folder' } end
+  self.state.reponame = reponame
 
-function ReviewModel:get_entries()
+  local target, repo_key = resolve_target(reponame, base_arg)
+  if not target then return nil, repo_key end
+  self.state.base_branch = target.base
+  self.state.branch_key = target.branch_key
+  self.state.unpushed_count = target.unpushed_count
+
+  -- Async fetch if stale — notifies user to reopen if base was updated
+  git_branch.fetch_ref_if_stale(reponame, target.base)
+
+  self.review_state = ReviewState({
+    repo_key = repo_key,
+    branch_key = target.branch_key,
+    review_type = self.review_type,
+  })
+  self.review_state:load_from_disk()
+
+  local items, err = self:fetch_items(target)
+  if not items then return nil, err end
+  if #items == 0 then return nil, { string.format('Branch is the same as %s', target.base) } end
+
+  local _, load_err = self:load_contents(items)
+  if load_err then return nil, load_err end
+
+  self:set_items(items)
   return self.state.entries
 end
 
-function ReviewModel:get_filepath()
-  local entry = self:get_entry()
-  if not entry then return nil end
-  return entry.filepath
-end
-
-function ReviewModel:get_abs_filepath()
-  local reponame = self.state.reponame
-  local filepath = self:get_filepath()
-  if not filepath then return nil end
-
-  return string.format('%s/%s', reponame, filepath)
-end
-
-function ReviewModel:get_filetype()
-  local entry = self:get_entry()
-  if not entry then return nil end
-  return entry.status.filetype
-end
-
--- Get mark key for an entry (by-file: filepath; by-commit overrides)
-function ReviewModel:get_record_key(entry)
-  return entry.filepath
-end
-
--- Store fetched contents for an entry_key
-function ReviewModel:set_contents(entry_key, contents)
-  self.state.contents[entry_key] = contents
-end
-
--- Get contents for an entry, fetching lazily if the preload missed it
-function ReviewModel:get_contents(entry)
-  local entry_key = self:get_entry_key(entry)
-  local contents = self.state.contents[entry_key]
-  if contents then return contents end
-
-  self:load_contents(entry)
-  return self.state.contents[entry_key]
-end
-
--- Track which entry_keys derive from a record_key so mark ops can invalidate them
-local function track_record_key(self, record_key, entry_key)
-  local entries = self.state.entry_keys_by_record_key[record_key]
-  if not entries then
-    entries = {}
-    self.state.entry_keys_by_record_key[record_key] = entries
+-- Take `items`, with contents loaded, as the review's and build its entries
+function ReviewModel:set_items(items)
+  self.state.items = items
+  -- The item behind every possible entry id
+  self.state.entry_items = {}
+  for _, item in ipairs(items) do
+    self.state.entry_items[item.id .. '|seen'] = item
+    self.state.entry_items[item.id .. '|unseen'] = item
   end
-  entries[entry_key] = true
+  self:rebuild_entries()
 end
 
--- Fetch the approved record for record_key, reconciled against the entry's
--- live base. If the base changed since approval (e.g. commits inserted or
--- reordered below this one), re-play the approved delta onto the new base
--- hunk by hunk via hunk_apply.rebase; hunks that no longer apply are dropped
--- individually, reverting just their delta to unseen. The reconciled record
--- replaces the stored one, so this runs once per base change.
-function ReviewModel:reconcile_record(record_key, contents)
-  local record = self.review_state and self.review_state:get_record(record_key)
-  if not record or not contents then return record end
-  if hunk_apply.lines_equal(record.base_lines, contents.base) then return record end
+function ReviewModel:item_of(entry)
+  return self.state.entry_items[entry.id]
+end
+
+-- The approved record for `item`, rebased onto its live base if the base
+-- changed since approval (e.g. commits inserted or reordered below it):
+-- hunk_apply.rebase re-plays the approved delta hunk by hunk, dropping the
+-- ones that no longer apply, which reverts just their delta to unseen. The
+-- rebased record replaces the stored one, so this runs once per base
+-- change. Every read of a record goes through here.
+function ReviewModel:reconcile_record(item)
+  local record = self.review_state:get_record(item.record_key)
+  local base = item.contents.base
+  if not record or hunk_apply.lines_equal(record.base_lines, base) then return record end
 
   local hunks = git_hunks.live(self.state.reponame, record.base_lines, record.lines) or {}
-  local new_lines = hunk_apply.rebase(hunks, record.base_lines, contents.base)
+  local new_lines = hunk_apply.rebase(hunks, record.base_lines, base)
 
-  if hunk_apply.lines_equal(new_lines, contents.base) then
-    self.review_state:remove_record(record_key)
+  if hunk_apply.lines_equal(new_lines, base) then
+    self.review_state:remove_record(item.record_key)
     return nil
   end
 
   local deleted = record.deleted == true and #new_lines == 0
-  self.review_state:set_record(record_key, new_lines, deleted, contents.base)
-  return self.review_state:get_record(record_key)
+  self.review_state:set_record(item.record_key, new_lines, deleted, base)
+  return self.review_state:get_record(item.record_key)
 end
 
--- Compare an approved record against fetched contents. Content-only:
--- presence flags (deleted/missing) could differ only for empty contents,
--- where every reachable pairing (rolled-back add vs absent base, approved
--- deletion vs deleted current, empty file) is correctly "equal" — an empty
--- diff has nothing left to review. The record's deleted flag is kept solely
--- for rendering the seen view.
-local function record_equals(record, lines)
-  return hunk_apply.lines_equal(record.lines, lines)
-end
+-- Whether `item` has seen content (approved != base) and unseen content
+-- (approved != current). Compares lines only: presence flags (deleted /
+-- missing) could differ only for empty contents, where every reachable
+-- pairing (rolled-back add vs absent base, approved deletion vs deleted
+-- current, empty file) is rightly "equal", as an empty diff has nothing left
+-- to review.
+local function seen_flags(self, item)
+  if item.cache.flags then return item.cache.flags end
 
--- Categorize an entry: does it have seen content (approved != base) and/or
--- unseen content (approved != current)? Cached per entry_key; invalidated
--- when the entry's record_key index changes.
-function ReviewModel:get_seen_flags(entry_key, record_key)
-  local cached = self.state.seen_flags[entry_key]
-  if cached then return cached end
-
-  track_record_key(self, record_key, entry_key)
-
-  local contents = self.state.contents[entry_key]
-  local record = self:reconcile_record(record_key, contents)
-
-  local flags
-  if not record or not contents then
-    -- No index record: everything unseen. (Missing contents: conservative.)
-    flags = { has_seen = record ~= nil, has_unseen = true }
-  else
-    local eq_base = record_equals(record, contents.base)
-    local eq_current = record_equals(record, contents.current)
-    -- eq_base with a record only happens when base == current (e.g. pure
-    -- rename) was marked seen; keep it visible in Seen so it can be unmarked.
+  local record = self:reconcile_record(item)
+  local flags = { has_seen = false, has_unseen = true }
+  if record then
+    local eq_base = hunk_apply.lines_equal(record.lines, item.contents.base)
+    local eq_current = hunk_apply.lines_equal(record.lines, item.contents.current)
+    -- A record equal to base only survives when base == current (e.g. a pure
+    -- rename) was marked seen; keep it in Seen so it can be unmarked
     flags = { has_seen = not eq_base or eq_current, has_unseen = not eq_current }
   end
 
-  self.state.seen_flags[entry_key] = flags
+  item.cache.flags = flags
   return flags
 end
 
-local function diff_cache_key(self, entry)
-  return string.format('%s|%s', self:get_entry_key(entry), entry.type)
+local function new_entry(self, item, entry_type)
+  local entry = {
+    id = item.id .. '|' .. entry_type,
+    type = entry_type,
+    filepath = item.filepath,
+    old_filepath = item.old_filepath,
+    status = item.status,
+    commit = item.commit,
+    commit_hash = item.commit and item.commit.hash,
+  }
+  self.state.entries_by_id[entry.id] = entry
+  return entry
 end
 
--- Build the Diff rendering hunks against lines and cache it for entry
-function ReviewModel:cache_diff(entry, hunks, lines, opts)
-  local diff = Diff():generate(hunks, lines, self:get_layout_type(), opts)
-  diff.entry_type = entry.type
-  diff.record_key = self:get_record_key(entry)
-  self.state.diffs[diff_cache_key(self, entry)] = diff
+-- Rebuild the entries from the items' flags, after a mark changed them
+function ReviewModel:rebuild_entries()
+  self.state.entries_by_id = {}
+
+  local seen, unseen = {}, {}
+  for _, item in ipairs(self.state.items) do
+    local flags = seen_flags(self, item)
+    if flags.has_seen then seen[#seen + 1] = new_entry(self, item, 'seen') end
+    if flags.has_unseen then unseen[#unseen + 1] = new_entry(self, item, 'unseen') end
+  end
+
+  local sections = {}
+  for _, section in ipairs({ { 'seen', 'Seen', seen }, { 'unseen', 'Unseen', unseen } }) do
+    local entry_type, title, entries = unpack(section)
+    if #entries > 0 then
+      local section = vim.tbl_extend('error', { type = entry_type, title = title }, self:group_entries(entries))
+      sections[#sections + 1] = section
+    end
+  end
+  self.state.entries = sections
+end
+
+-- Build the Diff rendering hunks against lines, and cache it as the item's
+-- `entry_type` view
+local function cache_diff(self, item, entry_type, hunks, lines, opts)
+  local diff = Diff():generate(hunks, lines, self.state.layout_type, opts)
+  item.cache[entry_type] = diff
   return diff
 end
 
--- Get the diff for an entry:
+-- The diff for an entry:
 --   unseen: diff(approved-or-base -> current), rendered on current content
 --   seen:   diff(base -> approved), rendered on approved content
 function ReviewModel:get_diff_for(entry)
-  local cached = self.state.diffs[diff_cache_key(self, entry)]
-  if cached then return cached end
+  local item = self:item_of(entry)
+  if item.cache[entry.type] then return item.cache[entry.type] end
 
-  local contents = self:get_contents(entry)
-  if not contents then return nil, { 'failed to load file contents' } end
-
-  local record_key = self:get_record_key(entry)
-  track_record_key(self, record_key, self:get_entry_key(entry))
-  local record = self:reconcile_record(record_key, contents)
+  local contents = item.contents
+  local record = self:reconcile_record(item)
 
   local old_lines, new_lines, new_deleted
   if entry.type == 'unseen' then
@@ -357,27 +339,15 @@ function ReviewModel:get_diff_for(entry)
   -- A deleted new side renders the old content with whole-file removal marks;
   -- everything else renders the new content with hunks against it.
   if new_deleted and #new_lines == 0 and #hunks > 0 then
-    return self:cache_diff(entry, hunks, old_lines, { is_deleted = true })
+    return cache_diff(self, item, entry.type, hunks, old_lines, { is_deleted = true })
   end
-  return self:cache_diff(entry, hunks, new_lines)
+  return cache_diff(self, item, entry.type, hunks, new_lines)
 end
 
 function ReviewModel:get_diff()
   local entry = self:get_entry()
   if not entry then return nil, { 'entry not found' } end
   return self:get_diff_for(entry)
-end
-
--- Drop cached diffs and categorization for every entry deriving from record_key
-function ReviewModel:invalidate_record_key(record_key)
-  local entries = self.state.entry_keys_by_record_key[record_key]
-  if not entries then return end
-
-  for entry_key in pairs(entries) do
-    self.state.seen_flags[entry_key] = nil
-    self.state.diffs[entry_key .. '|seen'] = nil
-    self.state.diffs[entry_key .. '|unseen'] = nil
-  end
 end
 
 -- Convert screen selections ({ index, rows | lines }) into hunk_apply selections
@@ -392,125 +362,176 @@ local function to_hunk_selections(diff, selections)
   return result
 end
 
--- Mark hunks (or selected rows) of the current unseen diff as seen: apply
--- them onto the approved snapshot. selections: array of { index = hunk index,
--- rows | lines } (see hunk_apply), neither for the whole hunk.
+-- Mark hunks (or selected rows or lines) of an unseen entry's diff as seen:
+-- apply them onto the approved snapshot. selections: array of
+-- { index = hunk index, rows | lines } (see hunk_apply), neither for the
+-- whole hunk.
 function ReviewModel:mark_selections(entry, selections)
-  if not self.review_state or entry.type ~= 'unseen' then return end
+  if entry.type ~= 'unseen' then return end
 
+  local item = self:item_of(entry)
   local diff = self:get_diff_for(entry)
-  if not diff or #(diff.hunks or {}) == 0 then return end
-
   local hunk_selections = to_hunk_selections(diff, selections)
   if #hunk_selections == 0 then return end
 
-  local contents = self:get_contents(entry)
-  local record_key = self:get_record_key(entry)
-  local record = self:reconcile_record(record_key, contents)
-  local old_lines = record and record.lines or contents.base
-
-  local new_lines = hunk_apply.apply_selections(old_lines, hunk_selections, 'apply')
+  local contents = item.contents
+  local record = self:reconcile_record(item)
+  local new_lines = hunk_apply.apply_selections(record and record.lines or contents.base, hunk_selections, 'apply')
 
   -- The snapshot represents "file deleted" only once it fully matches a
   -- deleted current side.
-  local deleted = contents.current_deleted == true and hunk_apply.lines_equal(new_lines, contents.current)
-  self.review_state:set_record(record_key, new_lines, deleted, contents.base)
+  local deleted = contents.current_deleted and hunk_apply.lines_equal(new_lines, contents.current)
+  self.review_state:set_record(item.record_key, new_lines, deleted, contents.base)
 
-  self:invalidate_record_key(record_key)
+  item.cache = {}
   -- Derive what's left of this diff instead of re-diffing, so marked lines
   -- stay put (see hunk_apply.remaining). A deleted current side keeps the
   -- whole-file removal rendering of get_diff_for.
   if not contents.current_deleted then
-    self:cache_diff(entry, hunk_apply.remaining(diff.hunks, hunk_selections, 'apply'), contents.current)
+    cache_diff(self, item, 'unseen', hunk_apply.remaining(diff.hunks, hunk_selections, 'apply'), contents.current)
   end
   self:rebuild_entries()
 end
 
--- Unmark hunks (or selected rows) of the current seen diff: reverse-apply
--- them, rolling the approved snapshot back toward base.
+-- Unmark hunks (or selected rows or lines) of a seen entry's diff:
+-- reverse-apply them, rolling the approved snapshot back toward base.
 function ReviewModel:unmark_selections(entry, selections)
-  if not self.review_state or entry.type ~= 'seen' then return end
+  if entry.type ~= 'seen' then return end
 
-  local record_key = self:get_record_key(entry)
-  local record = self:reconcile_record(record_key, self:get_contents(entry))
+  local item = self:item_of(entry)
+  local record = self:reconcile_record(item)
   if not record then return end
 
   local diff = self:get_diff_for(entry)
-  if not diff or #(diff.hunks or {}) == 0 then return end
-
   local hunk_selections = to_hunk_selections(diff, selections)
   if #hunk_selections == 0 then return end
 
-  local contents = self:get_contents(entry)
+  local base = item.contents.base
   local new_lines = hunk_apply.apply_selections(record.lines, hunk_selections, 'reverse')
   local deleted = record.deleted == true and #new_lines == 0
-
-  if hunk_apply.lines_equal(new_lines, contents.base) then
-    self.review_state:remove_record(record_key)
+  if hunk_apply.lines_equal(new_lines, base) then
+    self.review_state:remove_record(item.record_key)
   else
-    self.review_state:set_record(record_key, new_lines, deleted, contents.base)
+    self.review_state:set_record(item.record_key, new_lines, deleted, base)
   end
 
-  self:invalidate_record_key(record_key)
+  item.cache = {}
   -- As in mark_selections: keep the remaining seen lines where they were
   if not deleted then
-    self:cache_diff(entry, hunk_apply.remaining(diff.hunks, hunk_selections, 'reverse'), new_lines)
+    cache_diff(self, item, 'seen', hunk_apply.remaining(diff.hunks, hunk_selections, 'reverse'), new_lines)
   end
   self:rebuild_entries()
 end
 
 -- Mark a whole file seen: approved := current
 function ReviewModel:mark_file(entry)
-  if not self.review_state then return end
+  local item = self:item_of(entry)
+  local contents = item.contents
+  self.review_state:set_record(item.record_key, contents.current, contents.current_deleted, contents.base)
 
-  local contents = self:get_contents(entry)
-  if not contents then return end
-
-  local record_key = self:get_record_key(entry)
-  self.review_state:set_record(record_key, contents.current, contents.current_deleted, contents.base)
-
-  self:invalidate_record_key(record_key)
+  item.cache = {}
   self:rebuild_entries()
 end
 
 -- Unmark a whole file: approved := base
 function ReviewModel:unmark_file(entry)
-  if not self.review_state then return end
+  local item = self:item_of(entry)
+  self.review_state:remove_record(item.record_key)
 
-  local record_key = self:get_record_key(entry)
-  self.review_state:remove_record(record_key)
-
-  self:invalidate_record_key(record_key)
+  item.cache = {}
   self:rebuild_entries()
 end
 
 function ReviewModel:reset_marks()
-  if not self.review_state then return end
   self.review_state:reset()
-  self.state.diffs = {}
-  self.state.seen_flags = {}
+  for _, item in ipairs(self.state.items) do
+    item.cache = {}
+  end
   self:rebuild_entries()
 end
 
--- Abstract methods - subclasses must implement
-function ReviewModel:get_entry_key(entry)
-  error('get_entry_key must be implemented by subclass')
+-- The list's sections, Seen first, each { type, title } plus the subclass's
+-- grouping of its entries (see group_entries)
+function ReviewModel:get_entries()
+  return self.state.entries
 end
 
-function ReviewModel:get_review_type()
-  error('get_review_type must be implemented by subclass')
+function ReviewModel:set_entry_id(id)
+  self.state.id = id
 end
 
-function ReviewModel:fetch(base_branch_arg)
-  error('fetch must be implemented by subclass')
+-- The current entry, or nil
+function ReviewModel:get_entry()
+  return self.state.entries_by_id and self.state.entries_by_id[self.state.id]
 end
 
-function ReviewModel:rebuild_entries()
-  error('rebuild_entries must be implemented by subclass')
+-- The entry with `id`, or nil
+function ReviewModel:lookup(id)
+  return self.state.entries_by_id and self.state.entries_by_id[id]
 end
 
-function ReviewModel:load_contents(entry)
-  error('load_contents must be implemented by subclass')
+-- The id `entry`'s item has in the other section, whether or not it is
+-- listed there (see lookup)
+function ReviewModel:sibling_id(entry)
+  return self:item_of(entry).id .. '|' .. (entry.type == 'seen' and 'unseen' or 'seen')
+end
+
+function ReviewModel:get_layout_type()
+  return self.state.layout_type
+end
+
+function ReviewModel:get_review_state()
+  return self.review_state
+end
+
+function ReviewModel:get_reponame()
+  return self.state.reponame
+end
+
+-- Header for the review list: the branch key the review persists under,
+-- plus the base it's diffed against. A trunk review also shows how many
+-- unpushed commits it covers — the branch key names the trunk there, not the
+-- ref diffed (the diff runs to HEAD, past the lagging trunk ref).
+function ReviewModel:get_list_title()
+  local state, count = self.state, self.state.unpushed_count
+  if count then
+    local plural = count == 1 and '' or 's'
+    return string.format('%s (+%d unpushed commit%s) vs %s', state.branch_key, count, plural, state.base_branch)
+  end
+  return string.format('%s (vs %s)', state.branch_key, state.base_branch)
+end
+
+function ReviewModel:get_filepath()
+  local entry = self:get_entry()
+  return entry and entry.filepath
+end
+
+function ReviewModel:get_abs_filepath()
+  local filepath = self:get_filepath()
+  return filepath and string.format('%s/%s', self.state.reponame, filepath)
+end
+
+function ReviewModel:get_filetype()
+  local entry = self:get_entry()
+  return entry and entry.status.filetype
+end
+
+-- The full message (lines) of the review's commit `commit_hash`, or nil
+function ReviewModel:get_commit_message(commit_hash)
+  local commit = self.state.commits_by_hash and self.state.commits_by_hash[commit_hash]
+  return commit and commit.body
+end
+
+-- The review's items, for `target` (see git_branch.review_target), with
+-- contents still to load. Returns nil, err on failure.
+function ReviewModel:fetch_items(target)
+  error('fetch_items must be implemented by subclass')
+end
+
+-- The body of a section listing `entries` (in item order): by-file
+-- { entries }, by-commit { commits }
+function ReviewModel:group_entries(entries)
+  error('group_entries must be implemented by subclass')
 end
 
 return ReviewModel
