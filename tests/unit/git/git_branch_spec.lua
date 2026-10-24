@@ -12,8 +12,8 @@ local function sh(dir, cmd)
   assert(vim.v.shell_error == 0, 'command failed: ' .. cmd)
 end
 
--- Git calls leave us in a fast event context (async git via vim.schedule),
--- where vim.fn.delete is forbidden — hop back to the main loop before cleanup.
+-- Git calls leave us in a fast event context, where vim.fn.delete is
+-- forbidden, so hop back to the main loop before cleanup.
 local function cleanup(dir)
   loop.free_textlock()
   vim.fn.delete(dir, 'rf')
@@ -53,8 +53,8 @@ async.describe('branch key, claimed by a live bookmark (jj):', function()
     sh(dir, 'git branch backup/feature feature') -- backup sits at the same commit
     sh(dir, 'git checkout -q --detach feature')  -- detached HEAD at the tip
 
-    -- backup/feature ties feature at distance 0; without the guard it would win
-    -- the alphabetical tie-break and hijack the persistence key.
+    -- backup/feature ties feature at distance 0, so without the guard it would
+    -- win the alphabetical tie-break and take the persistence key.
     eq(key(dir), 'feature')
     cleanup(dir)
   end)
@@ -75,9 +75,9 @@ async.describe('branch key, claimed by a live bookmark (jj):', function()
   end)
 
   async.it('resolves a diverged sibling by shared subjects (mid-stack amend)', function()
-    -- Mimics a jj amend before the bookmark re-exports: HEAD is a rewrite of
-    -- the branch's stack — different hashes, same subjects — while an
-    -- unrelated branch sits fewer commits away.
+    -- As after a jj amend, before the bookmark re-exports, HEAD is a rewrite
+    -- of the branch's stack, with different hashes but the same subjects,
+    -- while an unrelated branch sits fewer commits away.
     local dir = make_repo() -- master @ A
     sh(dir, 'mkdir .jj')
     sh(dir, 'git checkout -q -b feature && printf "1\\n">>f.txt && git add f.txt && git commit -q -m F1')
@@ -94,7 +94,7 @@ async.describe('branch key, claimed by a live bookmark (jj):', function()
 
   async.it('ignores a merged bookmark parked on the trunk', function()
     -- A merged branch's bookmark left sitting on master inherits the trunk's
-    -- proximity; it must not hijack the key from the real (diverged) branch.
+    -- proximity, but must not take the key from the real (diverged) branch.
     local dir = make_repo()
     sh(dir, 'mkdir .jj')
     sh(dir, 'printf "m\\n">>f.txt && git add f.txt && git commit -q -m M') -- master: A->M
@@ -116,8 +116,8 @@ async.describe('branch key, claimed by a live bookmark (jj):', function()
     sh(dir, 'git checkout -q --detach master')
     sh(dir, 'printf "d\\n">>f.txt && git add f.txt && git commit -q -m D')
 
-    -- stale is the only candidate but shares no subjects with HEAD's stack;
-    -- claiming it would key the review to an unrelated branch.
+    -- stale is the only candidate but shares no subjects with HEAD's stack,
+    -- so claiming it would key the review to an unrelated branch.
     eq(key(dir), 'HEAD')
     cleanup(dir)
   end)
@@ -175,8 +175,8 @@ async.describe('base:', function()
   end)
 
   async.it('redirects when HEAD is ahead of a lagging trunk bookmark (jj trunk work)', function()
-    -- jj: committing on the trunk advances HEAD (the working-copy parent) but
-    -- not the master bookmark — conceptually still "on master".
+    -- In jj, committing on the trunk advances HEAD (the working-copy parent)
+    -- but not the master bookmark, so HEAD is still on master.
     local dir = make_repo()
     sh(dir, 'mkdir .jj')
     sh(dir, 'git update-ref refs/remotes/origin/master master')
@@ -258,8 +258,8 @@ async.describe('branch key:', function()
   end)
 
   async.it('keys trunk work as trunk despite stale unrelated branches', function()
-    -- A stale branch used to win the old distance ranking and claim the key;
-    -- with zero subject overlap it no longer blocks the trunk fallback.
+    -- The stale branch shares no subjects, so it doesn't claim HEAD ahead of
+    -- the trunk fallback
     local dir = make_repo()
     sh(dir, 'mkdir .jj')
     sh(dir, 'git update-ref refs/remotes/origin/master master')

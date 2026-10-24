@@ -11,7 +11,7 @@ local function numbered(n)
 end
 
 describe('git_hunks.live:', function()
-  it('diffs files past the old 5000-line CLI threshold in process', function()
+  it('diffs files of thousands of lines, NULs included', function()
     local old = numbered(6000)
     local new = vim.list_slice(old)
     new[5500] = 'changed\0with a NUL'

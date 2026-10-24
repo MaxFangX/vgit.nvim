@@ -5,7 +5,7 @@ local hunk_apply = require('vgit.features.screens.hunk_apply')
 
 local eq = assert.are.same
 
--- Diff two in-memory contents (reponame only matters for very large files)
+-- Diff two in-memory contents
 local function live(a, b)
   return git_hunks.live('.', a, b)
 end

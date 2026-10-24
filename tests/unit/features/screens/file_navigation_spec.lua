@@ -78,9 +78,7 @@ describe('file_navigation:', function()
       })
       local function unstaged(file) return file.entry.type == 'unstaged' end
 
-      -- Current = c (last unstaged): first should be a.lua (first unstaged,
-      -- skipping the staged-section entries entirely), prev = b, next = nil.
-      -- This is the regression case: the user is on the last unstaged file.
+      -- On the last unstaged file, first skips the staged section
       local n, p, fst = file_navigation.find_adjacent_files(files, 'c.lua', unstaged)
       eq(n, nil)
       eq(p, ref('b.lua'))
@@ -91,9 +89,6 @@ describe('file_navigation:', function()
       local files = make_files({
         { filepath = 'a.lua' }, { filepath = 'b.lua' }, { filepath = 'c.lua' },
       })
-      -- Walking the loop with current='zzz' (never matches): we never set
-      -- found_current, so each match becomes prev_file (overwriting).
-      -- next stays nil; first is the first match.
       local n, p, fst = file_navigation.find_adjacent_files(files, 'zzz.lua', any_type)
       eq(n, nil)
       eq(p, ref('c.lua'))

@@ -30,7 +30,7 @@ end
 
 describe('ReviewModel reconcile:', function()
   before_each(function()
-    -- state_store is module-global and keyed by branch/type; reset between tests
+    -- state_store is module-global, so reset it between tests
     ReviewState({ review_type = 'by_file' }):reset()
   end)
 
@@ -46,7 +46,7 @@ describe('ReviewModel reconcile:', function()
     local new_current = { 'fn get_next_unused_address', 'body', 'other_v2', 'tail' }
     model = make_model({ base = new_base, current = new_current })
 
-    -- No phantom drift: unseen is empty, seen is exactly the approved delta
+    -- Unseen is empty, and seen is exactly the approved delta
     local unseen = model:get_diff_for(unseen_entry())
     eq(#unseen.hunks, 0)
 

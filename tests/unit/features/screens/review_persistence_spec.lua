@@ -26,8 +26,7 @@ describe('review_persistence snapshot objects:', function()
 
   it('hashes binary content without tripping the vim.fn Blob conversion', function()
     -- A NUL byte in the concatenated content converts the string to a Blob at
-    -- the vim.fn boundary, and sha256() rejects Blobs (E976). Hit in the wild
-    -- by an .age secret inside a commit review.
+    -- the vim.fn boundary, and sha256() rejects Blobs (E976)
     local hash = persistence.hash_lines({ 'age-encryption.org/v1', '\0\1binary\0' })
     eq(#hash, 64)
 
@@ -71,7 +70,7 @@ describe('ReviewModel.branch_by_subjects:', function()
   it('returns nil when overlap is below the threshold (coincidental)', function()
     write_review(data_home.root, 'feature', { 's1', 's2', 's3' }, 100)
 
-    -- Only one shared subject — not enough to claim HEAD.
+    -- One shared subject isn't enough to claim HEAD
     eq(ReviewModel.branch_by_subjects('repo', { s1 = true, z = true }), nil)
   end)
 
@@ -194,7 +193,7 @@ describe('review_persistence name migration:', function()
     eq(read('by_commit.json'), read('by_commit_indexed.json'))
   end)
 
-  it('replaces a classic-format file, even a newer one', function()
+  it('replaces an old marks-format file, even a newer one', function()
     write_state('by_file.json', { marks = { ['a.lua:cid'] = true } }, 2000)
     write_state('by_file_indexed.json', approved('a.lua', 'old'), 1000)
 
@@ -202,14 +201,14 @@ describe('review_persistence name migration:', function()
     eq(exists('by_file_indexed.json'), true)
   end)
 
-  it('replaces an older new-format file', function()
+  it('replaces an older current-format file', function()
     write_state('by_commit.json', approved('s:a.lua', 'new'), 1000)
     write_state('by_commit_indexed.json', approved('s:a.lua', 'old'), 2000)
 
     eq(load_entries('by_commit'), { ['s:a.lua'] = 'old' })
   end)
 
-  it('keeps a new-format file that is newer or equally new', function()
+  it('keeps a current-format file that is as new or newer', function()
     write_state('by_commit.json', approved('s:a.lua', 'new'), 2000)
     write_state('by_commit_indexed.json', approved('s:a.lua', 'old'), 1000)
     write_state('by_file.json', approved('a.lua', 'new'), 1000)
