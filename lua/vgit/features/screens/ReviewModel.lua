@@ -12,7 +12,7 @@ local persistence = require('vgit.features.screens.review_persistence')
   ReviewModel contains shared logic for the review models
   (ProjectReviewByFileScreen and ProjectReviewByCommitScreen).
 
-  These models keep an *index*: an approved content snapshot per mark_key.
+  These models keep an *index*: an approved content snapshot per record_key.
   Three contents exist per entry:
 
     base     - what the review diffs against (merge-base / commit parent)
@@ -28,7 +28,7 @@ local persistence = require('vgit.features.screens.review_persistence')
 
   Records also store the base they were approved against. When the live base
   differs (commits inserted/reordered below), the approved delta is rebased
-  onto the new base hunk by hunk before use (get_reconciled_record) —
+  onto the new base hunk by hunk before use (reconcile_record) —
   otherwise ancestor drift would pollute both views with phantom hunks.
 
   Subclasses must implement:
@@ -42,7 +42,7 @@ local persistence = require('vgit.features.screens.review_persistence')
     - filepath: path relative to repo root
     - entry_key: content/diff cache key (by-file: filepath,
       by-commit: commit_hash:filepath)
-    - mark_key: index storage key (by-file: filepath,
+    - record_key: index storage key (by-file: filepath,
       by-commit: subject_hash:filepath — rebase-stable)
 ]]
 
@@ -93,7 +93,7 @@ function ReviewModel:constructor(opts)
       contents = {},         -- entry_key -> { base, current, current_deleted }
       diffs = {},            -- entry_key .. '|' .. entry_type -> Diff
       seen_flags = {},       -- entry_key -> { has_seen, has_unseen }
-      mark_key_entries = {}, -- mark_key -> set of entry_keys (for invalidation)
+      entry_keys_by_record_key = {}, -- record_key -> set of entry_keys (for invalidation)
       layout_type = opts.layout_type or 'unified',
     },
     review_state = nil,
@@ -177,7 +177,7 @@ function ReviewModel:get_filetype()
 end
 
 -- Get mark key for an entry (by-file: filepath; by-commit overrides)
-function ReviewModel:get_mark_key(entry)
+function ReviewModel:get_record_key(entry)
   return entry.filepath
 end
 
@@ -196,24 +196,24 @@ function ReviewModel:get_contents(entry)
   return self.state.contents[entry_key]
 end
 
--- Track which entry_keys derive from a mark_key so mark ops can invalidate them
-local function track_mark_key(self, mark_key, entry_key)
-  local entries = self.state.mark_key_entries[mark_key]
+-- Track which entry_keys derive from a record_key so mark ops can invalidate them
+local function track_record_key(self, record_key, entry_key)
+  local entries = self.state.entry_keys_by_record_key[record_key]
   if not entries then
     entries = {}
-    self.state.mark_key_entries[mark_key] = entries
+    self.state.entry_keys_by_record_key[record_key] = entries
   end
   entries[entry_key] = true
 end
 
--- Fetch the approved record for mark_key, reconciled against the entry's
+-- Fetch the approved record for record_key, reconciled against the entry's
 -- live base. If the base changed since approval (e.g. commits inserted or
 -- reordered below this one), re-play the approved delta onto the new base
 -- hunk by hunk via hunk_apply.rebase; hunks that no longer apply are dropped
 -- individually, reverting just their delta to unseen. The reconciled record
 -- replaces the stored one, so this runs once per base change.
-function ReviewModel:get_reconciled_record(mark_key, contents)
-  local record = self.review_state and self.review_state:get_approved(mark_key)
+function ReviewModel:reconcile_record(record_key, contents)
+  local record = self.review_state and self.review_state:get_record(record_key)
   if not record or not contents then return record end
   if hunk_apply.lines_equal(record.base_lines, contents.base) then return record end
 
@@ -221,13 +221,13 @@ function ReviewModel:get_reconciled_record(mark_key, contents)
   local new_lines = hunk_apply.rebase(hunks, record.base_lines, contents.base)
 
   if hunk_apply.lines_equal(new_lines, contents.base) then
-    self.review_state:remove_approved(mark_key)
+    self.review_state:remove_record(record_key)
     return nil
   end
 
   local deleted = record.deleted == true and #new_lines == 0
-  self.review_state:set_approved(mark_key, new_lines, deleted, contents.base)
-  return self.review_state:get_approved(mark_key)
+  self.review_state:set_record(record_key, new_lines, deleted, contents.base)
+  return self.review_state:get_record(record_key)
 end
 
 -- Compare an approved record against fetched contents. Content-only:
@@ -242,15 +242,15 @@ end
 
 -- Categorize an entry: does it have seen content (approved != base) and/or
 -- unseen content (approved != current)? Cached per entry_key; invalidated
--- when the entry's mark_key index changes.
-function ReviewModel:get_seen_flags(entry_key, mark_key)
+-- when the entry's record_key index changes.
+function ReviewModel:get_seen_flags(entry_key, record_key)
   local cached = self.state.seen_flags[entry_key]
   if cached then return cached end
 
-  track_mark_key(self, mark_key, entry_key)
+  track_record_key(self, record_key, entry_key)
 
   local contents = self.state.contents[entry_key]
-  local record = self:get_reconciled_record(mark_key, contents)
+  local record = self:reconcile_record(record_key, contents)
 
   local flags
   if not record or not contents then
@@ -276,7 +276,7 @@ end
 function ReviewModel:cache_diff(entry, hunks, lines, opts)
   local diff = Diff():generate(hunks, lines, self:get_layout_type(), opts)
   diff.entry_type = entry.type
-  diff.mark_key = self:get_mark_key(entry)
+  diff.record_key = self:get_record_key(entry)
   self.state.diffs[diff_cache_key(self, entry)] = diff
   return diff
 end
@@ -291,9 +291,9 @@ function ReviewModel:get_diff_for(entry)
   local contents = self:get_contents(entry)
   if not contents then return nil, { 'failed to load file contents' } end
 
-  local mark_key = self:get_mark_key(entry)
-  track_mark_key(self, mark_key, self:get_entry_key(entry))
-  local record = self:get_reconciled_record(mark_key, contents)
+  local record_key = self:get_record_key(entry)
+  track_record_key(self, record_key, self:get_entry_key(entry))
+  local record = self:reconcile_record(record_key, contents)
 
   local old_lines, new_lines, new_deleted
   if entry.type == 'unseen' then
@@ -322,9 +322,9 @@ function ReviewModel:get_diff()
   return self:get_diff_for(entry)
 end
 
--- Drop cached diffs and categorization for every entry deriving from mark_key
-function ReviewModel:invalidate_mark_key(mark_key)
-  local entries = self.state.mark_key_entries[mark_key]
+-- Drop cached diffs and categorization for every entry deriving from record_key
+function ReviewModel:invalidate_record_key(record_key)
+  local entries = self.state.entry_keys_by_record_key[record_key]
   if not entries then return end
 
   for entry_key in pairs(entries) do
@@ -359,8 +359,8 @@ function ReviewModel:mark_selections(entry, selections)
   if #hunk_selections == 0 then return end
 
   local contents = self:get_contents(entry)
-  local mark_key = self:get_mark_key(entry)
-  local record = self:get_reconciled_record(mark_key, contents)
+  local record_key = self:get_record_key(entry)
+  local record = self:reconcile_record(record_key, contents)
   local old_lines = record and record.lines or contents.base
 
   local new_lines = hunk_apply.apply_selections(old_lines, hunk_selections, 'apply')
@@ -368,9 +368,9 @@ function ReviewModel:mark_selections(entry, selections)
   -- The snapshot represents "file deleted" only once it fully matches a
   -- deleted current side.
   local deleted = contents.current_deleted == true and hunk_apply.lines_equal(new_lines, contents.current)
-  self.review_state:set_approved(mark_key, new_lines, deleted, contents.base)
+  self.review_state:set_record(record_key, new_lines, deleted, contents.base)
 
-  self:invalidate_mark_key(mark_key)
+  self:invalidate_record_key(record_key)
   -- Derive what's left of this diff instead of re-diffing, so marked lines
   -- stay put (see hunk_apply.remaining). A deleted current side keeps the
   -- whole-file removal rendering of get_diff_for.
@@ -385,8 +385,8 @@ end
 function ReviewModel:unmark_selections(entry, selections)
   if not self.review_state or entry.type ~= 'seen' then return end
 
-  local mark_key = self:get_mark_key(entry)
-  local record = self:get_reconciled_record(mark_key, self:get_contents(entry))
+  local record_key = self:get_record_key(entry)
+  local record = self:reconcile_record(record_key, self:get_contents(entry))
   if not record then return end
 
   local diff = self:get_diff_for(entry)
@@ -400,12 +400,12 @@ function ReviewModel:unmark_selections(entry, selections)
   local deleted = record.deleted == true and #new_lines == 0
 
   if hunk_apply.lines_equal(new_lines, contents.base) then
-    self.review_state:remove_approved(mark_key)
+    self.review_state:remove_record(record_key)
   else
-    self.review_state:set_approved(mark_key, new_lines, deleted, contents.base)
+    self.review_state:set_record(record_key, new_lines, deleted, contents.base)
   end
 
-  self:invalidate_mark_key(mark_key)
+  self:invalidate_record_key(record_key)
   -- As in mark_selections: keep the remaining seen lines where they were
   if not deleted then
     self:cache_diff(entry, hunk_apply.remaining(diff.hunks, hunk_selections, 'reverse'), new_lines)
@@ -420,10 +420,10 @@ function ReviewModel:mark_file(entry)
   local contents = self:get_contents(entry)
   if not contents then return end
 
-  local mark_key = self:get_mark_key(entry)
-  self.review_state:set_approved(mark_key, contents.current, contents.current_deleted, contents.base)
+  local record_key = self:get_record_key(entry)
+  self.review_state:set_record(record_key, contents.current, contents.current_deleted, contents.base)
 
-  self:invalidate_mark_key(mark_key)
+  self:invalidate_record_key(record_key)
   self:rebuild_entries()
 end
 
@@ -431,10 +431,10 @@ end
 function ReviewModel:unmark_file(entry)
   if not self.review_state then return end
 
-  local mark_key = self:get_mark_key(entry)
-  self.review_state:remove_approved(mark_key)
+  local record_key = self:get_record_key(entry)
+  self.review_state:remove_record(record_key)
 
-  self:invalidate_mark_key(mark_key)
+  self:invalidate_record_key(record_key)
   self:rebuild_entries()
 end
 

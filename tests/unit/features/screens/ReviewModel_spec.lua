@@ -67,7 +67,7 @@ describe('ReviewModel reconcile:', function()
     eq(added, { 'other_v2' })
 
     -- The record now tracks the new base
-    local record = model.review_state:get_approved(FILE)
+    local record = model.review_state:get_record(FILE)
     eq(record.base_lines, new_base)
     eq(record.lines, new_current)
   end)
@@ -122,8 +122,8 @@ describe('ReviewModel reconcile:', function()
     local new_base = { 'a', 'b-rewritten', 'c' }
     model = make_model({ base = new_base, current = { 'a', 'B', 'c' } })
 
-    eq(model:get_reconciled_record(FILE, model:get_contents(unseen_entry())), nil)
-    eq(model.review_state:get_approved(FILE), nil)
+    eq(model:reconcile_record(FILE, model:get_contents(unseen_entry())), nil)
+    eq(model.review_state:get_record(FILE), nil)
   end)
 
   it('titles a trunk review with its unpushed commit count', function()

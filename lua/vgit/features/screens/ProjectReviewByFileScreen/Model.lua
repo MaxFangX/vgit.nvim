@@ -10,7 +10,7 @@ local ReviewModel = require('vgit.features.screens.ReviewModel')
   the merge-base to HEAD. Contents (merge-base and HEAD versions per file)
   are preloaded via one batched `git cat-file`; all diffs derive from those
   in-process.
-  mark_key = entry_key = filepath.
+  record_key = entry_key = filepath.
 ]]
 
 -- Session-wide contents cache, reused across screen instances so re-entering
@@ -39,7 +39,7 @@ function Model:reset()
     contents = {},
     diffs = {},
     seen_flags = {},
-    mark_key_entries = {},
+    entry_keys_by_record_key = {},
     layout_type = self.state.layout_type,
   }
 end
@@ -82,9 +82,9 @@ function Model:fetch(base_branch_arg)
   -- Initialize or restore the index
   self.review_state = ReviewState({
     base_branch = base_branch,
-    branch_name = branch_name,
+    branch_key = branch_name,
     review_type = self:get_review_type(),
-    repo_name = repo_name,
+    repo_key = repo_name,
   })
   -- Load persisted state from disk (must be called from coroutine context)
   self.review_state:load_from_disk()

@@ -8,14 +8,14 @@ local eq = assert.are.same
 
 -- Write a by-commit review file whose approved entries reference `subjects`
 -- (entry keys are `subject_hash:filepath`).
-local function write_review(root, branch_name, subjects, last_used)
+local function write_review(root, branch_key, subjects, last_used)
   local entries = {}
   for _, subject in ipairs(subjects) do
     entries[subject .. ':file.txt'] = { approved = 'hash' }
   end
-  local dir = root .. '/vgit/repo/' .. branch_name:gsub('/', '--')
+  local dir = root .. '/vgit/repo/' .. branch_key:gsub('/', '--')
   vim.fn.mkdir(dir, 'p')
-  local data = { version = 1, lastUsed = last_used, branchName = branch_name, entries = entries }
+  local data = { version = 1, lastUsed = last_used, branchName = branch_key, entries = entries }
   vim.fn.writefile({ vim.fn.json_encode(data) }, dir .. '/by_commit.json')
 end
 
@@ -326,7 +326,7 @@ describe('review_persistence v1 state file:', function()
   end
 
   local function new_state()
-    return review.fresh_review_state()({ branch_name = 'feature/x', review_type = 'by_commit', repo_name = 'repo' })
+    return review.fresh_review_state()({ branch_key = 'feature/x', review_type = 'by_commit', repo_key = 'repo' })
   end
 
   it('loads a frozen v1 by_commit state file', function()
@@ -335,15 +335,15 @@ describe('review_persistence v1 state file:', function()
       local state = new_state()
       state:load_from_disk()
 
-      eq(state:get_approved('8df4a362:src/a.lua'), {
+      eq(state:get_record('8df4a362:src/a.lua'), {
         lines = A_LINES,
         deleted = false,
         base_lines = BASE_LINES,
         hash = A_HASH,
         base_hash = BASE_HASH,
       })
-      eq(state:get_approved('7d0c6595:gone.lua').lines, {})
-      eq(state:get_approved('7d0c6595:gone.lua').deleted, true)
+      eq(state:get_record('7d0c6595:gone.lua').lines, {})
+      eq(state:get_record('7d0c6595:gone.lua').deleted, true)
 
       state:save()
     end)
@@ -359,8 +359,8 @@ describe('review_persistence v1 state file:', function()
   it('saves the same state file and objects after a restart', function()
     review.run(function()
       local state = new_state()
-      state:set_approved('8df4a362:src/a.lua', A_LINES, false, BASE_LINES)
-      state:set_approved('7d0c6595:gone.lua', {}, true, BASE_LINES)
+      state:set_record('8df4a362:src/a.lua', A_LINES, false, BASE_LINES)
+      state:set_record('7d0c6595:gone.lua', {}, true, BASE_LINES)
       state:save()
     end)
     local before, objects = read_json(), object_names()

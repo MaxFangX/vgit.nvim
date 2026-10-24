@@ -1,15 +1,15 @@
 local record_keys = {}
 
 --[[
-  Review marks are stored under `<subject hash>:<filepath>` keys, so
-  rewording a commit's subject orphans its entries. jj change ids survive
+  By-commit records are stored under `<subject hash>:<filepath>` keys, so
+  rewording a commit's subject orphans them. jj change ids survive
   rewording, but jj re-derives them for commits it imports from git, so only
-  subjects survive git-side rebases. Thus an entry is looked up by subject
+  subjects survive git-side rebases. Thus a record is looked up by subject
   key first, and failing that by the change id recorded with it, after which
   it moves to its new subject key.
 
   Stacked branches share commits, so a (commit, file) with no state in this
-  review also adopts the entry another branch's review holds for the same
+  review also adopts the record another branch's review holds for the same
   change id. ReviewState applies the results of these lookups to
   its storage.
 
@@ -18,14 +18,14 @@ local record_keys = {}
 ]]
 
 -- The (commit, file) items for the `commits` that have a jj change id, as
--- `{ key, filepath, change_id }` with `key = make_mark_key(subject, filepath)`.
-function record_keys.items(commits, commit_files, make_mark_key)
+-- `{ key, filepath, change_id }` with `key = make_record_key(subject, filepath)`.
+function record_keys.items(commits, commit_files, make_record_key)
   local items = {}
   for _, commit in ipairs(commits) do
     if commit.change_id then
       for _, file in ipairs(commit_files[commit.hash] or {}) do
         items[#items + 1] = {
-          key = make_mark_key(commit.message, file.filepath),
+          key = make_record_key(commit.message, file.filepath),
           filepath = file.filepath,
           change_id = commit.change_id,
         }

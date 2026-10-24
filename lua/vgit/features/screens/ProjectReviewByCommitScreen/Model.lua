@@ -17,7 +17,7 @@ local ReviewModel = require('vgit.features.screens.ReviewModel')
   KEYING
 
   entry_key = commit_hash:filepath   (content/diff caching; hash-exact)
-  mark_key  = subject_hash:filepath  (index storage; rebase-stable)
+  record_key  = subject_hash:filepath  (index storage; rebase-stable)
 
   Commit hashes change on rebase but subjects typically survive, so the
   approved snapshot follows the commit across rebases/absorbs — which is the
@@ -38,7 +38,7 @@ local function entry_id(commit_hash, filepath, entry_type)
 end
 
 -- Generate mark key from commit subject and filepath.
-local function make_mark_key(commit_subject, filepath)
+local function make_record_key(commit_subject, filepath)
   local subject_hash = utils.str.fnv1a(vim.trim(commit_subject))
   return string.format('%s:%s', subject_hash, filepath)
 end
@@ -74,7 +74,7 @@ function Model:reset()
     contents = {},
     diffs = {},
     seen_flags = {},
-    mark_key_entries = {},
+    entry_keys_by_record_key = {},
     layout_type = self.state.layout_type,
   }
 end
@@ -88,8 +88,8 @@ function Model:get_review_type()
   return 'by_commit'
 end
 
-function Model:get_mark_key(entry)
-  return make_mark_key(entry.commit.message, entry.filepath)
+function Model:get_record_key(entry)
+  return make_record_key(entry.commit.message, entry.filepath)
 end
 
 function Model:get_commit_hash()
@@ -126,9 +126,9 @@ function Model:fetch(base_branch_arg)
   -- Initialize or restore the index
   self.review_state = ReviewState({
     base_branch = base_branch,
-    branch_name = branch_name,
+    branch_key = branch_name,
     review_type = self:get_review_type(),
-    repo_name = repo_name,
+    repo_key = repo_name,
   })
   -- Load persisted state from disk (must be called from coroutine context)
   self.review_state:load_from_disk()
@@ -152,7 +152,7 @@ function Model:fetch(base_branch_arg)
 
   -- Marks stored under a reworded subject, or made while reviewing another
   -- branch, are found by jj change id (see record_keys)
-  local items = record_keys.items(commits, self.state.commit_files, make_mark_key)
+  local items = record_keys.items(commits, self.state.commit_files, make_record_key)
   if #items > 0 then self.review_state:reconcile_change_ids(items) end
 
   -- Preload parent and commit contents in parallel
@@ -242,8 +242,8 @@ function Model:rebuild_entries()
 
     for _, file in ipairs(files) do
       local entry_key = make_key(commit.hash, file.filepath)
-      local mark_key = make_mark_key(commit.message, file.filepath)
-      local flags = self:get_seen_flags(entry_key, mark_key)
+      local record_key = make_record_key(commit.message, file.filepath)
+      local flags = self:get_seen_flags(entry_key, record_key)
 
       local status = ReviewModel.create_status(file.filepath, file.status, file.old_filepath)
 
