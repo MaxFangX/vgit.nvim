@@ -251,6 +251,16 @@ describe('ReviewPersistence name migration:', function()
     eq(load_entries('by_commit'), { ['s:a.lua'] = { approved = 'first' } })
   end)
 
+  it('sweeps nothing while a state file is unreadable', function()
+    write_state('by_file.json', approved('a.lua', 'shared'), 2000)
+    -- A newer vgit's file may reference any object
+    write_state('by_commit.json', { version = 2, entries = { ['s:a.lua'] = { approved = 'newer' } } }, 2000)
+    persistence.write_objects('repo', 'feature', { shared = { 's' }, newer = { 'n' } })
+
+    persistence.sweep_objects('repo', 'feature')
+    eq(persistence.read_object('repo', 'feature', 'newer'), { 'n' })
+  end)
+
   it('keeps objects referenced only by an _indexed file when sweeping', function()
     -- A pre-rename session approved more after this session made its copy
     write_state('by_file.json', approved('a.lua', 'shared'), 2000)

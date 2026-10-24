@@ -326,15 +326,17 @@ function ReviewPersistence.write_objects(repo_name, branch_name, objects)
   end
 end
 
--- Collect object hashes referenced by a branch's state files.
+-- Collect object hashes referenced by a branch's state files, or nil if one
+-- can't be read (its references are unknown).
 local function referenced_hashes(repo_name, branch_name)
   local referenced = {}
   for _, review_type in ipairs(REVIEW_TYPES) do
     -- Migration: a pre-rename session may have written approvals to the
     -- _indexed file since this session copied it to <type>.json.
     for _, name in ipairs({ review_type, review_type .. '_indexed' }) do
-      local data = ReviewPersistence.load(repo_name, branch_name, name)
-      if data and type(data.entries) == 'table' then
+      local data, err = ReviewPersistence.load(repo_name, branch_name, name)
+      if err then return nil end
+      if data then
         for _, entry in pairs(data.entries) do
           if type(entry) == 'table' and entry.approved then
             referenced[entry.approved] = true
@@ -355,6 +357,8 @@ function ReviewPersistence.sweep_objects(repo_name, branch_name)
   if not handle then return end
 
   local referenced = referenced_hashes(repo_name, branch_name)
+  if not referenced then return end
+
   while true do
     local entry, entry_type = vim.loop.fs_scandir_next(handle)
     if not entry then break end
