@@ -1,8 +1,8 @@
 local loop = require('vgit.core.loop')
 local Object = require('vgit.core.Object')
 local console = require('vgit.core.console')
-local persistence = require('vgit.features.screens.ReviewPersistence')
-local change_id_rekey = require('vgit.features.screens.change_id_rekey')
+local persistence = require('vgit.features.screens.review_persistence')
+local record_keys = require('vgit.features.screens.record_keys')
 
 --[[
   ReviewState manages the "index" for review workflows: an approved
@@ -17,7 +17,7 @@ local change_id_rekey = require('vgit.features.screens.change_id_rekey')
   the snapshot when the base changes). No record
   means approved == base (nothing seen). Records persist to disk as content-
   addressed objects referenced from the review-type JSON file, each with the
-  jj change id of its commit when known (see change_id_rekey).
+  jj change id of its commit when known (see record_keys).
 
   A key whose record was removed (unmarked, reset, or rebased away) keeps a
   tombstone, persisted with its change id, so the record isn't adopted
@@ -221,14 +221,14 @@ local function adopt_from_siblings(self, state, items)
       if type(entry) == 'table' and entry.approved then change_ids[key] = entry.change_id end
     end
 
-    for _, match in ipairs(change_id_rekey.find(items, change_ids, change_ids)) do
+    for _, match in ipairs(record_keys.find(items, change_ids, change_ids)) do
       local record = read_record(self.repo_name, sibling.branch_name, entries[match.key])
       if record then
         state.approved[match.item.key], state.dirty[match.item.key], adopted = record, true, true
       end
     end
 
-    items = change_id_rekey.unheld(items, state.approved)
+    items = record_keys.unheld(items, state.approved)
     if #items == 0 then break end
   end
   return adopted
@@ -238,13 +238,13 @@ end
 -- (`{ key, filepath, change_id }`) by jj change id. Moves records orphaned by
 -- a reworded subject, adopts matching records from other branches' reviews,
 -- and records each item's change id so records approved later carry it. See
--- change_id_rekey.
+-- record_keys.
 function ReviewState:reconcile_change_ids(items)
   local state = get_state(self)
 
   -- Moves can chain or swap, so read every source before writing. Tombstones
   -- move with their key too.
-  local moves = change_id_rekey.plan(items, held_keys(state), state.change_ids)
+  local moves = record_keys.plan(items, held_keys(state), state.change_ids)
   local moved = {}
   for i, move in ipairs(moves) do
     moved[i] = { record = state.approved[move.from], removed = state.removed[move.from] }
@@ -255,7 +255,7 @@ function ReviewState:reconcile_change_ids(items)
     state.dirty[move.from], state.dirty[move.to] = true, true
   end
 
-  local adopted = adopt_from_siblings(self, state, change_id_rekey.unheld(items, held_keys(state)))
+  local adopted = adopt_from_siblings(self, state, record_keys.unheld(items, held_keys(state)))
   if #moves > 0 or adopted then self:schedule_save() end
 
   for _, item in ipairs(items) do

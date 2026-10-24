@@ -1,7 +1,7 @@
 -- Not a module path: plenary runs specs without the repo root on package.path
 local review = dofile('tests/helpers/review.lua')
 local ReviewState = require('vgit.features.screens.ReviewState')
-local persistence = require('vgit.features.screens.ReviewPersistence')
+local persistence = require('vgit.features.screens.review_persistence')
 
 local eq = assert.are.same
 local run = review.run

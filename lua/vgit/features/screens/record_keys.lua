@@ -1,4 +1,4 @@
-local change_id_rekey = {}
+local record_keys = {}
 
 --[[
   Review marks are stored under `<subject hash>:<filepath>` keys, so
@@ -19,7 +19,7 @@ local change_id_rekey = {}
 
 -- The (commit, file) items for the `commits` that have a jj change id, as
 -- `{ key, filepath, change_id }` with `key = make_mark_key(subject, filepath)`.
-function change_id_rekey.items(commits, commit_files, make_mark_key)
+function record_keys.items(commits, commit_files, make_mark_key)
   local items = {}
   for _, commit in ipairs(commits) do
     if commit.change_id then
@@ -36,7 +36,7 @@ function change_id_rekey.items(commits, commit_files, make_mark_key)
 end
 
 -- The items with no state under their key in `held_keys` (a set).
-function change_id_rekey.unheld(items, held_keys)
+function record_keys.unheld(items, held_keys)
   local unheld = {}
   for _, item in ipairs(items) do
     if not held_keys[item.key] then unheld[#unheld + 1] = item end
@@ -46,7 +46,7 @@ end
 
 -- Returns `{ item, key }` for each item whose change id and file path match a
 -- key in the set `keys`. `change_ids` maps keys to recorded change ids.
-function change_id_rekey.find(items, keys, change_ids)
+function record_keys.find(items, keys, change_ids)
   local by_identity = {}
   for key in pairs(keys) do
     local change_id, filepath = change_ids[key], key:match('^[^:]*:(.*)$')
@@ -67,7 +67,7 @@ end
 -- item's (subjects shifted or swapped) is that item's to move, not this
 -- one's to keep. Returns `{ from, to }` pairs, each `from` used once; apply
 -- them together, reading every `from` before writing any `to`.
-function change_id_rekey.plan(items, held_keys, change_ids)
+function record_keys.plan(items, held_keys, change_ids)
   local current = {}
   for _, item in ipairs(items) do
     current[item.change_id .. ':' .. item.filepath] = true
@@ -90,7 +90,7 @@ function change_id_rekey.plan(items, held_keys, change_ids)
   end
 
   local moves, taken = {}, {}
-  for _, match in ipairs(change_id_rekey.find(unheld, sources, change_ids)) do
+  for _, match in ipairs(record_keys.find(unheld, sources, change_ids)) do
     if not taken[match.key] then
       taken[match.key] = true
       moves[#moves + 1] = { from = match.key, to = match.item.key }
@@ -99,4 +99,4 @@ function change_id_rekey.plan(items, held_keys, change_ids)
   return moves
 end
 
-return change_id_rekey
+return record_keys

@@ -1,8 +1,8 @@
 -- Not a module path: plenary runs specs without the repo root on package.path
 local review = dofile('tests/helpers/review.lua')
 local ReviewState = require('vgit.features.screens.ReviewState')
-local change_id_rekey = require('vgit.features.screens.change_id_rekey')
-local persistence = require('vgit.features.screens.ReviewPersistence')
+local record_keys = require('vgit.features.screens.record_keys')
+local persistence = require('vgit.features.screens.review_persistence')
 
 local eq = assert.are.same
 local run = review.run
@@ -15,14 +15,14 @@ local function item(key, filepath, change_id)
   return { key = key, filepath = filepath, change_id = change_id }
 end
 
-describe('change_id_rekey', function()
+describe('record_keys', function()
   review.use_temp_data_home()
 
   describe('plan:', function()
     local cid = 'kzlnmouooqvwmnwmymlvpmmsuopnlkkt'
 
     it('moves an orphaned key to the item sharing its change id and file', function()
-      local moves = change_id_rekey.plan(
+      local moves = record_keys.plan(
         { item('new:src/a.lua', 'src/a.lua', cid) },
         { ['old:src/a.lua'] = true },
         { ['old:src/a.lua'] = cid }
@@ -31,7 +31,7 @@ describe('change_id_rekey', function()
     end)
 
     it('leaves a key that already holds state alone', function()
-      local moves = change_id_rekey.plan(
+      local moves = record_keys.plan(
         { item('new:src/a.lua', 'src/a.lua', cid) },
         { ['new:src/a.lua'] = true, ['old:src/a.lua'] = true },
         { ['old:src/a.lua'] = cid }
@@ -42,8 +42,8 @@ describe('change_id_rekey', function()
     it('does not match a different change id or a different file', function()
       local held = { ['old:src/a.lua'] = true, ['old:src/b.lua'] = true }
       local ids = { ['old:src/a.lua'] = cid, ['old:src/b.lua'] = cid }
-      eq(change_id_rekey.plan({ item('new:src/a.lua', 'src/a.lua', 'other') }, held, ids), {})
-      eq(change_id_rekey.plan({ item('new:src/c.lua', 'src/c.lua', cid) }, held, ids), {})
+      eq(record_keys.plan({ item('new:src/a.lua', 'src/a.lua', 'other') }, held, ids), {})
+      eq(record_keys.plan({ item('new:src/c.lua', 'src/c.lua', cid) }, held, ids), {})
     end)
   end)
 

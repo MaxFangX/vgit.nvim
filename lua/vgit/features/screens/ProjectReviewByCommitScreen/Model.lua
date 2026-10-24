@@ -4,7 +4,7 @@ local git_repo = require('vgit.git.git_repo')
 local git_show = require('vgit.git.git_show')
 local git_branch = require('vgit.git.git_branch')
 local jj = require('vgit.git.jj')
-local change_id_rekey = require('vgit.features.screens.change_id_rekey')
+local record_keys = require('vgit.features.screens.record_keys')
 local ReviewState = require('vgit.features.screens.ReviewState')
 local ReviewModel = require('vgit.features.screens.ReviewModel')
 
@@ -151,8 +151,8 @@ function Model:fetch(base_branch_arg)
   jj.attach_change_ids(reponame, commits)
 
   -- Marks stored under a reworded subject, or made while reviewing another
-  -- branch, are found by jj change id (see change_id_rekey)
-  local items = change_id_rekey.items(commits, self.state.commit_files, make_mark_key)
+  -- branch, are found by jj change id (see record_keys)
+  local items = record_keys.items(commits, self.state.commit_files, make_mark_key)
   if #items > 0 then self.review_state:reconcile_change_ids(items) end
 
   -- Preload parent and commit contents in parallel

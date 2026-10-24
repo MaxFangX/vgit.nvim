@@ -1,7 +1,7 @@
 local fs = require('vgit.core.fs')
 
 --[[
-  ReviewPersistence handles disk I/O for review state.
+  review_persistence handles disk I/O for review state.
 
   Storage location: $XDG_DATA_HOME/vgit/<repo>/<branch>/<type>.json
   (default: ~/.local/share/vgit/<repo>/<branch>/<type>.json)
@@ -24,7 +24,7 @@ local fs = require('vgit.core.fs')
     - Automatic lastUsed timestamp updates
 ]]
 
-local ReviewPersistence = {}
+local review_persistence = {}
 
 local CURRENT_VERSION = 1
 local MAX_BRANCHES = 128
@@ -123,20 +123,20 @@ end
 
 -- Get state directory path for a repo. Every path into a repo's state comes
 -- through here, so this runs the name migration before anything reads it.
-function ReviewPersistence.get_state_dir(repo_name)
+function review_persistence.get_state_dir(repo_name)
   local state_dir = get_data_home() .. '/vgit/' .. repo_name
   migrate_indexed_names(state_dir)
   return state_dir
 end
 
 -- Get state file path for a (repo, branch, review_type) tuple
-function ReviewPersistence.get_state_path(repo_name, branch_name, review_type)
-  local dir = ReviewPersistence.get_state_dir(repo_name)
+function review_persistence.get_state_path(repo_name, branch_name, review_type)
+  local dir = review_persistence.get_state_dir(repo_name)
   return dir .. '/' .. encode_branch(branch_name) .. '/' .. review_type .. '.json'
 end
 
-function ReviewPersistence.get_objects_dir(repo_name, branch_name)
-  return string.format('%s/%s/objects', ReviewPersistence.get_state_dir(repo_name), encode_branch(branch_name))
+function review_persistence.get_objects_dir(repo_name, branch_name)
+  return string.format('%s/%s/objects', review_persistence.get_state_dir(repo_name), encode_branch(branch_name))
 end
 
 -- Identifies one version of a file: a rewrite creates a new inode, so this
@@ -147,8 +147,8 @@ end
 
 -- The stamp of a review's state file, or nil if it has none. Compared to tell
 -- whether another session wrote it.
-function ReviewPersistence.state_stamp(repo_name, branch_name, review_type)
-  local stat = vim.loop.fs_stat(ReviewPersistence.get_state_path(repo_name, branch_name, review_type))
+function review_persistence.state_stamp(repo_name, branch_name, review_type)
+  local stat = vim.loop.fs_stat(review_persistence.get_state_path(repo_name, branch_name, review_type))
   return stat and stamp(stat)
 end
 
@@ -207,8 +207,8 @@ end
 -- Evict least-recently-used branches until the repo is within capacity.
 -- Called from the quit-time save (never the write-behind one): the current
 -- branch was just saved, so it sorts newest and is never a candidate.
-function ReviewPersistence.evict_lru(repo_name)
-  local branches = list_branches(ReviewPersistence.get_state_dir(repo_name))
+function review_persistence.evict_lru(repo_name)
+  local branches = list_branches(review_persistence.get_state_dir(repo_name))
   for i = 1, #branches - MAX_BRANCHES do
     vim.fn.delete(branches[i].dir, 'rf') -- Remove the branch dir and all its state files
   end
@@ -244,8 +244,8 @@ local function load_path(path)
 end
 
 -- Load a state file; see load_path
-function ReviewPersistence.load(repo_name, branch_name, review_type)
-  return load_path(ReviewPersistence.get_state_path(repo_name, branch_name, review_type))
+function review_persistence.load(repo_name, branch_name, review_type)
+  return load_path(review_persistence.get_state_path(repo_name, branch_name, review_type))
 end
 
 -- Decoded sibling state files by path, each tagged with the file's mtime, so
@@ -254,8 +254,8 @@ local sibling_cache = {}
 
 -- The other branches' readable state files for `review_type`, most recently
 -- used first, as `{ branch_name, data }` tables.
-function ReviewPersistence.load_siblings(repo_name, branch_name, review_type)
-  local state_dir = ReviewPersistence.get_state_dir(repo_name)
+function review_persistence.load_siblings(repo_name, branch_name, review_type)
+  local state_dir = review_persistence.get_state_dir(repo_name)
   local handle = vim.loop.fs_scandir(state_dir)
   if not handle then return {} end
 
@@ -285,8 +285,8 @@ end
 
 -- Save state to disk. Does not evict; see evict_lru. Returns the written
 -- file's stamp (see state_stamp), or nil, err on failure.
-function ReviewPersistence.save(repo_name, branch_name, review_type, state_data)
-  local path = ReviewPersistence.get_state_path(repo_name, branch_name, review_type)
+function review_persistence.save(repo_name, branch_name, review_type, state_data)
+  local path = review_persistence.get_state_path(repo_name, branch_name, review_type)
   local _, err = ensure_dir(fs.dirname(path))
   if err then return nil, err end
 
@@ -307,7 +307,7 @@ end
 -- converts a Lua string containing NULs to a Blob at the vim.fn boundary,
 -- which sha256() rejects (E976). The escape (\1 -> \1\1, \0 -> \1\2) is
 -- injective, so distinct contents still hash distinctly.
-function ReviewPersistence.hash_lines(lines)
+function review_persistence.hash_lines(lines)
   local content = table.concat(lines, '\n')
   -- Most content has neither byte, and scanning for them is far cheaper than
   -- the escape's two copies
@@ -321,8 +321,8 @@ end
 -- Raw io rather than fs.read_file (vim.fn.readfile), which silently rewrites
 -- NUL bytes and would corrupt binary snapshots on the round-trip; must mirror
 -- fs.write_file's raw format (each line followed by '\n').
-function ReviewPersistence.read_object(repo_name, branch_name, hash)
-  local path = ReviewPersistence.get_objects_dir(repo_name, branch_name) .. '/' .. hash
+function review_persistence.read_object(repo_name, branch_name, hash)
+  local path = review_persistence.get_objects_dir(repo_name, branch_name) .. '/' .. hash
   local fd = io.open(path, 'rb')
   if not fd then return nil end
   local content = fd:read('*a')
@@ -337,8 +337,8 @@ end
 -- are left alone (content-addressed, so contents are immutable), which is
 -- only safe because writes are atomic: a truncated object would otherwise be
 -- kept forever. Stops at the first failure, returning nil, err.
-function ReviewPersistence.write_objects(repo_name, branch_name, objects)
-  local dir = ReviewPersistence.get_objects_dir(repo_name, branch_name)
+function review_persistence.write_objects(repo_name, branch_name, objects)
+  local dir = review_persistence.get_objects_dir(repo_name, branch_name)
   local _, err = ensure_dir(dir)
   if err then return nil, err end
 
@@ -359,7 +359,7 @@ local function referenced_hashes(repo_name, branch_name)
     -- Migration: a pre-rename session may have written approvals to the
     -- _indexed file since this session copied it to <type>.json.
     for _, name in ipairs({ review_type, review_type .. '_indexed' }) do
-      local data, err = ReviewPersistence.load(repo_name, branch_name, name)
+      local data, err = review_persistence.load(repo_name, branch_name, name)
       if err then return nil end
       if data then
         for _, entry in pairs(data.entries) do
@@ -376,8 +376,8 @@ end
 
 -- Delete objects no longer referenced by either review type.
 -- Call after saving state so the JSON files reflect current references.
-function ReviewPersistence.sweep_objects(repo_name, branch_name)
-  local dir = ReviewPersistence.get_objects_dir(repo_name, branch_name)
+function review_persistence.sweep_objects(repo_name, branch_name)
+  local dir = review_persistence.get_objects_dir(repo_name, branch_name)
   local handle = vim.loop.fs_scandir(dir)
   if not handle then return end
 
@@ -436,14 +436,14 @@ end
 -- Returns the qualifying branch with the most overlap (ties break toward the most
 -- recently used), or nil. Uses libuv/io/vim.json so it's safe in the fast event
 -- contexts where the branch resolver runs.
-function ReviewPersistence.branch_by_subjects(repo_name, head_subjects)
+function review_persistence.branch_by_subjects(repo_name, head_subjects)
   local head_count = 0
   for _ in pairs(head_subjects) do
     head_count = head_count + 1
   end
   if head_count == 0 then return nil end
 
-  local state_dir = ReviewPersistence.get_state_dir(repo_name)
+  local state_dir = review_persistence.get_state_dir(repo_name)
   local handle = vim.loop.fs_scandir(state_dir)
   if not handle then return nil end
 
@@ -467,4 +467,4 @@ function ReviewPersistence.branch_by_subjects(repo_name, head_subjects)
   return best_name
 end
 
-return ReviewPersistence
+return review_persistence

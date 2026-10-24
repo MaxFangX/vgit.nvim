@@ -6,7 +6,7 @@ local git_repo = require('vgit.git.git_repo')
 local git_hunks = require('vgit.git.git_hunks')
 local git_branch = require('vgit.git.git_branch')
 local hunk_apply = require('vgit.features.screens.hunk_apply')
-local persistence = require('vgit.features.screens.ReviewPersistence')
+local persistence = require('vgit.features.screens.review_persistence')
 
 --[[
   ReviewModel contains shared logic for the review models

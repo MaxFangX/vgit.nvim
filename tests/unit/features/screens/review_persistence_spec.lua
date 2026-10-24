@@ -1,5 +1,5 @@
 local fs = require('vgit.core.fs')
-local persistence = require('vgit.features.screens.ReviewPersistence')
+local persistence = require('vgit.features.screens.review_persistence')
 -- Not a module path: plenary runs specs without the repo root on package.path
 local review = dofile('tests/helpers/review.lua')
 
@@ -19,7 +19,7 @@ local function write_review(root, branch_name, subjects, last_used)
   vim.fn.writefile({ vim.fn.json_encode(data) }, dir .. '/by_commit.json')
 end
 
-describe('ReviewPersistence snapshot objects:', function()
+describe('review_persistence snapshot objects:', function()
   use_temp_data_home()
 
   it('hashes binary content without tripping the vim.fn Blob conversion', function()
@@ -34,7 +34,8 @@ describe('ReviewPersistence snapshot objects:', function()
   end)
 
   it('keeps every hash stable, since stored records reference them', function()
-    eq(persistence.hash_lines({ 'local a = 1', 'return a' }), 'c4bf756b1652fb667f82201cce2ec25db186b580efec27cf901074da364f4c14')
+    local hash = 'c4bf756b1652fb667f82201cce2ec25db186b580efec27cf901074da364f4c14'
+    eq(persistence.hash_lines({ 'local a = 1', 'return a' }), hash)
     eq(persistence.hash_lines({ 'a\0b', 'c\1' }), 'd51a03ad80858ef78ec6c6aa65e9ef0bfeecd7d9533ed0af5901490cca23a2fe')
   end)
 
@@ -48,7 +49,7 @@ describe('ReviewPersistence snapshot objects:', function()
   end)
 end)
 
-describe('ReviewPersistence.branch_by_subjects:', function()
+describe('review_persistence.branch_by_subjects:', function()
   local data_home = use_temp_data_home()
 
   it('picks the review with the most overlap with HEAD subjects', function()
@@ -78,7 +79,7 @@ describe('ReviewPersistence.branch_by_subjects:', function()
   end)
 end)
 
-describe('ReviewPersistence.evict_lru:', function()
+describe('review_persistence.evict_lru:', function()
   local data_home = use_temp_data_home()
 
   -- Create a branch dir holding a state file with the given mtime (seconds).
@@ -139,7 +140,7 @@ describe('ReviewPersistence.evict_lru:', function()
   end)
 end)
 
-describe('ReviewPersistence name migration:', function()
+describe('review_persistence name migration:', function()
   -- A fresh data home per spec, so the per-state-dir memo never carries over
   local data_home = use_temp_data_home()
   local dir
@@ -234,9 +235,9 @@ describe('ReviewPersistence name migration:', function()
     -- An old-code session saves after the copy; a later session (fresh
     -- memo, here a fresh module) picks the newer _indexed file up.
     write_state('by_commit_indexed.json', approved('s:a.lua', 'second'), os.time() + 60)
-    package.loaded['vgit.features.screens.ReviewPersistence'] = nil
-    local ok, fresh = pcall(require, 'vgit.features.screens.ReviewPersistence')
-    package.loaded['vgit.features.screens.ReviewPersistence'] = persistence
+    package.loaded['vgit.features.screens.review_persistence'] = nil
+    local ok, fresh = pcall(require, 'vgit.features.screens.review_persistence')
+    package.loaded['vgit.features.screens.review_persistence'] = persistence
     assert(ok, fresh)
     eq(fresh.load('repo', 'feature', 'by_commit').entries, { ['s:a.lua'] = { approved = 'second' } })
   end)
@@ -280,10 +281,11 @@ describe('ReviewPersistence name migration:', function()
   end)
 end)
 
-describe('ReviewPersistence v1 state file:', function()
+describe('review_persistence v1 state file:', function()
   local data_home = use_temp_data_home()
 
-  local A_LINES, A_HASH = { 'local a = 1', 'return a' }, 'c4bf756b1652fb667f82201cce2ec25db186b580efec27cf901074da364f4c14'
+  local A_LINES = { 'local a = 1', 'return a' }
+  local A_HASH = 'c4bf756b1652fb667f82201cce2ec25db186b580efec27cf901074da364f4c14'
   local BASE_LINES, BASE_HASH = { 'return 1' }, '486d9affb60dbb0063b03d8e23a6ccf6364ce203dc3a9f56f20e750eb41ecade'
   local EMPTY_HASH = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
 
