@@ -215,7 +215,7 @@ function H.assert_consistent()
 end
 
 describe('ProjectReviewScreen', function()
-  local repo, cwd, restore_homes
+  local repo, cwd
 
   local input, error = console.input, console.error
   local errors
@@ -227,7 +227,6 @@ describe('ProjectReviewScreen', function()
       errors[#errors + 1] = msg
     end
     cwd = vim.loop.cwd()
-    restore_homes = select(2, review.enter_temp_homes())
     repo = make_repo()
     vim.cmd.cd(repo)
   end)
@@ -236,10 +235,12 @@ describe('ProjectReviewScreen', function()
     H.close()
     vim.cmd('silent! %bwipeout!')
     vim.cmd.cd(cwd)
-    restore_homes()
     vim.fn.delete(repo, 'rf')
     console.input, console.error = input, error
   end)
+
+  -- After the hooks above, so the screen saves into the temp dir before it goes
+  review.use_temp_homes()
 
   -- Walk `n` presses of `keys`, collecting the entry after each
   local function walk(keys, n)
