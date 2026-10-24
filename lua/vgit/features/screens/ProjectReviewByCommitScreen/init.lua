@@ -81,13 +81,19 @@ function ProjectReviewByCommitScreen:constructor(opts)
 end
 
 -- J/K in the list: the next commit's first file, or the previous commit's
--- last file, wherever the cursor sits in the current commit. Wraps.
+-- last file, wherever the cursor sits in the current commit. From a section
+-- header, J lands on the section's first commit. Wraps.
 function ProjectReviewByCommitScreen:jump_section(direction)
   local from = self.list_view:cursor_file_index()
   if not from then return end
 
   local files = self.list_view:file_nodes()
-  self:select_file(files, from, file_navigation.adjacent_commit_target(files, from, direction), direction)
+  local target = from
+  local on_section = self.list_view:get_current_list_item().node_type == 'section'
+  if not (on_section and direction == 'next') then
+    target = file_navigation.adjacent_commit_target(files, from, direction)
+  end
+  self:select_file(files, from, target, direction)
 end
 
 -- Auto-size the list column to the widest commit row when list_width is
