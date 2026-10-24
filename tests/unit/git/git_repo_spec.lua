@@ -30,3 +30,24 @@ async.describe('repo:', function()
     eq(exists, true)
   end)
 end)
+
+async.describe('dirname:', function()
+  async.it('is the absolute per-worktree git dir in a linked worktree', function()
+    local loop = require('vgit.core.loop')
+    local root = vim.fn.tempname()
+    vim.fn.mkdir(root .. '/main', 'p')
+    vim.fn.system(string.format(
+      'cd %s/main && git init -q -b master && git -c user.email=t@t.co -c user.name=t commit -q --allow-empty -m A'
+        .. ' && git worktree add -q ../wt',
+      root
+    ))
+    local cwd = vim.loop.cwd()
+    vim.cmd.cd(root .. '/wt')
+
+    local dirname = git_repo.dirname()
+    loop.free_textlock()
+    vim.cmd.cd(cwd)
+    eq(dirname, vim.loop.fs_realpath(root .. '/main/.git/worktrees/wt'))
+    vim.fn.delete(root, 'rf')
+  end)
+end)

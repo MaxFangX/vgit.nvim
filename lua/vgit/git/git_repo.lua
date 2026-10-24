@@ -25,16 +25,17 @@ function git_repo.discover(filepath)
   return result[1]
 end
 
+-- The absolute git dir. In a linked worktree (or jj workspace) that is the
+-- per-worktree dir under the main repo's `.git/worktrees/`.
 function git_repo.dirname()
   local reponame, err = git_repo.discover()
   if err then return nil, err end
 
-  local result, git_dir_err = gitcli.run({ '-C', reponame, 'rev-parse', '--git-dir' })
-  local git_dir = result[1]
+  local result, git_dir_err = gitcli.run({ '-C', reponame, 'rev-parse', '--absolute-git-dir' })
   if git_dir_err then return nil, git_dir_err end
-  if #result==0 then return nil, {} end
+  if #result == 0 then return nil, {} end
 
-  return reponame .. '/' .. git_dir
+  return result[1]
 end
 
 function git_repo.exists(filepath)
