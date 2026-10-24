@@ -452,8 +452,10 @@ end
 -- trunk bookmark, with no feature branch anywhere near HEAD. Guards:
 --   - jj repos only: in plain git a detached descendant HEAD is a deliberate
 --     checkout (e.g. reviewing a merged PR), not everyday trunk work.
---   - origin/<trunk> must be at/behind <trunk>: a local trunk rewound behind
---     its remote means a historical review, not trunk work.
+--   - HEAD must have commits origin/<trunk> lacks: when origin already
+--     contains HEAD (a local trunk rewound behind it), this is a historical
+--     review, not trunk work. Origin moving ahead (someone else pushed)
+--     doesn't change that HEAD's commits are unpushed.
 --   - no feature branch may claim HEAD's stack (`branch_for_head`, which
 --     matches by shared commit subjects — stale unrelated bookmarks don't
 --     block the trunk fallback).
@@ -467,7 +469,7 @@ function git_branch.trunk_behind_head(reponame)
     local tip = rev_parse(reponame, 'refs/heads/' .. trunk)
     local behind = tip and tip ~= head and git_branch.merge_base(reponame, trunk, 'HEAD') == tip
     local origin_tip = behind and rev_parse(reponame, 'refs/remotes/origin/' .. trunk) or nil
-    if origin_tip and git_branch.merge_base(reponame, 'origin/' .. trunk, trunk) == origin_tip then
+    if origin_tip and git_branch.merge_base(reponame, 'origin/' .. trunk, 'HEAD') ~= head then
       return git_branch.branch_for_head(reponame) == nil and trunk or nil
     end
   end
