@@ -113,22 +113,30 @@ end
 -- Parse `cat-file --batch` output for `count` requests. Each response is a
 -- '<oid> <type> <size>' header plus content, or '<request> missing' (also
 -- 'ambiguous'). Only blobs count as found: a tree (file <-> dir change) or a
--- gitlink (submodule) isn't file content.
+-- gitlink (submodule) isn't file content. Requests naming the same blob
+-- (a commit's parent side is often the previous commit's current side)
+-- share one line array, so callers must treat line arrays as immutable.
 local function parse_batch(output, count)
   local results = {}
+  local blob_lines = {} -- oid -> lines
   local pos = 1
   for i = 1, count do
     local nl = output:find('\n', pos, true)
     if not nl then return nil, { 'git cat-file: output ended early' } end
 
-    local type, size = output:sub(pos, nl - 1):match('^%x+ (%a+) (%d+)$')
+    local oid, type, size = output:sub(pos, nl - 1):match('^(%x+) (%a+) (%d+)$')
     if not size then
       results[i] = { missing = true }
       pos = nl + 1
     else
       size = tonumber(size)
       if nl + size + 1 > #output then return nil, { 'git cat-file: output ended early' } end
-      results[i] = type == 'blob' and { lines = to_lines(output:sub(nl + 1, nl + size)) } or { missing = true }
+      if type == 'blob' then
+        blob_lines[oid] = blob_lines[oid] or to_lines(output:sub(nl + 1, nl + size))
+        results[i] = { lines = blob_lines[oid] }
+      else
+        results[i] = { missing = true }
+      end
       pos = nl + size + 2 -- skip content and its separator newline
     end
   end
