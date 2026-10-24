@@ -229,7 +229,7 @@ function ReviewModel:reconcile_record(item)
   local base = item.contents.base
   if not record or hunk_apply.lines_equal(record.base_lines, base) then return record end
 
-  local hunks = git_hunks.live(self.state.reponame, record.base_lines, record.lines) or {}
+  local hunks = git_hunks.live(record.base_lines, record.lines)
   local new_lines = hunk_apply.rebase(hunks, record.base_lines, base)
 
   if hunk_apply.lines_equal(new_lines, base) then
@@ -329,7 +329,7 @@ function ReviewModel:get_diff_for(entry)
     new_deleted = record and record.deleted or false
   end
 
-  local hunks = git_hunks.live(self.state.reponame, old_lines, new_lines) or {}
+  local hunks = git_hunks.live(old_lines, new_lines)
 
   -- A deleted new side renders the old content with whole-file removal marks;
   -- everything else renders the new content with hunks against it.

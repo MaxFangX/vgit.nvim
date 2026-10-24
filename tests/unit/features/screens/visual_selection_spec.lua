@@ -11,7 +11,7 @@ local OLD = { 'a', 'b', 'c', 'd', 'e', 'f' }
 local NEW = { 'a', 'X', 'Y', 'e', 'f', 'Z' }
 
 local function diff(layout_type)
-  return Diff():generate(git_hunks.live('.', OLD, NEW), NEW, layout_type)
+  return Diff():generate(git_hunks.live(OLD, NEW), NEW, layout_type)
 end
 
 local function set(...)

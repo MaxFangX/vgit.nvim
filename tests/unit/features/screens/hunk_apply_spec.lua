@@ -5,10 +5,7 @@ local hunk_apply = require('vgit.features.screens.hunk_apply')
 
 local eq = assert.are.same
 
--- Diff two in-memory contents
-local function live(a, b)
-  return git_hunks.live('.', a, b)
-end
+local live = git_hunks.live
 
 -- Full-hunk selections for every hunk of a diff
 local function all_hunks(hunks)

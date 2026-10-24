@@ -21,7 +21,7 @@ end
 -- Hunks between two line arrays, diffed in process by xdiff. Unlike
 -- `git diff --no-index`, this takes under a millisecond at thousands of lines
 -- and handles NULs.
-function git_hunks.live(reponame, original_lines, current_lines)
+function git_hunks.live(original_lines, current_lines)
   local function join(lines)
     return #lines == 0 and '' or table.concat(lines, '\n') .. '\n'
   end
