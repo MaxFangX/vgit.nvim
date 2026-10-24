@@ -36,17 +36,6 @@ function jj.is_conflict_artifact(filepath)
   return filepath:match('^%.jjconflict%-') ~= nil or filepath == 'JJ-CONFLICT-README'
 end
 
--- Return a new list of `{ filepath = ... }` entries with conflict artifacts removed.
-function jj.filter_conflict_artifacts(files)
-  local out = {}
-  for _, file in ipairs(files) do
-    if not jj.is_conflict_artifact(file.filepath) then
-      out[#out + 1] = file
-    end
-  end
-  return out
-end
-
 -- Run a jj subcommand under `reponame`, returning its stdout, or nil if jj is
 -- missing or exits nonzero. Every call passes `--ignore-working-copy`: jj
 -- would otherwise snapshot the working copy and reset it to git HEAD, and a

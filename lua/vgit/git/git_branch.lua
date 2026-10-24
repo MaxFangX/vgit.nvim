@@ -89,7 +89,7 @@ local function rev_parse(reponame, ref)
 end
 
 -- Get the merge-base between two commits/branches
-function git_branch.merge_base(reponame, ref1, ref2)
+local function merge_base(reponame, ref1, ref2)
   local result, err = gitcli.run({ '-C', reponame, 'merge-base', ref1, ref2 })
   if err then return nil, err end
   if not result[1] or result[1] == '' then return nil, { 'Could not find merge-base' } end
@@ -264,12 +264,12 @@ local function locate_head(reponame, head, detached, refs)
 
   for _, trunk in ipairs(TRUNKS) do
     local tip = refs.heads[trunk]
-    local fork = tip and git_branch.merge_base(reponame, tip, head)
+    local fork = tip and merge_base(reponame, tip, head)
     if fork == head then
       loc.trunk_containing = loc.trunk_containing or trunk
     elseif fork == tip and loc.jj and not loc.trunk_behind then
       local origin_tip = refs.remotes['origin/' .. trunk]
-      if origin_tip and git_branch.merge_base(reponame, origin_tip, head) ~= head then loc.trunk_behind = trunk end
+      if origin_tip and merge_base(reponame, origin_tip, head) ~= head then loc.trunk_behind = trunk end
     end
   end
 
@@ -277,7 +277,7 @@ local function locate_head(reponame, head, detached, refs)
   if loc.jj and (detached or loc.trunk_behind) then
     loc.claim = claim_head(reponame, head, refs)
     local tip = loc.claim and refs.heads[loc.claim]
-    loc.claim_ahead = tip ~= nil and tip ~= head and git_branch.merge_base(reponame, tip, head) == head
+    loc.claim_ahead = tip ~= nil and tip ~= head and merge_base(reponame, tip, head) == head
     -- Trunk work only when no feature branch claims the stack
     if loc.claim then loc.trunk_behind = nil end
   end
@@ -403,13 +403,13 @@ function git_branch.review_target(reponame, base_arg, resolve_detached)
 
   local key = branch_key(reponame, loc, branch, base, resolve_detached)
   local head_ref, head_hash = review_head(loc, branch)
-  local merge_base, mb_err = git_branch.merge_base(reponame, base, head_hash)
-  if not merge_base then return nil, mb_err end
+  local fork, fork_err = merge_base(reponame, base, head_hash)
+  if not fork then return nil, fork_err end
 
   local is_trunk_review = base == 'origin/' .. key
   local unpushed_count
   if is_trunk_review then
-    local count = gitcli.run({ '-C', reponame, 'rev-list', '--count', merge_base .. '..' .. head_hash })
+    local count = gitcli.run({ '-C', reponame, 'rev-list', '--count', fork .. '..' .. head_hash })
     unpushed_count = count and tonumber(count[1])
     if unpushed_count == 0 then unpushed_count = nil end
   end
@@ -419,46 +419,10 @@ function git_branch.review_target(reponame, base_arg, resolve_detached)
     branch_key = key,
     head_ref = head_ref,
     head_hash = head_hash,
-    merge_base = merge_base,
+    merge_base = fork,
     is_trunk_review = is_trunk_review,
     unpushed_count = unpushed_count,
   }
-end
-
--- Pre-review_target entry points, until the review models move over
-function git_branch.detect_base(reponame)
-  local loc, branch = locate_head_cached(reponame)
-  if not loc then return nil, branch end
-  return detect_base(loc)
-end
-
-function git_branch.current_persistent(reponame, resolve_detached)
-  local loc, branch = locate_head_cached(reponame)
-  if not loc then return nil, branch end
-  return branch_key(reponame, loc, branch, nil, resolve_detached)
-end
-
-function git_branch.review_head(reponame)
-  local loc, branch = locate_head_cached(reponame)
-  if not loc then return 'HEAD' end
-  return (review_head(loc, branch))
-end
-
--- Get a ref's commit hash (HEAD by default)
-function git_branch.head(reponame, ref)
-  local result, err = gitcli.run({ '-C', reponame, 'rev-parse', ref or 'HEAD' })
-  if err then return nil, err end
-  return result[1]
-end
-
--- Set of FNV-1a subject hashes for the commits in `base_ref..HEAD`
-function git_branch.head_subject_hashes(reponame, base_ref)
-  local subjects = {}
-  local commits = git_branch.commits_in_range(reponame, base_ref, 'HEAD')
-  for _, commit in ipairs(commits or {}) do
-    subjects[utils.str.fnv1a(vim.trim(commit.message))] = true
-  end
-  return subjects
 end
 
 local FETCH_INTERVAL_SECS = 3600
@@ -597,57 +561,6 @@ function git_branch.review_commits(reponame, merge_base, head)
   return commits
 end
 
--- Get full commit messages for every commit in a range (batched into one git
--- command instead of one `git show` per commit). Returns a table mapping
--- commit_hash -> message lines (matching `git_show.commit_message`'s output).
-function git_branch.all_commit_messages(reponame, base_ref, head_ref)
-  if not reponame then return nil, { 'reponame is required' } end
-  if not base_ref then return nil, { 'base_ref is required' } end
-
-  head_ref = head_ref or 'HEAD'
-
-  -- Each commit is introduced by a sentinel line (`<sentinel><40-hex hash>`),
-  -- followed by its raw body (%B). Requiring an all-hex remainder makes a false
-  -- hit from a body line effectively impossible.
-  local sentinel = 'VGIT-COMMIT-MSG:'
-  local slen = #sentinel
-  local result, err = gitcli.run({
-    '-C',
-    reponame,
-    '--no-pager',
-    'log',
-    '--reverse',
-    '--format=' .. sentinel .. '%H%n%B',
-    base_ref .. '..' .. head_ref,
-  }, { by_exit_code = true })
-  if err then return nil, err end
-
-  local messages = {}
-  local current_hash, current_lines
-  for _, line in ipairs(result) do
-    -- Plain prefix check (sentinel contains `-`/`:`, which are Lua-pattern magic).
-    local hash = line:sub(1, slen) == sentinel and line:sub(slen + 1) or nil
-    if hash and hash:match('^%x+$') then
-      if current_hash then messages[current_hash] = current_lines end
-      current_hash = hash
-      current_lines = {}
-    elseif current_hash then
-      current_lines[#current_lines + 1] = line
-    end
-  end
-  if current_hash then messages[current_hash] = current_lines end
-
-  -- Drop trailing blank lines (git separates commits with one, and %B ends in a
-  -- newline) so results match the per-commit `git show -s --format=%B`.
-  for _, lines in pairs(messages) do
-    while #lines > 0 and lines[#lines] == '' do
-      lines[#lines] = nil
-    end
-  end
-
-  return messages
-end
-
 -- Get files changed between two refs
 function git_branch.changed_files(reponame, base_ref, head_ref)
   if not reponame then return nil, { 'reponame is required' } end
@@ -669,44 +582,6 @@ function git_branch.changed_files(reponame, base_ref, head_ref)
   local files = {}
   parse_name_status(split_nul(output), 1, files)
   return files
-end
-
--- Get files changed for all commits in a range (batched, single git command)
--- Returns a table mapping commit_hash -> files array
-function git_branch.all_commit_files(reponame, base_ref, head_ref)
-  if not reponame then return nil, { 'reponame is required' } end
-  if not base_ref then return nil, { 'base_ref is required' } end
-
-  head_ref = head_ref or 'HEAD'
-
-  -- Each commit is a `COMMIT:<hash>` token followed by its name-status records
-  local output, err = gitcli.run({
-    '-C',
-    reponame,
-    '--no-pager',
-    'log',
-    '--reverse',
-    '--name-status',
-    '-z',
-    '--format=COMMIT:%H',
-    base_ref .. '..' .. head_ref,
-  }, { by_exit_code = true, raw = true })
-  if err then return nil, err end
-
-  local commit_files = {}
-  local tokens = split_nul(output)
-  local i = 1
-  while tokens[i] do
-    local hash = tokens[i]:match('^COMMIT:(%x+)$')
-    if hash then
-      commit_files[hash] = {}
-      i = parse_name_status(tokens, i + 1, commit_files[hash])
-    else
-      i = i + 1
-    end
-  end
-
-  return commit_files
 end
 
 return git_branch
