@@ -1374,7 +1374,8 @@ end
 -- Returns true if current buffer is in the review (triggers source line positioning)
 function ProjectReviewScreen:focus_relative_buffer_entry(buffer)
   local review_state = self.model:get_review_state()
-  local last_section, last_filepath, last_commit_message = review_state:get_position()
+  local position = review_state:get_position()
+  local last_section, last_filepath, last_commit_message = position.type, position.filepath, position.commit_message
 
   -- Priority 1: Find current buffer's file, preferring saved section
   -- This keeps the review in sync with what you're editing in vim
@@ -1487,7 +1488,7 @@ function ProjectReviewScreen:create(args)
   -- Set focus explicitly based on saved state (default to diff for bias towards action)
   -- Don't use toggle_focus() here since commit_message_view may have stolen focus during mount
   local review_state = self.model:get_review_state()
-  local _, _, _, saved_focus = review_state:get_position()
+  local saved_focus = review_state:get_position().focus
   if saved_focus == 'list' then
     self.scene:get('list'):focus()
     self._current_focus = 'list'
@@ -1571,7 +1572,12 @@ function ProjectReviewScreen:destroy()
     if review_state and entry then
       local focus = current_focus or 'diff'
       local commit_message = entry.commit and entry.commit.message or nil
-      review_state:save_position(entry.type, entry.filepath, commit_message, focus)
+      review_state:set_position({
+        type = entry.type,
+        filepath = entry.filepath,
+        commit_message = commit_message,
+        focus = focus,
+      })
     end
     if review_state then
       review_state:save()

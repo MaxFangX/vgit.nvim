@@ -59,7 +59,7 @@ local function get_state(self)
       -- Keys changed since the last write: they win over the file's version
       -- when another session wrote it meanwhile (sync_from_disk)
       dirty = {},
-      position = { section = 'unseen' },
+      position = { type = 'unseen' },
     }
   end
   return state_store[key]
@@ -177,7 +177,12 @@ function ReviewState:set_record(record_key, lines, deleted, base_lines)
   -- the whole base on every save
   local previous = state.records[record_key]
   local base_hash = previous and rawequal(previous.base_lines, base_lines) and previous.base_hash or nil
-  state.records[record_key] = { lines = lines, deleted = deleted == true, base_lines = base_lines, base_hash = base_hash }
+  state.records[record_key] = {
+    lines = lines,
+    deleted = deleted == true,
+    base_lines = base_lines,
+    base_hash = base_hash,
+  }
   state.removed[record_key], state.dirty[record_key] = nil, true
   self:schedule_save()
 end
@@ -274,23 +279,16 @@ function ReviewState:reset()
   self:schedule_save()
 end
 
--- Store last viewed file for re-entry fallback (when current buffer is not in review)
--- commit_message: first line of commit message (stable across rebases, unlike hash)
--- focus: 'diff' or 'list' - which component had focus
-function ReviewState:save_position(section, filepath, commit_message, focus)
-  get_state(self).position = {
-    section = section,
-    filepath = filepath,
-    commit_message = commit_message,
-    focus = focus,
-  }
+-- The last viewed spot, for re-entry when the current buffer isn't in the
+-- review: { type = 'seen'|'unseen', filepath, commit_message, focus }, where
+-- commit_message is the subject (stable across rebases, unlike the hash) and
+-- focus is 'diff' or 'list'. Session-only, never persisted.
+function ReviewState:set_position(position)
+  get_state(self).position = position
 end
 
--- Get last viewed file for re-entry fallback
--- Returns: section, filepath, commit_message, focus
 function ReviewState:get_position()
-  local pos = get_state(self).position
-  return pos.section or 'unseen', pos.filepath, pos.commit_message, pos.focus
+  return get_state(self).position
 end
 
 -- Write snapshot objects, then the JSON referencing them. The final save also
@@ -374,7 +372,7 @@ function ReviewState:schedule_save()
 end
 
 -- Save state to disk now, with sweep and eviction, superseding any queued
--- write-behind save. Position is session-only, never persisted.
+-- write-behind save.
 function ReviewState:save()
   if self._save_timer then
     self._save_timer:stop()
