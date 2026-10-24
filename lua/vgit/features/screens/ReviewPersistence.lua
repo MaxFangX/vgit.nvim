@@ -308,7 +308,12 @@ end
 -- which sha256() rejects (E976). The escape (\1 -> \1\1, \0 -> \1\2) is
 -- injective, so distinct contents still hash distinctly.
 function ReviewPersistence.hash_lines(lines)
-  local content = table.concat(lines, '\n'):gsub('\1', '\1\1'):gsub('%z', '\1\2')
+  local content = table.concat(lines, '\n')
+  -- Most content has neither byte, and scanning for them is far cheaper than
+  -- the escape's two copies
+  if content:find('\0', 1, true) or content:find('\1', 1, true) then
+    content = content:gsub('\1', '\1\1'):gsub('%z', '\1\2')
+  end
   return vim.fn.sha256(content)
 end
 

@@ -176,7 +176,11 @@ end
 -- Content hashes are computed lazily on save() and cached on the record.
 function ReviewState:set_approved(mark_key, lines, deleted, base_lines)
   local state = get_state(self)
-  state.approved[mark_key] = { lines = lines, deleted = deleted == true, base_lines = base_lines }
+  -- Marking again against the same base keeps its hash, saving a rehash of
+  -- the whole base on every save
+  local previous = state.approved[mark_key]
+  local base_hash = previous and rawequal(previous.base_lines, base_lines) and previous.base_hash or nil
+  state.approved[mark_key] = { lines = lines, deleted = deleted == true, base_lines = base_lines, base_hash = base_hash }
   state.removed[mark_key], state.dirty[mark_key] = nil, true
   self:schedule_save()
 end

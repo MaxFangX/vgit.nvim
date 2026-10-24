@@ -118,6 +118,18 @@ describe('ReviewState', function()
     end)
   end)
 
+  it('keeps the base hash when marking again against the same base', function()
+    run(function()
+      local state = review.fresh_review_state()({ branch_name = 'feature', review_type = 'by_file', repo_name = 'repo' })
+      local base = { 'old' }
+      state:set_approved('a.lua', { 'a' }, false, base)
+      state:save()
+
+      state:set_approved('a.lua', { 'a2' }, false, base)
+      eq(state:get_approved('a.lua').base_hash, persistence.hash_lines(base))
+    end)
+  end)
+
   describe('write-behind save:', function()
     it('saves within its delay while marks keep coming', function()
       local state = review.fresh_review_state()({ branch_name = 'feature', review_type = 'by_file', repo_name = 'repo' })

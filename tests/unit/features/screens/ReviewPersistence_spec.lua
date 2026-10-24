@@ -33,6 +33,11 @@ describe('ReviewPersistence snapshot objects:', function()
     assert.are_not.same(persistence.hash_lines({ '\0' }), persistence.hash_lines({ '\1\2' }))
   end)
 
+  it('keeps every hash stable, since stored records reference them', function()
+    eq(persistence.hash_lines({ 'local a = 1', 'return a' }), 'c4bf756b1652fb667f82201cce2ec25db186b580efec27cf901074da364f4c14')
+    eq(persistence.hash_lines({ 'a\0b', 'c\1' }), 'd51a03ad80858ef78ec6c6aa65e9ef0bfeecd7d9533ed0af5901490cca23a2fe')
+  end)
+
   it('round-trips binary snapshot lines through the object store', function()
     local lines = { 'text line', '\0nul\0inside', '', 'trailing' }
     local hash = persistence.hash_lines(lines)
