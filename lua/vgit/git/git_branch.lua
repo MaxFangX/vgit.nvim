@@ -186,18 +186,29 @@ local function branch_for_head_uncached(reponame)
   return nearest_by_distance(reponame, best)
 end
 
--- Resolution runs one log per local branch, yet its answer changes only when
--- refs move, so cache per (reponame, HEAD) — cleared by the git-dir
--- fs-watcher's VGitSync (the emit carrying data), like `detect_base`'s cache.
--- `false` caches a nil resolution.
+-- Branch and base resolution answer from refs alone, so their caches key on
+-- a fingerprint of HEAD and every branch tip: any ref move then misses the
+-- cache. The git-dir watcher can't be relied on for that: it doesn't see
+-- writes under refs/, and in linked worktrees it doesn't run at all. Its
+-- VGitSync (the emit carrying data) still clears the caches, bounding them.
+local function ref_fingerprint(reponame)
+  local head = git_branch.head(reponame)
+  local refs = gitcli.run({
+    '-C', reponame, 'for-each-ref', '--format=%(objectname) %(refname)', 'refs/heads', 'refs/remotes',
+  })
+  if not head or not refs then return nil end
+  return string.format('%s|%s|%s', reponame, head, utils.str.fnv1a(table.concat(refs, '\n')))
+end
+
+-- Resolution runs one log per local branch, so it is cached per ref
+-- fingerprint. `false` caches a nil resolution.
 local branch_for_head_cache = {}
 event.custom_on('VGitSync', function(args)
   if args and args.data then branch_for_head_cache = {} end
 end)
 
 function git_branch.branch_for_head(reponame)
-  local head = git_branch.head(reponame)
-  local key = head and string.format('%s|%s', reponame, head)
+  local key = ref_fingerprint(reponame)
 
   local cached = key and branch_for_head_cache[key]
   if cached ~= nil then return cached or nil end
@@ -550,11 +561,8 @@ local function detect_base_uncached(reponame)
   return nil, { 'Could not detect base branch. Please specify it as an argument.' }
 end
 
--- Detection runs several git calls (~200ms in a large repo), yet its
--- answer, a ref name, changes only when refs move, so it is cached per
--- (reponame, HEAD). Ref moves that don't move HEAD (fetch, `git branch -f`,
--- jj bookmark ops) all write the git dir, so the git-dir fs-watcher's
--- VGitSync (the emit carrying data) clears the cache.
+-- Detection runs several git calls (~200ms in a large repo), so it is
+-- cached per ref fingerprint, like `branch_for_head`.
 local detect_base_cache = {}
 event.custom_on('VGitSync', function(args)
   if args and args.data then detect_base_cache = {} end
@@ -563,8 +571,7 @@ end)
 function git_branch.detect_base(reponame)
   if not reponame then return nil, { 'reponame is required' } end
 
-  local head = git_branch.head(reponame)
-  local key = head and string.format('%s|%s', reponame, head)
+  local key = ref_fingerprint(reponame)
   if key and detect_base_cache[key] then return detect_base_cache[key] end
 
   local base, err = detect_base_uncached(reponame)

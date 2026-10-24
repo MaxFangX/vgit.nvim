@@ -4,8 +4,10 @@ local git_branch = require('vgit.git.git_branch')
 
 local eq = assert.are.same
 
--- Run shell `cmd` inside `dir`, aborting the test on non-zero exit.
+-- Run shell `cmd` inside `dir`, aborting the test on non-zero exit. Git calls
+-- resume in a fast event context, where vim.fn is forbidden, so hop out first.
 local function sh(dir, cmd)
+  if vim.in_fast_event() then loop.free_textlock() end
   vim.fn.system(string.format('cd %s && %s', vim.fn.shellescape(dir), cmd))
   assert(vim.v.shell_error == 0, 'command failed: ' .. cmd)
 end
@@ -380,6 +382,44 @@ async.describe('commits_in_range:', function()
     eq(vim.tbl_map(function(commit)
       return commit.message
     end, commits), { '', 'a | b' })
+    cleanup(dir)
+  end)
+end)
+
+async.describe('resolution caches:', function()
+  async.it('see a ref move that leaves HEAD in place', function()
+    -- jj trunk work, then `jj bookmark create my-pr -r @-`: only a ref moves,
+    -- which the git-dir watcher misses (and in a workspace never runs for)
+    local dir = make_repo()
+    sh(dir, 'mkdir .jj')
+    sh(dir, 'git update-ref refs/remotes/origin/master master')
+    sh(dir, 'git checkout -q --detach master')
+    sh(dir, 'git commit -q --allow-empty -m W1 && git commit -q --allow-empty -m W2')
+    eq(git_branch.current_persistent(dir), 'master')
+    eq(git_branch.detect_base(dir), 'origin/master')
+
+    sh(dir, 'git branch my-pr HEAD')
+    eq(git_branch.current_persistent(dir), 'my-pr')
+    eq(git_branch.detect_base(dir), 'master')
+    cleanup(dir)
+  end)
+end)
+
+async.describe('resolution caches:', function()
+  async.it('see a ref move that leaves HEAD in place', function()
+    -- jj trunk work, then `jj bookmark create my-pr -r @-`: only a ref moves,
+    -- which the git-dir watcher misses (and in a workspace never runs for)
+    local dir = make_repo()
+    sh(dir, 'mkdir .jj')
+    sh(dir, 'git update-ref refs/remotes/origin/master master')
+    sh(dir, 'git checkout -q --detach master')
+    sh(dir, 'git commit -q --allow-empty -m W1 && git commit -q --allow-empty -m W2')
+    eq(git_branch.current_persistent(dir), 'master')
+    eq(git_branch.detect_base(dir), 'origin/master')
+
+    sh(dir, 'git branch my-pr HEAD')
+    eq(git_branch.current_persistent(dir), 'my-pr')
+    eq(git_branch.detect_base(dir), 'master')
     cleanup(dir)
   end)
 end)
