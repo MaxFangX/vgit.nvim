@@ -1,11 +1,8 @@
 local BaseListView = require('vgit.ui.views.BaseListView')
 local StatusFolds = require('vgit.ui.views.StatusListView.StatusFolds')
+local section_headings = require('vgit.ui.views.StatusListView.section_headings')
 
 local StatusListView = BaseListView:extend()
-
-function StatusListView:get_entries()
-  return self.props.entries()
-end
 
 function StatusListView:render()
   local entries = self.props.entries()
@@ -27,6 +24,25 @@ function StatusListView:render()
   end
 
   self:sync_folds(folds)
+end
+
+-- Move the cursor to the next/prev crate-level folder heading (see
+-- section_headings for the rule), wrapping. Returns its row.
+function StatusListView:jump_to_heading(direction)
+  local component = self.scene:get('list')
+  local current_lnum = component:get_lnum()
+  local count = component:get_line_count()
+  local delta = direction == 'next' and 1 or -1
+  local headings = section_headings(self.state.folds)
+
+  for offset = 1, count do
+    local lnum = ((current_lnum - 1 + offset * delta) % count) + 1
+    local item = self:get_list_item(lnum)
+    if headings[item] then
+      self:set_lnum(lnum)
+      return item
+    end
+  end
 end
 
 return StatusListView

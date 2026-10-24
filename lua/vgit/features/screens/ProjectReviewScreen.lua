@@ -11,7 +11,6 @@ local DiffView = require('vgit.ui.views.DiffView')
 local dimensions = require('vgit.ui.dimensions')
 local drag_resize = require('vgit.ui.drag_resize')
 local KeyHelpBarView = require('vgit.ui.views.KeyHelpBarView')
-local section_headings = require('vgit.ui.views.StatusListView.section_headings')
 local file_navigation = require('vgit.features.screens.file_navigation')
 local visual_selection = require('vgit.features.screens.visual_selection')
 
@@ -187,19 +186,10 @@ function ProjectReviewScreen:jump_to_file_edge(direction)
   self.diff_view:move_to_hunk(direction == 'next' and 0 or 1, 'smart')
 end
 
--- J/K in the list: jump between crate-level folder headings (see
--- vgit.ui.views.StatusListView.section_headings for the rule). Wraps.
+-- J/K in the list: jump between crate-level folder headings. The by-commit
+-- screen jumps between commits instead.
 function ProjectReviewScreen:jump_section(direction)
-  local component = self.list_view.scene:get('list')
-  local current_lnum = component:get_lnum()
-  local count = component:get_line_count()
-  local delta = direction == 'next' and 1 or -1
-  local headings = section_headings(self.list_view.state.folds)
-
-  for offset = 1, count do
-    local target_lnum = ((current_lnum - 1 + offset * delta) % count) + 1
-    if headings[self.list_view:get_list_item(target_lnum)] then return self.list_view:set_lnum(target_lnum) end
-  end
+  self.list_view:jump_to_heading(direction)
 end
 
 -- Mark (or unmark) `selections` of entry, nil for the whole file, and

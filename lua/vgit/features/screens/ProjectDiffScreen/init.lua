@@ -12,7 +12,6 @@ local dimensions = require('vgit.ui.dimensions')
 local StatusListView = require('vgit.ui.views.StatusListView')
 local KeyHelpBarView = require('vgit.ui.views.KeyHelpBarView')
 local Model = require('vgit.features.screens.ProjectDiffScreen.Model')
-local section_headings = require('vgit.ui.views.StatusListView.section_headings')
 local project_diff_preview_setting = require('vgit.settings.project_diff_preview')
 local file_navigation = require('vgit.features.screens.file_navigation')
 local visual_selection = require('vgit.features.screens.visual_selection')
@@ -492,21 +491,7 @@ end
 
 function ProjectDiffScreen:jump_section(direction)
   loop.free_textlock()
-  local component = self.status_list_view.scene:get('list')
-  local headings = section_headings(self.status_list_view.state.folds)
-
-  local current_lnum = component:get_lnum()
-  local count = component:get_line_count()
-  local delta = direction == 'next' and 1 or -1
-
-  for offset = 1, count do
-    local target_lnum = ((current_lnum - 1 + offset * delta) % count) + 1
-    local item = self.status_list_view:get_list_item(target_lnum)
-    if item and headings[item] then
-      component:unlock():set_lnum(target_lnum):lock()
-      return item
-    end
-  end
+  return self.status_list_view:jump_to_heading(direction)
 end
 
 function ProjectDiffScreen:next_hunk()
