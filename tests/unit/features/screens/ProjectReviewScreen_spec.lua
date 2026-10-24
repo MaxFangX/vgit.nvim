@@ -126,8 +126,14 @@ function H.close()
   if H.screen() then H.async(screen_manager.destroy_active_screen) end
 end
 
+-- Feed keys through the mappings. CursorMoved fires from the main loop,
+-- which vim.wait never reaches, so fire it as the main loop would.
 function H.keys(keys, ms)
+  local win, cursor = vim.api.nvim_get_current_win(), vim.api.nvim_win_get_cursor(0)
   vim.api.nvim_feedkeys(vim.keycode(keys), 'x', false)
+  if win == vim.api.nvim_get_current_win() and not vim.deep_equal(cursor, vim.api.nvim_win_get_cursor(0)) then
+    vim.api.nvim_exec_autocmds('CursorMoved', { buffer = 0 })
+  end
   H.settle(ms)
 end
 
@@ -270,6 +276,29 @@ describe('ProjectReviewScreen', function()
       H.assert_consistent()
       H.keys('k')
       eq('seen a/x.lua', H.entry())
+    end)
+
+    it('steps into a collapsed folder with j and k', function()
+      H.open('file')
+      H.focus('list')
+      H.keys('j')
+      H.keys('<Down>')
+      eq('src', H.row())
+      H.keys('<CR>')
+      H.keys('k')
+      eq('unseen docs/README.md', H.entry())
+      H.keys('j')
+      eq('unseen src/b/y.lua', H.entry())
+      H.assert_consistent()
+
+      H.keys('<Up><Up>')
+      eq('src', H.row())
+      H.keys('<CR>')
+      H.keys('<Down>')
+      eq('unseen gone.txt', H.entry())
+      H.keys('k')
+      eq('unseen src/c/z.lua', H.entry())
+      H.assert_consistent()
     end)
 
     it('leaves a deleted file with k, J and K', function()

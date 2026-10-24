@@ -345,79 +345,48 @@ function ProjectReviewScreen:goto_logical_file(target_info)
   end
 
   -- Navigate to the specific target file, expanding folders if needed
-  local result = self:navigate_to_file_by_id(target_info.file.id, target_info.commit_hash)
+  local result = self:navigate_to_file_by_id(target_info.file.id)
   self._navigating = false
   return result
 end
 
 -- Navigate to a specific file by ID, expanding parent folders if needed
-function ProjectReviewScreen:navigate_to_file_by_id(file_id, commit_hash)
+function ProjectReviewScreen:navigate_to_file_by_id(file_id)
   local component = self.list_view.scene:get('list')
 
+  -- Match the node's own id: folder nodes carry their last file's entry
   local function find_and_move()
-    local found_item, found_lnum
-    self.list_view:each_list_item(function(item, lnum)
-      if item.entry and item.entry.id == file_id then
-        found_item, found_lnum = item, lnum
-        return true
-      end
+    local item, lnum = self.list_view:find_list_item(function(node)
+      return node.id == file_id
     end)
-    if found_item then
+    if item then
       loop.free_textlock()
-      component:unlock():set_lnum(found_lnum):lock()
+      component:unlock():set_lnum(lnum):lock()
     end
-    return found_item
+    return item
   end
 
   -- Try visible items first, then expand folders and retry
-  return find_and_move() or (self:expand_folders_for_file(file_id, commit_hash) and find_and_move())
+  return find_and_move() or (self:expand_folders_for_file(file_id) and find_and_move())
 end
 
--- Expand all parent folders for a file within a commit
-function ProjectReviewScreen:expand_folders_for_file(file_id, commit_hash)
-  local folds = self.list_view.state.folds
-  if not folds then return false end
-
-  -- Find the commit's items and the target file's path in one pass
-  local commit_items, target_path
-  for _, section in ipairs(folds) do
-    for _, commit in ipairs(section.items or {}) do
-      if commit.commit_hash == commit_hash then
-        commit_items = commit.items or {}
-        local function find_path(items)
-          for _, item in ipairs(items) do
-            if item.entry and item.entry.id == file_id then return item.entry.path end
-            if item.items then
-              local path = find_path(item.items)
-              if path then return path end
-            end
-          end
-        end
-        target_path = find_path(commit_items)
-        break
+-- Open every folder above the file node `file_id`; false if there is none.
+-- Commit rows are left to the active commit.
+function ProjectReviewScreen:expand_folders_for_file(file_id)
+  local function open_path(items)
+    for _, item in ipairs(items or {}) do
+      if item.id == file_id then return true end
+      if item.items and open_path(item.items) then
+        if item.node_type == 'folder' then item.open = true end
+        return true
       end
     end
-    if commit_items then break end
+    return false
   end
+  if not open_path(self.list_view.state.folds) then return false end
 
-  if not target_path then return false end
-
-  -- Expand all folders that are parents of this file
-  local function expand_parents(items)
-    for _, item in ipairs(items) do
-      if item.items and item.entry and item.entry.path then
-        if vim.startswith(target_path, item.entry.path .. '/') then
-          item.open = true
-          expand_parents(item.items)
-        end
-      end
-    end
-  end
-  expand_parents(commit_items)
-
-  -- Re-sync folds
   local component = self.list_view.scene:get('list')
-  component:unlock():set_title(self.list_view.state.title):set_list(folds):sync():lock()
+  component:unlock():set_title(self.list_view.state.title):set_list(self.list_view.state.folds):sync():lock()
   return true
 end
 
