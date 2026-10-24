@@ -6,40 +6,21 @@
 
 local visual_selection = {}
 
--- Map a visual line range in a rendered diff buffer to per-hunk row
--- selections. Rows pair removed/added lines the way both layouts render them
--- side by side / stacked. Returns an array of { index = hunk_index,
--- rows = set-of-rows | nil } for hunks intersecting buffer lines [top, bot];
--- rows == nil means the whole hunk is covered. Returns nil when nothing
--- intersects.
-function visual_selection.for_range(diff, layout_type, top, bot)
-  if not diff or not diff.marks or #diff.marks == 0 then return nil end
+-- Selections for the hunks intersecting buffer lines [top, bot]: { index }
+-- for a fully covered hunk, else partial(index, mark, lo, hi) for its
+-- covered rows [lo, hi]. Nil when nothing intersects.
+local function select_hunks(diff, top, bot, partial)
+  if not diff or not diff.marks then return nil end
 
   local selections = {}
-
   for i, mark in ipairs(diff.marks) do
     local lo = math.max(mark.top, top)
     local hi = math.min(mark.bot, bot)
     if lo <= hi then
       if lo == mark.top and hi == mark.bot then
-        -- Whole hunk covered
-        selections[#selections + 1] = { index = i, rows = nil }
+        selections[#selections + 1] = { index = i }
       else
-        local hunk = diff.hunks[i]
-        local removed = hunk and select(1, hunk:parse_diff()) or {}
-        local rows = {}
-        for lnum = lo, hi do
-          local r = lnum - mark.top + 1
-          -- Unified renders a change hunk as all removed lines then all added
-          -- lines; both halves collapse onto the same pair row. Split renders
-          -- pair rows directly.
-          if layout_type == 'unified' and r > #removed then
-            rows[r - #removed] = true
-          else
-            rows[r] = true
-          end
-        end
-        selections[#selections + 1] = { index = i, rows = rows }
+        selections[#selections + 1] = partial(i, mark, lo, hi)
       end
     end
   end
@@ -48,10 +29,53 @@ function visual_selection.for_range(diff, layout_type, top, bot)
   return selections
 end
 
+-- Number of removed lines in diff's hunk `index`
+local function removed_count(diff, index)
+  local hunk = diff.hunks[index]
+  return hunk and #(hunk:parse_diff()) or 0
+end
+
+-- Map a visual line range to per-hunk pair-row selections:
+-- { index = hunk_index, rows = set-of-rows | nil }, rows == nil meaning the
+-- whole hunk. Row r pairs removed line r with added line r, the way split
+-- renders them side by side; in unified, which stacks a hunk's removed
+-- lines above its added lines, both halves map onto the same pair row.
+function visual_selection.for_range(diff, layout_type, top, bot)
+  return select_hunks(diff, top, bot, function(index, mark, lo, hi)
+    local removed = layout_type == 'unified' and removed_count(diff, index) or 0
+    local rows = {}
+    for lnum = lo, hi do
+      local r = lnum - mark.top + 1
+      rows[r > removed and r - removed or r] = true
+    end
+    return { index = index, rows = rows }
+  end)
+end
+
+-- Map a visual line range in a unified diff to per-hunk line selections, as
+-- precise as `git add -p` line editing: { index = hunk_index, lines = {
+-- removed = set, added = set } }, sets of 1-based indices into the hunk's
+-- removed and added lines; a whole hunk has no `lines`.
+function visual_selection.lines_for_range(diff, top, bot)
+  return select_hunks(diff, top, bot, function(index, mark, lo, hi)
+    local removed = removed_count(diff, index)
+    local lines = { removed = {}, added = {} }
+    for lnum = lo, hi do
+      local r = lnum - mark.top + 1
+      if r > removed then
+        lines.added[r - removed] = true
+      else
+        lines.removed[r] = true
+      end
+    end
+    return { index = index, lines = lines }
+  end)
+end
+
 -- Wrap a range consumer in a visual-mode keymap handler. The selection
 -- endpoints must be read while still in visual mode, so they are captured
 -- synchronously before leaving visual mode; `run(top, bot)` may then defer
--- (e.g. to a debounced coroutine).
+-- (e.g. to a job queue).
 function visual_selection.make_handler(run)
   return function()
     local top = vim.fn.line('v')

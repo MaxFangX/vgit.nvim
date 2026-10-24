@@ -279,9 +279,16 @@ function ProjectReviewScreen:mark_hunk(mark_as_seen, selections)
   self:mark(mark_as_seen, selections)
 end
 
--- Visual s/u over diff rows [top, bot]
+-- Visual s/u over diff rows [top, bot]. Unified marks exactly the selected
+-- lines; split marks pair rows, as both halves of a row are on screen.
 function ProjectReviewScreen:mark_range(mark_as_seen, top, bot)
-  local selections = visual_selection.for_range(self.diff_view:get_diff(), self.model:get_layout_type(), top, bot)
+  local diff = self.diff_view:get_diff()
+  local selections
+  if self.model:get_layout_type() == 'unified' then
+    selections = visual_selection.lines_for_range(diff, top, bot)
+  else
+    selections = visual_selection.for_range(diff, 'split', top, bot)
+  end
   if not selections then return self.diff_view:notify('No hunks in selection') end
   self:mark_hunk(mark_as_seen, selections)
 end

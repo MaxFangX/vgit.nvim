@@ -172,6 +172,17 @@ function H.hunk()
   return string.format('%d/%d %s', index, total, position)
 end
 
+-- Collect the diff pane's notifications from now on
+function H.notifications()
+  local notes = {}
+  local diff_view = H.screen().diff_view
+  diff_view.notify = function(view, msg)
+    notes[#notes + 1] = vim.trim(msg)
+    return getmetatable(view).notify(view, msg)
+  end
+  return notes
+end
+
 -- The list cursor and the diff pane agree on one entry
 function H.assert_consistent()
   eq(H.entry(), H.row())
@@ -288,6 +299,20 @@ describe('ProjectReviewScreen', function()
       eq({ 'unseen a/x.lua', '1/4 inside' }, { H.entry(), H.hunk() })
       H.assert_consistent()
     end)
+
+    for _, layout in ipairs({ 'unified', 'split' }) do
+      it('visual s marks the selected hunk (' .. layout .. ')', function()
+        H.open('file', { layout = layout })
+        -- Unified stacks the hunk's removed and added rows; split pairs them
+        H.keys(layout == 'unified' and 'Vjs' or 'Vs')
+        eq({ 'unseen a/x.lua', '1/3 inside' }, { H.entry(), H.hunk() })
+        local notes = H.notifications()
+        H.keys('<Up>')
+        H.keys('Vs')
+        eq('No hunks in selection', notes[#notes])
+        eq({}, errors)
+      end)
+    end
 
     it('S marks the file and moves to the next unseen file', function()
       H.open('file')
