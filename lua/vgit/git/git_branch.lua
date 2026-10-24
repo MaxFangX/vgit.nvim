@@ -257,7 +257,8 @@ end
 --                     ahead (someone else pushed) doesn't make HEAD's commits
 --                     pushed.
 --   claim             jj only: the bookmark claiming HEAD's stack
---   claim_ahead       whether the claim's tip is strictly ahead of HEAD (a
+--   ahead             detached jj only: the claim (else the trunk containing
+--                     HEAD) when its tip is strictly ahead of HEAD (a
 --                     bookmark diverged mid-rewrite is not)
 local function locate_head(reponame, head, detached, refs)
   local loc = { head = head, refs = refs, jj = jj.is_repo(reponame) }
@@ -276,10 +277,17 @@ local function locate_head(reponame, head, detached, refs)
   -- Claims only matter for a detached jj HEAD, or to void trunk work
   if loc.jj and (detached or loc.trunk_behind) then
     loc.claim = claim_head(reponame, head, refs)
-    local tip = loc.claim and refs.heads[loc.claim]
-    loc.claim_ahead = tip ~= nil and tip ~= head and merge_base(reponame, tip, head) == head
     -- Trunk work only when no feature branch claims the stack
     if loc.claim then loc.trunk_behind = nil end
+  end
+
+  if loc.jj and detached then
+    local candidate = loc.claim or loc.trunk_containing
+    local tip = candidate and refs.heads[candidate]
+    -- The containing trunk is at or ahead of HEAD by definition
+    if tip and tip ~= head and (candidate ~= loc.claim or merge_base(reponame, tip, head) == head) then
+      loc.ahead = candidate
+    end
   end
 
   return loc
@@ -364,23 +372,11 @@ end
 
 -- The ref (and hash) the review diffs run to. Normally HEAD, but in a jj
 -- repo the working copy is routinely parked mid-stack, and reviewing to HEAD
--- would silently truncate the review to the commits below the parking spot.
--- So for a detached jj HEAD, when the claiming branch (or the trunk
--- containing HEAD) has its tip strictly ahead of HEAD, the review runs to
--- that tip instead.
-local function review_head(loc, branch)
-  if not loc.jj or branch ~= 'HEAD' then return 'HEAD', loc.head end
-
-  local candidate = loc.claim or loc.trunk_containing
-  local tip = candidate and loc.refs.heads[candidate]
-  local ahead
-  if candidate == loc.claim then
-    ahead = loc.claim_ahead
-  else
-    ahead = tip ~= loc.head
-  end
-  if not ahead then return 'HEAD', loc.head end
-  return candidate, tip
+-- would silently truncate the review to the commits below the parking spot,
+-- so it runs to the tip ahead of HEAD (`loc.ahead`) instead.
+local function review_head(loc)
+  if not loc.ahead then return 'HEAD', loc.head end
+  return loc.ahead, loc.refs.heads[loc.ahead]
 end
 
 -- Resolve what to review: the base (`base_arg`, else detected), the branch
@@ -402,7 +398,7 @@ function git_branch.review_target(reponame, base_arg, resolve_detached)
   end
 
   local key = branch_key(reponame, loc, branch, base, resolve_detached)
-  local head_ref, head_hash = review_head(loc, branch)
+  local head_ref, head_hash = review_head(loc)
   local fork, fork_err = merge_base(reponame, base, head_hash)
   if not fork then return nil, fork_err end
 
