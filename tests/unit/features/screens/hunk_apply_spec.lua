@@ -80,7 +80,7 @@ describe('hunk_apply:', function()
       local hunks = live(a, b)
       eq(#hunks, 1)
 
-      local out = hunk_apply.apply(a, hunks[1], { [1] = true, [2] = true })
+      local out = hunk_apply.apply(a, hunks[1], { rows = { [1] = true, [2] = true } })
       eq(out, { 'ctx1', 'n1', 'n2', 'ctx2' })
 
       -- Marking the remainder converges to b
@@ -93,7 +93,7 @@ describe('hunk_apply:', function()
       local b = { 'A2', 'B2', 'ctx' }
       local hunks = live(a, b)
 
-      local out = hunk_apply.apply(a, hunks[1], { [1] = true })
+      local out = hunk_apply.apply(a, hunks[1], { rows = { [1] = true } })
       eq(out, { 'A2', 'B', 'ctx' })
     end)
 
@@ -102,14 +102,14 @@ describe('hunk_apply:', function()
       local approved = { 'A2', 'B', 'ctx' }
       local seen_hunks = live(a, approved)
 
-      eq(hunk_apply.reverse(approved, seen_hunks[1], { [1] = true }), a)
+      eq(hunk_apply.reverse(approved, seen_hunks[1], { rows = { [1] = true } }), a)
     end)
 
     it('applies a selected row of a delete hunk', function()
       local a = { 'ctx', 'd1', 'd2', 'd3' }
       local hunks = live(a, { 'ctx' })
 
-      eq(hunk_apply.apply(a, hunks[1], { [2] = true }), { 'ctx', 'd1', 'd3' })
+      eq(hunk_apply.apply(a, hunks[1], { rows = { [2] = true } }), { 'ctx', 'd1', 'd3' })
     end)
 
     it('handles uneven change hunks (added rows without removed pair)', function()
@@ -117,8 +117,55 @@ describe('hunk_apply:', function()
       local b = { 'a1', 'a2', 'a3', 'ctx' }
       local hunks = live(a, b)
 
-      eq(hunk_apply.apply(a, hunks[1], { [3] = true }), { 'r1', 'r2', 'a3', 'ctx' })
-      eq(hunk_apply.apply(a, hunks[1], { [1] = true, [3] = true }), { 'a1', 'r2', 'a3', 'ctx' })
+      eq(hunk_apply.apply(a, hunks[1], { rows = { [3] = true } }), { 'r1', 'r2', 'a3', 'ctx' })
+      eq(hunk_apply.apply(a, hunks[1], { rows = { [1] = true, [3] = true } }), { 'a1', 'r2', 'a3', 'ctx' })
+    end)
+  end)
+
+  describe('partial line application', function()
+    -- Hunk lines picked by index
+    local function pick(removed, added)
+      local function set(indices)
+        local result = {}
+        for _, i in ipairs(indices) do
+          result[i] = true
+        end
+        return result
+      end
+      return { lines = { removed = set(removed), added = set(added) } }
+    end
+
+    it('keeps unselected removed lines ahead of selected added lines', function()
+      local a = { 'r1', 'r2', 'r3', 'ctx' }
+      local b = { 'a1', 'a2', 'ctx' }
+      local hunks = live(a, b)
+
+      eq(hunk_apply.apply(a, hunks[1], pick({ 2 }, { 1 })), { 'r1', 'r3', 'a1', 'ctx' })
+      eq(hunk_apply.apply(a, hunks[1], pick({ 1, 2, 3 }, {})), { 'ctx' })
+      eq(hunk_apply.apply(a, hunks[1], pick({}, { 2 })), { 'r1', 'r2', 'r3', 'a2', 'ctx' })
+    end)
+
+    it('reverts selected lines from the seen side', function()
+      local base = { 'r1', 'r2', 'ctx' }
+      local approved = { 'a1', 'a2', 'ctx' }
+      local seen_hunks = live(base, approved)
+
+      -- Restore r2 and drop a1: the kept added line stays ahead of it
+      eq(hunk_apply.reverse(approved, seen_hunks[1], pick({ 2 }, { 1 })), { 'a2', 'r2', 'ctx' })
+    end)
+
+    it('leaves selected added lines as context in the remaining diff', function()
+      local old = { 'r1', 'r2', 'ctx' }
+      local new = { 'a1', 'a2', 'a3', 'ctx' }
+      local hunks = live(old, new)
+      local selections = { vim.tbl_extend('force', { hunk = hunks[1] }, pick({ 1 }, { 2 })) }
+
+      local applied = hunk_apply.apply_selections(old, selections, 'apply')
+      eq(applied, { 'r2', 'a2', 'ctx' })
+
+      local remaining = hunk_apply.remaining(hunks, selections, 'apply')
+      eq(vim.tbl_map(function(hunk) return hunk.diff end, remaining), { { '-r2', '+a1' }, { '+a3' } })
+      eq(hunk_apply.apply_selections(applied, all_hunks(remaining), 'apply'), new)
     end)
   end)
 
@@ -372,28 +419,37 @@ describe('hunk_apply:', function()
       eq(hunk_apply.apply_selections(rolled_back, all_hunks(remaining), 'reverse'), base)
     end)
 
-    it('is a valid diff for randomized row selections in both directions', function()
+    it('is a valid diff for randomized selections in both directions', function()
       local rand = review.random(7)
 
-      for _ = 1, 200 do
+      -- A random subset of 1..n, as a set
+      local function subset(n)
+        local set = {}
+        for i = 1, n do
+          if rand(2) == 1 then set[i] = true end
+        end
+        return set
+      end
+
+      for _ = 1, 400 do
         local a, b = {}, {}
         for _ = 1, rand(30) do a[#a + 1] = 'line' .. rand(6) end
         for _ = 1, rand(30) do b[#b + 1] = 'line' .. rand(6) end
 
-        -- Select a random row subset of some hunks, leaving others untouched
+        -- Select all, random rows, or random lines of some hunks, leaving
+        -- others untouched
         local hunks = live(a, b)
         local selections = {}
         for _, hunk in ipairs(hunks) do
-          local choice = rand(3)
+          local removed, added = hunk:parse_diff()
+          local choice = rand(4)
           if choice == 1 then
-            selections[#selections + 1] = { hunk = hunk, rows = nil }
+            selections[#selections + 1] = { hunk = hunk }
           elseif choice == 2 then
-            local removed, added = hunk:parse_diff()
-            local rows = {}
-            for r = 1, math.max(#removed, #added) do
-              if rand(2) == 1 then rows[r] = true end
-            end
-            selections[#selections + 1] = { hunk = hunk, rows = rows }
+            selections[#selections + 1] = { hunk = hunk, rows = subset(math.max(#removed, #added)) }
+          elseif choice == 3 then
+            local lines = { removed = subset(#removed), added = subset(#added) }
+            selections[#selections + 1] = { hunk = hunk, lines = lines }
           end
         end
 

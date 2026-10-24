@@ -5,11 +5,19 @@
   snapshot by applying hunks of diff(approved -> current); unmarking rolls it
   back by reverse-applying hunks of diff(base -> approved).
 
-  Partial application uses row pairing: row r of a hunk pairs removed[r] with
-  added[r] (the same pairing both diff layouts render side by side / stacked).
-  A selected row takes the new side (added line, or nothing for a deletion);
-  an unselected row keeps the old side. This mirrors `git add -p` line
-  selection with stable ordering for mixed change hunks.
+  A selection picks part of a hunk in one of two ways:
+
+  - rows (a set of row indices): row r of a hunk pairs removed[r] with
+    added[r], as the split layout renders them side by side. A selected row
+    takes the new side (its added line, or nothing for a deletion); an
+    unselected row keeps the old side.
+  - lines ({ removed = set, added = set } of indices into the hunk's removed
+    and added lines), like `git add -p` line selection, for the unified
+    layout: selected removed lines go, unselected ones stay, then selected
+    added lines come in after them.
+
+  Reversing applies the inverted hunk, so a selection picks the lines to
+  revert.
 ]]
 
 local GitHunk = require('vgit.git.GitHunk')
@@ -26,29 +34,51 @@ function hunk_apply.lines_equal(a, b)
   return true
 end
 
--- Emit the hunk's row-paired output into result.
--- rows == nil means every row is selected (full application).
-local function emit_rows(result, old_side, new_side, rows)
-  for r = 1, math.max(#old_side, #new_side) do
+-- The lines that replace a hunk's old side once `pick` is applied: nil for
+-- the whole hunk, or a selection's { rows } or { lines } (see the header).
+local function picked_region(removed, added, pick)
+  local region = {}
+  if pick and pick.lines then
+    for r, line in ipairs(removed) do
+      if not pick.lines.removed[r] then region[#region + 1] = line end
+    end
+    for a, line in ipairs(added) do
+      if pick.lines.added[a] then region[#region + 1] = line end
+    end
+    return region
+  end
+
+  local rows = pick and pick.rows
+  for r = 1, math.max(#removed, #added) do
     if rows == nil or rows[r] then
-      result[#result + 1] = new_side[r]
+      region[#region + 1] = added[r]
     else
-      result[#result + 1] = old_side[r]
+      region[#region + 1] = removed[r]
     end
   end
+  return region
 end
 
--- Splice a hunk's output into lines: copy [1, pos), emit rows, copy the tail
--- after the replaced range. When count == 0 the header start is the line the
--- change goes *after* (git convention), so nothing is replaced.
-local function splice(lines, start, count, old_side, new_side, rows)
+-- The pick for a hunk's inversion: rows pair up the same way, and lines swap
+-- sides.
+local function inverted_pick(pick)
+  if not (pick and pick.lines) then return pick end
+  return { lines = { removed = pick.lines.added, added = pick.lines.removed } }
+end
+
+-- Splice a hunk's region into lines: copy [1, pos), the region, then the
+-- tail after the replaced range. When count == 0 the header start is the
+-- line the change goes *after* (git convention), so nothing is replaced.
+local function splice(lines, start, count, region)
   local pos = count == 0 and start + 1 or start
   local result = {}
 
   for i = 1, pos - 1 do
     result[#result + 1] = lines[i]
   end
-  emit_rows(result, old_side, new_side, rows)
+  for _, line in ipairs(region) do
+    result[#result + 1] = line
+  end
   for i = pos + count, #lines do
     result[#result + 1] = lines[i]
   end
@@ -57,20 +87,20 @@ local function splice(lines, start, count, old_side, new_side, rows)
 end
 
 -- Apply a hunk of diff(old -> new) onto old_lines (moves content toward new).
--- rows: optional set of selected row indices (1-based within the hunk);
--- nil applies the whole hunk. Returns a new line array.
-function hunk_apply.apply(old_lines, hunk, rows)
+-- pick: a selection's { rows } or { lines } (see the header); nil applies
+-- the whole hunk. Returns a new line array.
+function hunk_apply.apply(old_lines, hunk, pick)
   local removed, added = hunk:parse_diff()
   local previous = hunk:parse_header()
-  return splice(old_lines, previous[1], previous[2], removed, added, rows)
+  return splice(old_lines, previous[1], previous[2], picked_region(removed, added, pick))
 end
 
 -- Reverse-apply a hunk of diff(old -> new) onto new_lines (moves content back
--- toward old). rows semantics match apply: selected rows are reverted.
-function hunk_apply.reverse(new_lines, hunk, rows)
+-- toward old). The picked rows or lines are reverted.
+function hunk_apply.reverse(new_lines, hunk, pick)
   local removed, added = hunk:parse_diff()
   local _, current = hunk:parse_header()
-  return splice(new_lines, current[1], current[2], added, removed, rows)
+  return splice(new_lines, current[1], current[2], picked_region(added, removed, inverted_pick(pick)))
 end
 
 -- How many context lines around a hunk participate in rebase matching.
@@ -197,42 +227,121 @@ function hunk_apply.rebase(hunks, old_base, new_base)
 end
 
 -- Apply several selections in one pass. Each selection is
--- { hunk = GitHunk, rows = set|nil }. Hunk header positions all reference the
+-- { hunk = GitHunk, rows = set|nil, lines = { removed, added }|nil }, with
+-- neither set for the whole hunk. Hunk header positions all reference the
 -- same original lines, so selections are applied bottom-up to keep earlier
 -- positions valid. direction: 'apply' or 'reverse'.
 function hunk_apply.apply_selections(lines, selections, direction)
-  local sorted = {}
-  for i = 1, #selections do
-    sorted[i] = selections[i]
-  end
+  local sorted = vim.list_slice(selections)
   table.sort(sorted, function(a, b)
     return a.hunk.top > b.hunk.top
   end)
 
   local op = direction == 'reverse' and hunk_apply.reverse or hunk_apply.apply
   for _, selection in ipairs(sorted) do
-    lines = op(lines, selection.hunk, selection.rows)
+    lines = op(lines, selection.hunk, selection)
   end
 
   return lines
 end
 
--- Hunks of diff(old' -> new) once selections are applied onto old. rows_of[i]
--- is the selection for hunks[i]: a row set, true for the whole hunk, or false
--- when unselected. A selected row with an added line becomes context (both
--- sides now agree), splitting the hunk there; a selected pure deletion just
--- vanishes from both sides. Each run of unselected rows between such context
--- lines becomes a hunk of its own.
-local function remaining_applied(hunks, rows_of)
+-- Append the hunk turning `removed`, which follows old line old_before, into
+-- `added`, which follows new line new_before
+local function push_hunk(result, old_before, removed, new_before, added)
+  local old_start = old_before + (#removed > 0 and 1 or 0)
+  local new_start = new_before + (#added > 0 and 1 or 0)
+  local hunk = GitHunk({ { old_start, #removed }, { new_start, #added } })
+  for _, line in ipairs(removed) do
+    hunk:push('-' .. line)
+  end
+  for _, line in ipairs(added) do
+    hunk:push('+' .. line)
+  end
+  result[#result + 1] = hunk
+end
+
+-- The rest of a hunk once rows are applied (rows == nil: all of them). A
+-- selected row with an added line becomes context (both sides now agree),
+-- splitting the hunk there; a selected pure deletion just vanishes from both
+-- sides. Each run of unselected rows between such context lines becomes a
+-- hunk of its own. Returns how many old' lines the hunk's region holds.
+local function remaining_rows(result, removed, added, rows, old_before, new_before)
+  -- old' lines emitted so far for this hunk's rows
+  local emitted = 0
+
+  -- The open run: its first row, and the old' line it follows
+  local run_lo, run_old_before
+  local function close_run(hi)
+    if not run_lo then return end
+
+    local sub_removed = {}
+    for r = run_lo, math.min(hi, #removed) do
+      if not (rows and rows[r]) then sub_removed[#sub_removed + 1] = removed[r] end
+    end
+    local sub_added = vim.list_slice(added, run_lo, math.min(hi, #added))
+    -- A run past the added lines follows the last of them
+    local sub_new_before = #sub_added > 0 and new_before + run_lo - 1 or new_before + #added
+    push_hunk(result, run_old_before, sub_removed, sub_new_before, sub_added)
+
+    emitted = emitted + #sub_removed
+    run_lo = nil
+  end
+
+  for r = 1, math.max(#removed, #added) do
+    if not (rows == nil or rows[r]) then
+      if not run_lo then run_lo, run_old_before = r, old_before + emitted end
+    elseif added[r] then
+      close_run(r - 1)
+      emitted = emitted + 1
+    end
+  end
+  close_run(math.max(#removed, #added))
+
+  return emitted
+end
+
+-- The rest of a hunk once a line selection is applied. Its old' region is
+-- the unselected removed lines, then the selected added lines, which become
+-- context where they sit among the added lines, splitting the hunk there.
+-- Returns how many old' lines the hunk's region holds.
+local function remaining_lines(result, removed, added, lines, old_before, new_before)
+  local kept = {}
+  for r, line in ipairs(removed) do
+    if not lines.removed[r] then kept[#kept + 1] = line end
+  end
+
+  -- The open run: the old' line it follows, its removed lines (only the
+  -- first run has any), and its first added line
+  local run_old_before, run_removed, run_lo = old_before, kept, 1
+  local picked = 0
+  for a = 1, #added + 1 do
+    if a > #added or lines.added[a] then
+      if #run_removed > 0 or a > run_lo then
+        push_hunk(result, run_old_before, run_removed, new_before + run_lo - 1, vim.list_slice(added, run_lo, a - 1))
+      end
+      -- Past the run's removed lines and the context line ending it
+      run_old_before = run_old_before + #run_removed + 1
+      run_removed, run_lo = {}, a + 1
+      if a <= #added then picked = picked + 1 end
+    end
+  end
+
+  return #kept + picked
+end
+
+-- Hunks of diff(old' -> new) once selections are applied onto old. picks[i]
+-- is the selection of hunks[i] (see apply_selections), or false when
+-- unselected.
+local function remaining_applied(hunks, picks)
   local result = {}
   -- Net line shift of old' relative to old, from hunks already walked
   local delta = 0
 
   for i, hunk in ipairs(hunks) do
-    local rows = rows_of[i]
+    local pick = picks[i]
     local previous, current = hunk:parse_header()
 
-    if not rows then
+    if not pick then
       local shifted = GitHunk({ { previous[1] + delta, previous[2] }, current })
       for _, line in ipairs(hunk.diff) do
         shifted:push(line)
@@ -240,53 +349,17 @@ local function remaining_applied(hunks, rows_of)
       result[#result + 1] = shifted
     else
       local removed, added = hunk:parse_diff()
-      local function selected(r)
-        return rows == true or rows[r]
-      end
-
       -- The line preceding the hunk on each side (a zero-count header already
       -- names that line); old'-side starts also carry the running delta.
       local old_before = (previous[2] == 0 and previous[1] or previous[1] - 1) + delta
       local new_before = current[2] == 0 and current[1] or current[1] - 1
-      -- old' lines emitted so far for this hunk's rows
-      local emitted = 0
 
-      -- The open run: its first row, and the old' line it follows
-      local run_lo, run_old_before
-      local function close_run(hi)
-        if not run_lo then return end
-
-        local sub_removed = {}
-        for r = run_lo, math.min(hi, #removed) do
-          if not selected(r) then sub_removed[#sub_removed + 1] = removed[r] end
-        end
-        local new_count = math.max(0, math.min(hi, #added) - run_lo + 1)
-        local old_start = run_old_before + (#sub_removed > 0 and 1 or 0)
-        local new_start = new_before + (new_count > 0 and run_lo or #added)
-
-        local sub = GitHunk({ { old_start, #sub_removed }, { new_start, new_count } })
-        for _, line in ipairs(sub_removed) do
-          sub:push('-' .. line)
-        end
-        for r = run_lo, run_lo + new_count - 1 do
-          sub:push('+' .. added[r])
-        end
-        result[#result + 1] = sub
-
-        emitted = emitted + #sub_removed
-        run_lo = nil
+      local emitted
+      if pick.lines then
+        emitted = remaining_lines(result, removed, added, pick.lines, old_before, new_before)
+      else
+        emitted = remaining_rows(result, removed, added, pick.rows, old_before, new_before)
       end
-
-      for r = 1, math.max(#removed, #added) do
-        if not selected(r) then
-          if not run_lo then run_lo, run_old_before = r, old_before + emitted end
-        elseif added[r] then
-          close_run(r - 1)
-          emitted = emitted + 1
-        end
-      end
-      close_run(math.max(#removed, #added))
-
       delta = delta + emitted - #removed
     end
   end
@@ -295,11 +368,7 @@ local function remaining_applied(hunks, rows_of)
 end
 
 local function invert_all(hunks)
-  local inverted = {}
-  for i, hunk in ipairs(hunks) do
-    inverted[i] = hunk:invert()
-  end
-  return inverted
+  return vim.tbl_map(function(hunk) return hunk:invert() end, hunks)
 end
 
 -- The diff left over after apply_selections: diff(old' -> new) for 'apply',
@@ -308,20 +377,20 @@ end
 -- may align repeated content (say a closing `'';` / `};` pair) with a
 -- different copy and show the mark on the wrong instance.
 function hunk_apply.remaining(hunks, selections, direction)
-  local rows_by_hunk = {}
+  local picks_by_hunk = {}
   for _, selection in ipairs(selections) do
-    rows_by_hunk[selection.hunk] = selection.rows or true
+    picks_by_hunk[selection.hunk] = direction == 'reverse' and inverted_pick(selection) or selection
   end
 
-  local rows_of = {}
+  local picks = {}
   for i, hunk in ipairs(hunks) do
-    rows_of[i] = rows_by_hunk[hunk] or false
+    picks[i] = picks_by_hunk[hunk] or false
   end
 
   if direction == 'reverse' then
-    return invert_all(remaining_applied(invert_all(hunks), rows_of))
+    return invert_all(remaining_applied(invert_all(hunks), picks))
   end
-  return remaining_applied(hunks, rows_of)
+  return remaining_applied(hunks, picks)
 end
 
 return hunk_apply

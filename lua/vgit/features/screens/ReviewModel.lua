@@ -377,21 +377,21 @@ function ReviewModel:invalidate_record_key(record_key)
   end
 end
 
--- Convert screen selections ({ index, rows }) into hunk_apply selections
+-- Convert screen selections ({ index, rows | lines }) into hunk_apply selections
 local function to_hunk_selections(diff, selections)
   local result = {}
   for _, selection in ipairs(selections) do
     local hunk = diff.hunks[selection.index]
     if hunk then
-      result[#result + 1] = { hunk = hunk, rows = selection.rows }
+      result[#result + 1] = { hunk = hunk, rows = selection.rows, lines = selection.lines }
     end
   end
   return result
 end
 
 -- Mark hunks (or selected rows) of the current unseen diff as seen: apply
--- them onto the approved snapshot. selections: array of
--- { index = hunk index, rows = set of row indices or nil for the whole hunk }.
+-- them onto the approved snapshot. selections: array of { index = hunk index,
+-- rows | lines } (see hunk_apply), neither for the whole hunk.
 function ReviewModel:mark_selections(entry, selections)
   if not self.review_state or entry.type ~= 'unseen' then return end
 
