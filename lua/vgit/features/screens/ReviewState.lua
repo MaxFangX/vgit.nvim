@@ -26,9 +26,10 @@ local change_id_rekey = require('vgit.features.screens.change_id_rekey')
 
 local ReviewState = Object:extend()
 
--- Write-behind delay: a burst of marks coalesces into one save shortly after
--- it settles, so a crash or kill mid-review loses at most this much work.
-local SAVE_DEBOUNCE_MS = 1000
+-- Write-behind delay: the first change after a save starts the timer and
+-- later changes ride along, so a crash or kill mid-review loses at most this
+-- much work, even while marks keep coming.
+local SAVE_DELAY_MS = 1000
 
 -- Global state storage (persists across screen instances within a Vim session)
 local state_store = {}
@@ -330,18 +331,20 @@ end
 -- Queue a write-behind save; mark mutators call this so approvals reach disk
 -- without waiting for the screen to close.
 function ReviewState:schedule_save()
-  if not self._debounced_save then
-    self._debounced_save = loop.debounce_coroutine(function() write_to_disk(self, false) end, SAVE_DEBOUNCE_MS)
-  end
-  self._debounced_save()
+  if self._save_timer then return end
+  self._save_timer = vim.defer_fn(loop.coroutine(function()
+    self._save_timer = nil
+    write_to_disk(self, false)
+  end), SAVE_DELAY_MS)
 end
 
 -- Save state to disk now, with sweep and eviction, superseding any queued
 -- write-behind save. Position is session-only, never persisted.
 function ReviewState:save()
-  if self._debounced_save then
-    loop.close_debounced(self._debounced_save)
-    self._debounced_save = nil
+  if self._save_timer then
+    self._save_timer:stop()
+    self._save_timer:close()
+    self._save_timer = nil
   end
   write_to_disk(self, true)
 end

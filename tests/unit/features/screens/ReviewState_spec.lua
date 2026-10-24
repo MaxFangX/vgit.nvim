@@ -117,4 +117,23 @@ describe('ReviewState', function()
       eq(warnings, { 'Failed to save review state: No space left on device' })
     end)
   end)
+
+  describe('write-behind save:', function()
+    it('saves within its delay while marks keep coming', function()
+      local state = review.fresh_review_state()({ branch_name = 'feature', review_type = 'by_file', repo_name = 'repo' })
+      local path = persistence.get_state_path('repo', 'feature', 'by_file')
+
+      -- Marks 600 ms apart: a restarting debounce would never fire
+      state:set_approved('a.lua', { 'a' }, false, { 'old' })
+      vim.wait(600)
+      state:set_approved('b.lua', { 'b' }, false, { 'old' })
+      vim.wait(600)
+      state:set_approved('c.lua', { 'c' }, false, { 'old' })
+      assert(vim.wait(200, function() return vim.loop.fs_stat(path) ~= nil end, 10), 'not saved yet')
+
+      local entries = persistence.load('repo', 'feature', 'by_file').entries
+      eq(entries['a.lua'] ~= nil and entries['b.lua'] ~= nil, true)
+      run(function() state:save() end)
+    end)
+  end)
 end)
