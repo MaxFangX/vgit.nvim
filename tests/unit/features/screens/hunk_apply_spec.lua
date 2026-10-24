@@ -1,3 +1,5 @@
+-- Not a module path: plenary runs specs without the repo root on package.path
+local review = dofile('tests/helpers/review.lua')
 local git_hunks = require('vgit.git.git_hunks')
 local hunk_apply = require('vgit.features.screens.hunk_apply')
 
@@ -57,11 +59,7 @@ describe('hunk_apply:', function()
 
     it('round-trips randomized contents', function()
       -- Deterministic LCG so failures are reproducible
-      local seed = 42
-      local function rand(n)
-        seed = (seed * 1103515245 + 12345) % 2147483648
-        return (seed % n) + 1
-      end
+      local rand = review.random(42)
 
       for _ = 1, 100 do
         local a, b = {}, {}
@@ -280,11 +278,7 @@ describe('hunk_apply:', function()
     end)
 
     it('reproduces approved for randomized diffs on an unchanged base', function()
-      local seed = 1337
-      local function rand(n)
-        seed = (seed * 1103515245 + 12345) % 2147483648
-        return (seed % n) + 1
-      end
+      local rand = review.random(1337)
 
       for _ = 1, 100 do
         local a, b = {}, {}
@@ -298,11 +292,7 @@ describe('hunk_apply:', function()
     end)
 
     it('reproduces a base that already has the approved delta', function()
-      local seed = 2024
-      local function rand(n)
-        seed = (seed * 1103515245 + 12345) % 2147483648
-        return (seed % n) + 1
-      end
+      local rand = review.random(2024)
 
       -- Unique lines, so a dropped hunk can't find its region elsewhere
       for i = 1, 100 do
@@ -383,11 +373,7 @@ describe('hunk_apply:', function()
     end)
 
     it('is a valid diff for randomized row selections in both directions', function()
-      local seed = 7
-      local function rand(n)
-        seed = (seed * 1103515245 + 12345) % 2147483648
-        return (seed % n) + 1
-      end
+      local rand = review.random(7)
 
       for _ = 1, 200 do
         local a, b = {}, {}

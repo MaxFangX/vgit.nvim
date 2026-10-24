@@ -31,6 +31,15 @@ function review.run(fn)
   assert(ok, err)
 end
 
+-- A deterministic random integer generator: rand(n) is in 1..n. An LCG's
+-- low bits cycle quickly, so this takes the high ones.
+function review.random(seed)
+  return function(n)
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    return math.floor(seed / 65536) % n + 1
+  end
+end
+
 -- A ReviewState class with an empty session store, as in a new nvim session
 function review.fresh_review_state()
   package.loaded['vgit.features.screens.ReviewState'] = nil
