@@ -70,7 +70,12 @@ function ProjectReviewByCommitScreen:constructor(opts)
         loop.free_textlock()
         return lines or {}
       end,
-      list_view = function() return base.list_view end,
+      -- End the list above the box. Its body starts a few rows down (app
+      -- bar, header).
+      on_resize = function(row)
+        local window = base.scene:get('list').window
+        if window:is_valid() then window:set_height(math.max(1, row - window:get_win_plot().row)) end
+      end,
     }, msg_plot)
   end
 
