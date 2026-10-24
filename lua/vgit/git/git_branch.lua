@@ -589,7 +589,7 @@ function git_branch.commits_in_range(reponame, base_ref, head_ref)
     '--reverse',
     '--pretty=format:%H|%h|%s',
     base_ref .. '..' .. head_ref,
-  })
+  }, { by_exit_code = true })
   if err then return nil, err end
 
   local commits = {}
@@ -631,7 +631,7 @@ function git_branch.all_commit_messages(reponame, base_ref, head_ref)
     '--reverse',
     '--format=' .. sentinel .. '%H%n%B',
     base_ref .. '..' .. head_ref,
-  })
+  }, { by_exit_code = true })
   if err then return nil, err end
 
   local messages = {}
@@ -674,7 +674,7 @@ function git_branch.changed_files(reponame, base_ref, head_ref)
     'diff',
     '--name-status',
     base_ref .. '...' .. head_ref,
-  })
+  }, { by_exit_code = true })
   if err then return nil, err end
 
   return parse_file_status_lines(result)
@@ -719,7 +719,7 @@ function git_branch.all_commit_files(reponame, base_ref, head_ref)
     '--name-status',
     '--pretty=format:COMMIT:%H',
     base_ref .. '..' .. head_ref,
-  })
+  }, { by_exit_code = true })
   if err then return nil, err end
 
   local commit_files = {}
