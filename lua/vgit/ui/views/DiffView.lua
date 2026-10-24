@@ -858,10 +858,15 @@ function DiffView:move_to_hunk(mark_index, pos)
   if not mark_index then mark_index = 1 end
 
   local diff = self:get_diff()
-  if not diff then return end
+  if not diff or #diff.marks == 0 then
+    -- Drop a viewport saved for this move, or a later, unrelated move would
+    -- position by it
+    self._saved_viewport, self._saved_viewport_previous = nil, nil
+    if diff then self:notify('No changes found') end
+    return
+  end
 
   local marks = diff.marks
-  if #marks == 0 then return self:notify('No changes found') end
 
   if mark_index < 1 then
     mark_index = #marks
