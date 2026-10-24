@@ -11,9 +11,10 @@ local jj = {}
   that assumes an attached branch (e.g. persistence keys) misbehaves. These helpers
   let vgit detect a jj repo and adapt. Resolution stays git-native (jj's bookmark
   namespace can diverge from git branches, so it isn't a reliable source for
-  git-keyed state); the jj binary is only consulted for cosmetic extras
-  (`attach_change_ids`), with graceful fallback when it's absent. No helper
-  here ever moves the user's checkout.
+  git-keyed state); the jj binary is only consulted for change ids
+  (`attach_change_ids`: display, and following marks across rewording), with
+  graceful fallback when it's absent. No helper here ever moves the user's
+  checkout.
 ]]
 
 -- Whether `reponame` is managed by jj (has a `.jj` store at its root). Used to
@@ -103,7 +104,7 @@ end
 -- repos, or when jj is unavailable, this is a no-op and git short hashes
 -- remain the display. Must be called from a coroutine context.
 function jj.attach_change_ids(reponame, commits)
-  if not jj.is_repo(reponame) or #commits == 0 then return end
+  if not jj.is_repo(reponame) then return end
 
   local hashes = {}
   for i, commit in ipairs(commits) do

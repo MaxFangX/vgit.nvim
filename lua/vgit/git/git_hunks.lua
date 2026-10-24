@@ -6,7 +6,7 @@ local git_setting = require('vgit.settings.git')
 local git_hunks = {}
 
 -- Parse raw diff output lines into GitHunk objects
-function git_hunks.parse(lines)
+local function parse(lines)
   local result = {}
   for i = 1, #lines do
     local line = lines[i]
@@ -91,7 +91,6 @@ function git_hunks.list(reponame, opts)
   local current = opts.current
   local parent = opts.parent
   local filepath = opts.filepath
-  local old_filepath = opts.old_filepath  -- For renames: the filepath at parent ref
   local empty_hash = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 
   local filenames = opts.filenames
@@ -121,12 +120,6 @@ function git_hunks.list(reponame, opts)
       string.format('%s:%s', current, filepath),
       string.format('%s:%s', parent, filepath),
     })
-  elseif old_filepath and parent and current then
-    -- Renamed file: diff parent:old_filepath against current:filepath
-    utils.list.concat(args, {
-      string.format('%s:%s', #parent > 0 and parent or empty_hash, old_filepath),
-      string.format('%s:%s', current, filepath),
-    })
   elseif parent and current then
     utils.list.concat(args, {
       #parent > 0 and parent or empty_hash,
@@ -136,16 +129,13 @@ function git_hunks.list(reponame, opts)
     utils.list.concat(args, { parent })
   end
 
-  -- For renames with explicit blob refs, skip the -- filepath part
-  if not (old_filepath and parent and current) then
-    utils.list.concat(args, {
-      '--',
-      filepath,
-    })
-  end
+  utils.list.concat(args, {
+    '--',
+    filepath,
+  })
 
   local lines, err = gitcli.run(args)
-  return git_hunks.parse(lines), err
+  return parse(lines), err
 end
 
 return git_hunks

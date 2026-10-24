@@ -671,29 +671,6 @@ function git_branch.changed_files(reponame, base_ref, head_ref)
   return files
 end
 
--- Get files changed in a specific commit
-function git_branch.commit_files(reponame, commit_hash)
-  if not reponame then return nil, { 'reponame is required' } end
-  if not commit_hash then return nil, { 'commit_hash is required' } end
-
-  local output, err = gitcli.run({
-    '-C',
-    reponame,
-    '--no-pager',
-    'diff-tree',
-    '--no-commit-id',
-    '--name-status',
-    '-z',
-    '-r',
-    commit_hash,
-  }, { raw = true })
-  if err then return nil, err end
-
-  local files = {}
-  parse_name_status(split_nul(output), 1, files)
-  return files
-end
-
 -- Get files changed for all commits in a range (batched, single git command)
 -- Returns a table mapping commit_hash -> files array
 function git_branch.all_commit_files(reponame, base_ref, head_ref)
