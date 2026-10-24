@@ -32,6 +32,7 @@ function Spawn:start()
   local stderr_result = {}
   local stdout = vim.loop.new_pipe(false)
   local stderr = vim.loop.new_pipe(false)
+  local handle
 
   local on_stdout = function(_, chunk)
     if chunk then stdout_result[#stdout_result + 1] = chunk end
@@ -47,6 +48,7 @@ function Spawn:start()
 
     if not stdout:is_closing() then stdout:close() end
     if not stderr:is_closing() then stderr:close() end
+    if handle and not handle:is_closing() then handle:close() end
 
     self:parse_result(stdout_result, self.spec.on_stdout)
     self:parse_result(stderr_result, self.spec.on_stderr)
@@ -54,11 +56,20 @@ function Spawn:start()
     if self.spec.on_exit then self.spec.on_exit(code, signal) end
   end)
 
-  vim.loop.spawn(self.spec.command, {
+  local err
+  handle, err = vim.loop.spawn(self.spec.command, {
     args = self.spec.args,
     stdio = { nil, stdout, stderr },
     cwd = self.spec.cwd,
   }, on_exit)
+
+  -- Spawn failed (e.g. command not found): report it as stderr and exit -1,
+  -- so callers waiting on on_exit don't hang
+  if not handle then
+    stderr_result[1] = err
+    on_exit(-1, 0)
+    return self
+  end
 
   stdout:read_start(on_stdout)
   stderr:read_start(on_stderr)
