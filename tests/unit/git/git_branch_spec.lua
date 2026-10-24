@@ -369,3 +369,17 @@ async.describe('file listings:', function()
     cleanup(dir)
   end)
 end)
+
+async.describe('commits_in_range:', function()
+  async.it('keeps commits with empty or pipe-laden subjects', function()
+    local dir = make_repo()
+    sh(dir, 'git commit -q --allow-empty --allow-empty-message -m ""')
+    sh(dir, 'git commit -q --allow-empty -m "a | b"')
+
+    local commits = git_branch.commits_in_range(dir, 'HEAD~2', 'HEAD')
+    eq(vim.tbl_map(function(commit)
+      return commit.message
+    end, commits), { '', 'a | b' })
+    cleanup(dir)
+  end)
+end)

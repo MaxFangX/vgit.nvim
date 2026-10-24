@@ -590,10 +590,11 @@ function git_branch.commits_in_range(reponame, base_ref, head_ref)
   }, { by_exit_code = true })
   if err then return nil, err end
 
+  -- An undescribed jj commit has an empty subject; keep it
   local commits = {}
   for _, line in ipairs(result) do
     if line ~= '' then
-      local hash, short_hash, message = line:match('([^|]+)|([^|]+)|(.+)')
+      local hash, short_hash, message = line:match('^(%x+)|(%x+)|(.*)$')
       if hash then
         commits[#commits + 1] = {
           hash = hash,
