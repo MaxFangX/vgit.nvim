@@ -1,4 +1,5 @@
 local loop = require('vgit.core.loop')
+local Spawn = require('vgit.core.Spawn')
 
 local jj = {}
 
@@ -55,38 +56,19 @@ local run_jj = loop.suspend(function(reponame, args, callback)
     argv[#argv + 1] = arg
   end
 
-  local stdout = vim.loop.new_pipe(false)
-  local stderr = vim.loop.new_pipe(false)
-  local chunks = {}
-
-  local handle
-  handle = vim.loop.spawn('jj', {
+  local output
+  Spawn({
+    command = 'jj',
     args = argv,
-    stdio = { nil, stdout, stderr },
-  }, function(code)
-    stdout:read_stop()
-    stderr:read_stop()
-    if not stdout:is_closing() then stdout:close() end
-    if not stderr:is_closing() then stderr:close() end
-    if handle and not handle:is_closing() then handle:close() end
-
-    local output = code == 0 and table.concat(chunks) or nil
-    vim.schedule(function()
-      callback(output)
-    end)
-  end)
-
-  -- Spawn failed (jj binary not installed)
-  if not handle then
-    stdout:close()
-    stderr:close()
-    return callback(nil)
-  end
-
-  stdout:read_start(function(_, chunk)
-    if chunk then chunks[#chunks + 1] = chunk end
-  end)
-  stderr:read_start(function() end)
+    on_stdout_raw = function(raw)
+      output = raw
+    end,
+    on_exit = function(code)
+      vim.schedule(function()
+        callback(code == 0 and output or nil)
+      end)
+    end,
+  }):start()
 end, 3)
 
 -- Map full git commit hashes -> `{ id, short }` jj change ids in one `jj log`
