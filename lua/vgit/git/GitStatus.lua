@@ -4,12 +4,13 @@ local Object = require('vgit.core.Object')
 
 local GitStatus = Object:extend()
 
-function GitStatus:constructor(status)
+-- `filetype` is optional: detected from the path when absent
+function GitStatus:constructor(status, filetype)
   local value = status:sub(1, 2)
   local filepath = status:sub(4, #status):gsub('"', '')
 
   local first, second = GitStatus:parse(value)
-  local filetype = fs.detect_filetype(filepath)
+  filetype = filetype or fs.detect_filetype(filepath)
 
   return {
     id = utils.math.uuid(),

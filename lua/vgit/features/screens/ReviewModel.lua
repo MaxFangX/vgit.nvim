@@ -1,3 +1,4 @@
+local fs = require('vgit.core.fs')
 local Diff = require('vgit.core.Diff')
 local loop = require('vgit.core.loop')
 local Object = require('vgit.core.Object')
@@ -56,12 +57,19 @@ function ReviewModel:constructor(opts)
   }
 end
 
+-- Filetypes by path: detection is slow, and a by-commit review lists the same
+-- path in many commits
+local filetypes = {}
+
 -- A new item for `file` (a changed-files entry: { filepath, old_filepath,
 -- status }), completing `item`'s other fields
 function ReviewModel.new_item(file, item)
+  local filetype = filetypes[file.filepath] or fs.detect_filetype(file.filepath)
+  filetypes[file.filepath] = filetype
+
   -- The constructor parses a porcelain line, which can't carry every path
   -- (it strips quotes), so the paths are set afterwards
-  local status = GitStatus(string.format('%s  %s', file.status, file.filepath))
+  local status = GitStatus(string.format('%s  %s', file.status, file.filepath), filetype)
   status.filepath, status.old_filepath = file.filepath, file.old_filepath
 
   item.filepath, item.old_filepath, item.status = file.filepath, file.old_filepath, status
