@@ -71,29 +71,63 @@ describe('ProjectReviewScreen keypress queue', function()
     H.open('file')
     H.keys('jjj')
     eq({ 'unseen a/x.lua', '4/4 inside' }, { H.entry(), H.hunk() })
-    -- x.lua's last hunk, which lands on README; j to y.lua, then y.lua whole
-    H.keys('sjs')
-    eq({ 'unseen src/c/z.lua', '1/1 inside' }, { H.entry(), H.hunk() })
+    -- x.lua's last hunk, which lands on README; j, typed during that mark,
+    -- still runs
+    H.keys('sj')
+    eq({ 'unseen src/b/y.lua', '1/1 inside' }, { H.entry(), H.hunk() })
     H.assert_consistent()
     eq({}, H.errors)
   end)
 
-  it('drops the repeats of a held mark key', function()
+  it('drops mark keys a held key sent while a mark ran', function()
     H.open('file')
     H.keys('jjj')
-    -- x.lua's last hunk only: the repeats came before its result showed
-    H.keys('sss')
+    -- x.lua's last hunk only: the repeats came packed, before it was done
+    H.keys(string.rep('s', 12))
     eq({ 'unseen docs/README.md', '1/1 inside' }, { H.entry(), H.hunk() })
     H.assert_consistent()
     eq({}, H.errors)
   end)
 
-  it('runs every tap of a mark key, and every repeat from a macro', function()
+  it('runs taps typed while a slow mark ran, once it is done', function()
+    H.open('file')
+    local model = H.screen().model
+    local mark_selections = model.mark_selections
+    model.mark_selections = function(...)
+      local start = vim.uv.hrtime()
+      while vim.uv.hrtime() - start < 150e6 do
+      end
+      return mark_selections(...)
+    end
+    H.keys('jjj')
+    -- x.lua's last hunk, then README
+    H.keys('ss', 300)
+    eq('unseen src/b/y.lua', H.entry())
+    H.assert_consistent()
+    eq({}, H.errors)
+  end)
+
+  it('judges a batch of mark keys by their spacing, and holds stay held', function()
+    H.open('file')
+    local screen = H.screen()
+    local function settle(ms_ago, count)
+      local batch = { started_at = vim.uv.hrtime() / 1e6 - ms_ago, count = count }
+      screen:settle_batch(batch)
+      return batch.taps
+    end
+    eq(true, settle(100, 1))
+    eq(true, settle(300, 3))
+    eq(false, settle(100, 3))
+    -- The held key's last batch, with one repeat in a slow mark
+    eq(false, settle(200, 1))
+  end)
+
+  it('runs mark keys pressed after a mark is done, and every one from a macro', function()
     H.open('file')
     H.keys('jjj')
-    -- Taps further apart than key repeat: x.lua's last hunk, then README
-    H.keys('s', 100)
-    H.keys('s', 100)
+    -- x.lua's last hunk, then README
+    H.keys('s')
+    H.keys('s')
     eq('unseen src/b/y.lua', H.entry())
     -- y.lua and z.lua whole
     vim.fn.setreg('q', 's')

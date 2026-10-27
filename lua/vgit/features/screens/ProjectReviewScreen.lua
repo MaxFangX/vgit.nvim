@@ -26,13 +26,14 @@ local visual_selection = require('vgit.features.screens.visual_selection')
   order is the list's fold tree, collapsed folds included, so it always
   follows the display.
 
-  Keys run as jobs through one queue (see enqueue), but a held mark key's
-  repeats are dropped (see is_held_repeat). A job runs within one main-loop
-  turn: it never yields, so no typed input lands mid-job and each job sees
-  the state the keys before it left. Of the model's calls only fetch runs
-  git, outside any job; the screen frees the textlock right after it. The
-  views and the review state's saves leave a fast event context only when
-  in one (loop.leave_fast_event).
+  Keys run as jobs through one queue (see enqueue). Mark keys typed while a
+  mark ran wait for it to settle, and drop if a held key sent them (see
+  mark_job). A job runs within one main-loop turn: it never yields, so no
+  typed input lands mid-job and each job sees the state the keys before it
+  left. Of the model's calls only fetch runs git, outside any job; the
+  screen frees the textlock right after it. The views and the review
+  state's saves leave a fast event context only when in one
+  (loop.leave_fast_event).
 
   Subclasses set model, setting and list_view, call init_views, and
   implement plot_views. They may override jump_section (J/K in the list).
@@ -55,10 +56,10 @@ function ProjectReviewScreen:constructor()
     -- Keypress jobs not yet run, and whether the runner is draining them
     _jobs = {},
     _running = false,
-    -- The last key pressed (a mark key's name, else nil), and when (see
-    -- is_held_repeat)
-    _last_key = nil,
-    _last_key_at = 0,
+    -- The last mark's batch: the mark keys typed while it ran (see mark_job)
+    _batch = nil,
+    -- Whether the last batch with mark keys came from a held key
+    _holding = false,
     _drag_detach = nil,
     _destroyed = false,
   }
@@ -373,66 +374,101 @@ end
 -- arrive, and each job reads cursor and model state when it runs. Jobs
 -- still queued when the screen is destroyed are dropped.
 function ProjectReviewScreen:enqueue(fn, ...)
+  self:push_job({ fn = fn, args = { n = select('#', ...), ... } })
+end
+
+-- Queue `job` ({ fn, args, batch? }) and run the queue. A job with a batch
+-- (see mark_job) waits, holding the jobs behind it, until the batch settles.
+function ProjectReviewScreen:push_job(job)
   if self._destroyed then return end
-  self._jobs[#self._jobs + 1] = { fn = fn, args = { n = select('#', ...), ... } }
+  self._jobs[#self._jobs + 1] = job
+  self:run_jobs()
+end
+
+function ProjectReviewScreen:run_jobs()
   if self._running then return end
 
   self._running = true
   loop.coroutine(function()
     while #self._jobs > 0 and not self._destroyed do
-      local job = table.remove(self._jobs, 1)
+      local job = self._jobs[1]
+      if job.batch and not job.batch.settled_at then break end
+      table.remove(self._jobs, 1)
       local ok, err = pcall(job.fn, unpack(job.args, 1, job.args.n))
       -- A job cut short by destroy() fails on the closed windows
       if not ok and not self._destroyed then console.error(tostring(err)) end
     end
-    self._jobs = {}
     self._running = false
   end)()
 end
 
--- Presses of one key closer together than this (ms) are key repeat:
--- deliberate taps come slower
-local KEY_REPEAT_MS = 80
+-- Key repeat is 30-40ms and taps come slower, so mark keys typed while a
+-- mark ran that average closer together than this (ms) came from a held key
+local HOLD_SPACING_MS = 60
+-- At most this many taps typed while a mark ran still run
+local QUEUED_TAPS_MAX = 5
 
 local function now_ms()
   return vim.uv.hrtime() / 1e6
 end
 
--- Whether to drop this press of mark key `key` (nil for other keys) as the
--- repeat of a held key. A held s would mark hunks faster than the screen
--- shows them, and its queued repeats would keep marking after release. A
--- repeat is the same mark key as the previous press, within KEY_REPEAT_MS
--- of that press or of its result reaching the screen. Keys replayed from a
--- macro all run.
-function ProjectReviewScreen:is_held_repeat(key)
-  local now = now_ms()
-  local last_key, last_at = self._last_key, self._last_key_at
-  self._last_key, self._last_key_at = key, now
-  return key ~= nil and key == last_key and now - last_at < KEY_REPEAT_MS and vim.fn.reg_executing() == ''
+-- Judge whether the complete `batch`'s mark keys were taps (see mark_job)
+-- and run the jobs it held. A held key's last batch may hold a single
+-- repeat, spaced like a tap, so once a batch is judged held, every batch
+-- until a pause is too.
+function ProjectReviewScreen:settle_batch(batch)
+  batch.settled_at = now_ms()
+  batch.taps = not self._holding and batch.settled_at - batch.started_at >= HOLD_SPACING_MS * batch.count
+  if batch.count > 0 then self._holding = not batch.taps end
+  self:run_jobs()
 end
 
 function ProjectReviewScreen:setup_keymaps()
   local keymaps = self.setting:get('keymaps')
-  local function job(fn, mark_key)
+  local function job(fn)
     return function(...)
-      if not self:is_held_repeat(mark_key) then self:enqueue(fn, ...) end
+      self:enqueue(fn, ...)
     end
   end
-  -- A mark key's job. It redraws at once, so the repeat window runs from when
-  -- its result is on screen, however slow the redraw.
-  local function mark_job(key, fn)
-    return job(function(...)
+  -- A mark key's job. Neovim reads all typeahead before running timer
+  -- callbacks, so the mark keys read before a mark's settle timer fires
+  -- were typed while it ran. They wait for it as its batch, then run if
+  -- spaced like taps, up to QUEUED_TAPS_MAX of them, and drop if spaced
+  -- like a held key's repeats, which would mark hunks never shown and keep
+  -- marking after release. So a held key marks one step per screen update.
+  -- Keys from a macro run as typed.
+  local function mark_job(fn)
+    local function run(...)
+      local batch = { started_at = now_ms(), count = 0 }
       fn(...)
-      vim.cmd.redraw()
-      if self._last_key == key then self._last_key_at = now_ms() end
-    end, key)
+      self._batch = batch
+      vim.defer_fn(function() self:settle_batch(batch) end, 0)
+    end
+    return function(...)
+      local batch = self._batch
+      if batch and not batch.settled_at and vim.fn.reg_executing() == '' then
+        batch.count = batch.count + 1
+        local nth = batch.count
+        return self:push_job({
+          fn = function(...)
+            if batch.taps and nth <= QUEUED_TAPS_MAX then run(...) end
+          end,
+          args = { n = select('#', ...), ... },
+          batch = batch,
+        })
+      end
+
+      -- A pause since the last mark means any held key was let go
+      if batch and batch.settled_at and now_ms() - batch.settled_at >= HOLD_SPACING_MS then self._holding = false end
+      self:enqueue(run, ...)
+    end
   end
 
   local toggle_focus = job(function() self:toggle_focus() end)
-  local mark_hunk = mark_job('mark_hunk', function() self:mark_hunk(true) end)
-  local unmark_hunk = mark_job('unmark_hunk', function() self:mark_hunk(false) end)
-  local mark_file = mark_job('mark_file', function() self:mark(true) end)
-  local unmark_file = mark_job('unmark_file', function() self:mark(false) end)
+  local mark_hunk = mark_job(function() self:mark_hunk(true) end)
+  local unmark_hunk = mark_job(function() self:mark_hunk(false) end)
+  local mark_file = mark_job(function() self:mark(true) end)
+  local unmark_file = mark_job(function() self:mark(false) end)
   local reset = job(function() self:reset_marks() end)
 
   self.list_view:set_keymap({
@@ -754,6 +790,7 @@ function ProjectReviewScreen:destroy()
   -- QuitPre); save and tear down only once.
   if self._destroyed then return end
   self._destroyed = true
+  self._jobs = {}
 
   -- Save the position and marks, whichever way the screen closes
   local focus = self:focused_pane()
