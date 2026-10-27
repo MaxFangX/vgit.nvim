@@ -26,11 +26,12 @@ local visual_selection = require('vgit.features.screens.visual_selection')
   order is the list's fold tree, collapsed folds included, so it always
   follows the display.
 
-  Keys run as jobs through one queue (see enqueue). A job runs within one
-  main-loop turn: it never yields, so no typed input lands mid-job and each
-  job sees the state the keys before it left. Of the model's calls only fetch
-  runs git, outside any job; the screen frees the textlock right after it.
-  The views and the review state's saves leave a fast event context only when
+  Keys run as jobs through one queue (see enqueue), but a held mark key's
+  repeats are dropped (see is_held_repeat). A job runs within one main-loop
+  turn: it never yields, so no typed input lands mid-job and each job sees
+  the state the keys before it left. Of the model's calls only fetch runs
+  git, outside any job; the screen frees the textlock right after it. The
+  views and the review state's saves leave a fast event context only when
   in one (loop.leave_fast_event).
 
   Subclasses set model, setting and list_view, call init_views, and
@@ -54,6 +55,10 @@ function ProjectReviewScreen:constructor()
     -- Keypress jobs not yet run, and whether the runner is draining them
     _jobs = {},
     _running = false,
+    -- The last key pressed (a mark key's name, else nil), and when (see
+    -- is_held_repeat)
+    _last_key = nil,
+    _last_key_at = 0,
     _drag_detach = nil,
     _destroyed = false,
   }
@@ -385,17 +390,49 @@ function ProjectReviewScreen:enqueue(fn, ...)
   end)()
 end
 
+-- Presses of one key closer together than this (ms) are key repeat:
+-- deliberate taps come slower
+local KEY_REPEAT_MS = 80
+
+local function now_ms()
+  return vim.uv.hrtime() / 1e6
+end
+
+-- Whether to drop this press of mark key `key` (nil for other keys) as the
+-- repeat of a held key. A held s would mark hunks faster than the screen
+-- shows them, and its queued repeats would keep marking after release. A
+-- repeat is the same mark key as the previous press, within KEY_REPEAT_MS
+-- of that press or of its result reaching the screen. Keys replayed from a
+-- macro all run.
+function ProjectReviewScreen:is_held_repeat(key)
+  local now = now_ms()
+  local last_key, last_at = self._last_key, self._last_key_at
+  self._last_key, self._last_key_at = key, now
+  return key ~= nil and key == last_key and now - last_at < KEY_REPEAT_MS and vim.fn.reg_executing() == ''
+end
+
 function ProjectReviewScreen:setup_keymaps()
   local keymaps = self.setting:get('keymaps')
-  local function job(fn)
+  local function job(fn, mark_key)
     return function(...)
-      self:enqueue(fn, ...)
+      if not self:is_held_repeat(mark_key) then self:enqueue(fn, ...) end
     end
+  end
+  -- A mark key's job. It redraws at once, so the repeat window runs from when
+  -- its result is on screen, however slow the redraw.
+  local function mark_job(key, fn)
+    return job(function(...)
+      fn(...)
+      vim.cmd.redraw()
+      if self._last_key == key then self._last_key_at = now_ms() end
+    end, key)
   end
 
   local toggle_focus = job(function() self:toggle_focus() end)
-  local mark_file = job(function() self:mark(true) end)
-  local unmark_file = job(function() self:mark(false) end)
+  local mark_hunk = mark_job('mark_hunk', function() self:mark_hunk(true) end)
+  local unmark_hunk = mark_job('unmark_hunk', function() self:mark_hunk(false) end)
+  local mark_file = mark_job('mark_file', function() self:mark(true) end)
+  local unmark_file = mark_job('unmark_file', function() self:mark(false) end)
   local reset = job(function() self:reset_marks() end)
 
   self.list_view:set_keymap({
@@ -428,8 +465,8 @@ function ProjectReviewScreen:setup_keymaps()
   })
 
   self.diff_view:set_keymap({
-    { mode = 'n', mapping = keymaps.mark_hunk, handler = job(function() self:mark_hunk(true) end) },
-    { mode = 'n', mapping = keymaps.unmark_hunk, handler = job(function() self:mark_hunk(false) end) },
+    { mode = 'n', mapping = keymaps.mark_hunk, handler = mark_hunk },
+    { mode = 'n', mapping = keymaps.unmark_hunk, handler = unmark_hunk },
     { mode = 'n', mapping = keymaps.mark_file, handler = mark_file },
     { mode = 'n', mapping = keymaps.unmark_file, handler = unmark_file },
     { mode = 'n', mapping = keymaps.reset, handler = reset },
@@ -450,7 +487,8 @@ end
 
 -- Visual-mode s/u: line-level marking. In split layout, the previous pane's
 -- rows show old content, and every change is addressable from the current
--- pane, so only the current pane accepts selections.
+-- pane, so only the current pane accepts selections. A held s leaves visual
+-- mode at its first press, so these never see its repeats.
 function ProjectReviewScreen:setup_visual_keymaps(keymaps, job)
   local current_component = self.scene:get('current')
   local mark_lines = job(function(top, bot) self:mark_range(true, top, bot) end)

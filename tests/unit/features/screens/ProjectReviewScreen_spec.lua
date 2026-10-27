@@ -71,9 +71,34 @@ describe('ProjectReviewScreen keypress queue', function()
     H.open('file')
     H.keys('jjj')
     eq({ 'unseen a/x.lua', '4/4 inside' }, { H.entry(), H.hunk() })
-    -- x.lua's last hunk, then README and y.lua whole
-    H.keys('sss')
+    -- x.lua's last hunk, which lands on README; j to y.lua, then y.lua whole
+    H.keys('sjs')
     eq({ 'unseen src/c/z.lua', '1/1 inside' }, { H.entry(), H.hunk() })
+    H.assert_consistent()
+    eq({}, H.errors)
+  end)
+
+  it('drops the repeats of a held mark key', function()
+    H.open('file')
+    H.keys('jjj')
+    -- x.lua's last hunk only: the repeats came before its result showed
+    H.keys('sss')
+    eq({ 'unseen docs/README.md', '1/1 inside' }, { H.entry(), H.hunk() })
+    H.assert_consistent()
+    eq({}, H.errors)
+  end)
+
+  it('runs every tap of a mark key, and every repeat from a macro', function()
+    H.open('file')
+    H.keys('jjj')
+    -- Taps further apart than key repeat: x.lua's last hunk, then README
+    H.keys('s', 100)
+    H.keys('s', 100)
+    eq('unseen src/b/y.lua', H.entry())
+    -- y.lua and z.lua whole
+    vim.fn.setreg('q', 's')
+    H.keys('2@q')
+    eq('unseen gone.txt', H.entry())
     H.assert_consistent()
     eq({}, H.errors)
   end)
