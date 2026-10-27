@@ -12,18 +12,20 @@ function KeyHelpBarView:constructor(scene, props, plot)
   }
 end
 
+function KeyHelpBarView:win_plot()
+  return dimensions.relative_win_plot(self.plot, {
+    height = '100vh',
+    width = '100vw',
+  })
+end
+
 function KeyHelpBarView:define()
-  self.scene:set(
-    'app_bar',
-    AppBarComponent({
-      config = {
-        win_plot = dimensions.relative_win_plot(self.plot, {
-          height = '100vh',
-          width = '100vw',
-        }),
-      },
-    })
-  )
+  self.scene:set('app_bar', AppBarComponent({ config = { win_plot = self:win_plot() } }))
+end
+
+-- Re-plot for the editor's current size
+function KeyHelpBarView:replot()
+  self.scene:get('app_bar'):replot(self:win_plot())
 end
 
 function KeyHelpBarView:get_components()

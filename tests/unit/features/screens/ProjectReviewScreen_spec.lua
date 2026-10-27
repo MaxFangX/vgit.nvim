@@ -126,3 +126,65 @@ describe('ProjectReviewScreen keypress queue', function()
     eq({}, H.errors)
   end)
 end)
+
+describe('ProjectReviewScreen layout', function()
+  H.use_repo()
+
+  local columns, lines = vim.o.columns, vim.o.lines
+  after_each(function()
+    vim.o.columns, vim.o.lines = columns, lines
+  end)
+
+  -- Every window's { row, col, width, height } by component, or 'hidden'
+  local function geometry()
+    local rects = {}
+    local function add(name, window)
+      local config = vim.api.nvim_win_get_config(window.win_id)
+      rects[name] = config.hide and 'hidden' or { config.row, config.col, config.width, config.height }
+    end
+    for name, component in pairs(H.screen().scene.components) do
+      add(name, component.window)
+      if component.elements.header then add(name .. ' header', component.elements.header.window) end
+    end
+    return rects
+  end
+
+  for _, kind in ipairs({ 'file', 'commit' }) do
+    for _, layout in ipairs({ 'unified', 'split' }) do
+      it(string.format('fits a resized editor as a fresh open would (by %s, %s)', kind, layout), function()
+        vim.o.columns, vim.o.lines = 200, 50
+        H.open(kind, { layout = layout })
+        H.keys('j')
+        local before, position = geometry(), { H.entry(), H.hunk() }
+
+        vim.o.columns, vim.o.lines = 150, 40
+        local resized = geometry()
+        assert.are_not.same(before, resized)
+        eq(position, { H.entry(), H.hunk() })
+
+        H.close()
+        H.open(kind, { layout = layout })
+        eq(resized, geometry())
+        eq({}, H.errors)
+      end)
+    end
+  end
+
+  it('moves the message box and diff with a dragged list boundary', function()
+    vim.o.columns, vim.o.lines = 200, 50
+    H.open('commit', { layout = 'split' })
+    H.screen():apply_list_width(90)
+    local rects = geometry()
+    local message, previous, current = rects['commit_message header'], rects.previous, rects.current
+    -- List and message box widths, where the diff starts, where it ends
+    eq({ 90, 90, 90, 200 }, { rects.list[3], message[3], previous[2], current[2] + current[3] })
+  end)
+
+  it('survives an editor too small for its layout', function()
+    H.open('commit', { layout = 'split' })
+    vim.o.columns, vim.o.lines = 30, 8
+    vim.o.columns, vim.o.lines = 120, 40
+    H.keys('j')
+    eq({}, H.errors)
+  end)
+end)

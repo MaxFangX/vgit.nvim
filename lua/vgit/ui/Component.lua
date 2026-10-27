@@ -87,6 +87,30 @@ function Component:set_win_plot(win_plot)
   return self
 end
 
+-- Move the mounted window and its header/footer to `win_plot`, given as at
+-- construction: vw/vh sizes resolve against the editor's current size. Only
+-- the geometry changes, so options and contents stay.
+function Component:replot(win_plot)
+  self.plot = ComponentPlot(vim.tbl_extend('force', { row = 0, col = 0 }, win_plot), self.config.elements):build()
+
+  local function place(window, plot)
+    if not window or not window:is_valid() then return end
+    window:set_win_plot({
+      relative = 'editor',
+      row = plot.row,
+      col = plot.col,
+      -- A tiny editor can leave no room; windows must stay at least 1x1
+      width = math.max(1, plot.width),
+      height = math.max(1, plot.height),
+    })
+  end
+  place(self.window, self.plot.win_plot)
+  place(self.elements.header and self.elements.header.window, self.plot.header_win_plot)
+  place(self.elements.footer and self.elements.footer.window, self.plot.footer_win_plot)
+
+  return self
+end
+
 function Component:on(event_name, callback)
   self.buffer:on(event_name, callback)
 

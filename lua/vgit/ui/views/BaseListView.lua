@@ -34,6 +34,13 @@ function BaseListView:get_components()
   return { self.scene:get('list') }
 end
 
+function BaseListView:win_plot()
+  return dimensions.relative_win_plot(self.plot, {
+    height = '100vh',
+    width = '100vw',
+  })
+end
+
 function BaseListView:define()
   self.scene:set(
     'list',
@@ -43,16 +50,18 @@ function BaseListView:define()
           header = true,
           footer = false,
         }, self.config.elements),
-        win_plot = dimensions.relative_win_plot(self.plot, {
-          height = '100vh',
-          width = '100vw',
-        }),
+        win_plot = self:win_plot(),
         win_options = {
           cursorline = true,
         },
       },
     })
   )
+end
+
+-- Re-plot for the editor's current size
+function BaseListView:replot()
+  self.scene:get('list'):replot(self:win_plot())
 end
 
 function BaseListView:set_keymap(configs)

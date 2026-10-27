@@ -40,6 +40,11 @@ function AppBarComponent:set_default_win_options(win_options)
   return self
 end
 
+function AppBarComponent:replot(win_plot)
+  self:set_default_win_plot(win_plot)
+  return Component.replot(self, win_plot)
+end
+
 function AppBarComponent:mount()
   if self.mounted then return self end
 

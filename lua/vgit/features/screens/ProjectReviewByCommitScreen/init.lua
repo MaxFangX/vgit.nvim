@@ -44,13 +44,6 @@ function ProjectReviewByCommitScreen:constructor(opts)
   base.model = Model(opts)
   base.setting = setting
 
-  -- With list_width = 0 (auto), the plots start at the floor width and
-  -- resolve_list_width re-plots them once the commits are known
-  local list_width = setting:get('list_width')
-  local list_plot, msg_plot, diff_plot, list_cols =
-    plots_for(setting:get('list_position'), list_width > 0 and list_width or MIN_LIST_WIDTH)
-  base.list_cols = list_cols
-
   base.list_view = CommitListView(base.scene, {
     entries = function()
       return base.model:get_entries()
@@ -58,9 +51,11 @@ function ProjectReviewByCommitScreen:constructor(opts)
     on_active_commit = function()
       if base.commit_message_view then base.commit_message_view:render() end
     end,
-  }, list_plot)
+  })
 
-  if msg_plot then
+  -- Left/right layouts have a message box under the list
+  local position = setting:get('list_position')
+  if position ~= 'top' and position ~= 'bottom' then
     base.commit_message_view = CommitMessageView(base.scene, {
       message = function()
         local active = base.list_view:get_active_commit()
@@ -72,10 +67,10 @@ function ProjectReviewByCommitScreen:constructor(opts)
         local window = base.scene:get('list').window
         if window:is_valid() then window:set_height(math.max(1, row - window:get_win_plot().row)) end
       end,
-    }, msg_plot)
+    })
   end
 
-  ProjectReviewScreen.init_views(base, diff_plot)
+  ProjectReviewScreen.init_views(base)
 
   return base
 end
@@ -96,34 +91,20 @@ function ProjectReviewByCommitScreen:jump_section(direction)
   self:select_file(files, from, target, direction)
 end
 
--- Auto-size the list column to the widest commit row when list_width is
--- auto (0, the default), clamped to [MIN_LIST_WIDTH, 45% of the editor]. The
--- cap truncates an over-long commit subject rather than squeezing the diff.
--- A positive list_width (user config, or a boundary drag
--- earlier this session) is used as-is. Called after fetch, before windows
--- are defined.
-function ProjectReviewByCommitScreen:resolve_list_width()
-  -- Top/bottom layouts (no message box) span the full width
-  if not self.commit_message_view or setting:get('list_width') > 0 then return end
+-- Without `cols`, the list column is list_width if set (user config, or a
+-- drag earlier this session), else (auto, the default) the widest commit
+-- row, clamped to [MIN_LIST_WIDTH, 45% of the editor]. The cap truncates an
+-- over-long commit subject rather than squeezing the diff.
+function ProjectReviewByCommitScreen:plot_views(cols)
+  cols = cols or setting:get('list_width')
+  if cols <= 0 then
+    local cap = math.floor(dimensions.global_width() * 0.45)
+    cols = math.min(math.max(self.list_view:max_row_width(), MIN_LIST_WIDTH), cap)
+  end
 
-  local cap = math.floor(dimensions.global_width() * 0.45)
-  local cols = math.min(math.max(self.list_view:max_row_width(), MIN_LIST_WIDTH), cap)
   local list_plot, msg_plot, diff_plot, list_cols = plots_for(setting:get('list_position'), cols)
-  self.list_view.plot, self.commit_message_view.plot, self.diff_view.plot = list_plot, msg_plot, diff_plot
-  self.list_cols = list_cols
-end
-
-function ProjectReviewByCommitScreen:apply_list_width(cols)
-  if not ProjectReviewScreen.apply_list_width(self, cols) then return end
-
-  -- Later CommitMessageView:resize calls re-derive geometry from the plot
-  self.commit_message_view.plot.width = self.list_cols
-  self:replot_column('commit_message', 0, self.list_cols)
-end
-
-function ProjectReviewByCommitScreen:finish_list_resize()
-  ProjectReviewScreen.finish_list_resize(self)
-  self.commit_message_view:render()
+  self.list_view.plot, self.diff_view.plot, self.list_cols = list_plot, diff_plot, list_cols
+  if self.commit_message_view then self.commit_message_view.plot = msg_plot end
 end
 
 return ProjectReviewByCommitScreen

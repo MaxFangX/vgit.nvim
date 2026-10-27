@@ -107,6 +107,13 @@ function CommitMessageView:resize(height)
   if self.props.on_resize then self.props.on_resize(row) end
 end
 
+-- Re-plot for the editor's current size: re-fit the box to its message,
+-- placing it anew even at an unchanged height
+function CommitMessageView:replot()
+  self.current_height = nil
+  self:render()
+end
+
 function CommitMessageView:render()
   local component = self.scene:get('commit_message')
   local message = self.props.message()

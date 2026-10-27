@@ -48,73 +48,47 @@ function DiffView:save_viewport()
   }
 end
 
-function DiffView:define()
-  if self.props.layout_type() == 'unified' then
-    self.scene:set(
-      'current',
-      DiffComponent({
-        config = {
-          elements = utils.object.assign({
-            header = true,
-            footer = false,
-          }, self.config.elements),
-          win_options = {
-            cursorbind = true,
-            scrollbind = true,
-            cursorline = true,
-          },
-          win_plot = dimensions.relative_win_plot(self.plot, {
-            height = '100vh',
-            width = '100vw',
-          }),
-        },
-      })
-    )
-  end
-
+-- The panes' window plots by component name: split puts the previous and
+-- current panes side by side
+function DiffView:win_plots()
   if self.props.layout_type() == 'split' then
-    self.scene:set(
-      'previous',
-      DiffComponent({
-        config = {
-          elements = utils.object.assign({
-            header = true,
-            footer = false,
-          }, self.config.elements),
-          win_options = {
-            cursorbind = true,
-            scrollbind = true,
-            cursorline = true,
+    return {
+      previous = dimensions.relative_win_plot(self.plot, { height = '100vh', width = '50vw' }),
+      current = dimensions.relative_win_plot(self.plot, { height = '100vh', width = '50vw', col = '50vw', zindex = 4 }),
+    }
+  end
+  return { current = dimensions.relative_win_plot(self.plot, { height = '100vh', width = '100vw' }) }
+end
+
+function DiffView:define()
+  local win_plots = self:win_plots()
+  for _, name in ipairs({ 'previous', 'current' }) do
+    if win_plots[name] then
+      self.scene:set(
+        name,
+        DiffComponent({
+          config = {
+            elements = utils.object.assign({
+              header = true,
+              footer = false,
+            }, self.config.elements),
+            win_options = {
+              cursorbind = true,
+              scrollbind = true,
+              cursorline = true,
+            },
+            win_plot = win_plots[name],
           },
-          win_plot = dimensions.relative_win_plot(self.plot, {
-            height = '100vh',
-            width = '50vw',
-          }),
-        },
-      })
-    )
-    self.scene:set(
-      'current',
-      DiffComponent({
-        config = {
-          elements = utils.object.assign({
-            header = true,
-            footer = false,
-          }, self.config.elements),
-          win_options = {
-            cursorbind = true,
-            scrollbind = true,
-            cursorline = true,
-          },
-          win_plot = dimensions.relative_win_plot(self.plot, {
-            height = '100vh',
-            width = '50vw',
-            col = '50vw',
-            zindex = 4,
-          }),
-        },
-      })
-    )
+        })
+      )
+    end
+  end
+end
+
+-- Re-plot for the editor's current size
+function DiffView:replot()
+  for name, win_plot in pairs(self:win_plots()) do
+    self.scene:get(name):replot(win_plot)
   end
 end
 

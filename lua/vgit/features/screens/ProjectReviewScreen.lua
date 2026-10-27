@@ -33,9 +33,8 @@ local visual_selection = require('vgit.features.screens.visual_selection')
   The views and the review state's saves leave a fast event context only when
   in one (loop.leave_fast_event).
 
-  Subclasses set model, setting and list_view, then call init_views. They may
-  override jump_section (J/K in the list), and the list width hooks
-  (resolve_list_width, apply_list_width, finish_list_resize).
+  Subclasses set model, setting and list_view, call init_views, and
+  implement plot_views. They may override jump_section (J/K in the list).
 ]]
 
 local ProjectReviewScreen = Object:extend()
@@ -51,6 +50,7 @@ function ProjectReviewScreen:constructor()
     -- List column width while the list/diff boundary is draggable
     list_cols = nil,
     source_win_id = nil,
+    _resize_autocmd = nil,
     -- Keypress jobs not yet run, and whether the runner is draining them
     _jobs = {},
     _running = false,
@@ -59,7 +59,7 @@ function ProjectReviewScreen:constructor()
   }
 end
 
-function ProjectReviewScreen:init_views(diff_plot)
+function ProjectReviewScreen:init_views()
   local model = self.model
   local setting = self.setting
 
@@ -92,7 +92,7 @@ function ProjectReviewScreen:init_views(diff_plot)
     diff = function()
       return model:get_diff()
     end,
-  }, diff_plot, {
+  }, nil, {
     elements = {
       header = true,
       footer = false,
@@ -481,48 +481,44 @@ function ProjectReviewScreen:setup_visual_keymaps(keymaps, job)
   end
 end
 
--- By-commit sizes the list column to the fetched commits
-function ProjectReviewScreen:resolve_list_width() end
+-- Set the views' plots for the editor's current size, with a `cols`-wide
+-- list column (nil: the configured width), and set list_cols if the
+-- list/diff boundary is draggable. Subclasses implement it.
+function ProjectReviewScreen:plot_views(cols) end
 
--- Move component `name` (and its header) to column `col`, `width` wide
-function ProjectReviewScreen:replot_column(name, col, width)
-  local component = self.scene:get(name)
-  if not component then return end
-
-  local header = component.elements and component.elements.header
-  for _, window in ipairs({ component.window, header and header.window }) do
-    if window:is_valid() then
-      window:set_win_plot({ relative = 'editor', row = window:get_win_plot().row, col = col, width = width })
-    end
+-- Re-plot every window (see plot_views). Only the geometry changes.
+function ProjectReviewScreen:replot(cols)
+  self:plot_views(cols)
+  for _, view in ipairs(self:views()) do
+    view:replot()
   end
 end
 
--- Re-plot every width-dependent window for a new list column width, while
--- the list/diff boundary is dragged. Content re-renders once on release
--- (finish_list_resize). Returns whether the width changed.
-function ProjectReviewScreen:apply_list_width(cols)
-  cols = dimensions.clamp_list_cols(cols)
-  if cols == self.list_cols then return false end
-  self.list_cols = cols
-
-  self:replot_column('list', 0, cols)
-  local rest = dimensions.global_width() - cols
-  if self.model:get_layout_type() == 'split' then
-    local half = math.ceil(rest / 2)
-    self:replot_column('previous', cols, half)
-    self:replot_column('current', cols + half, rest - half)
-  else
-    self:replot_column('current', cols, rest)
-  end
-  return true
-end
-
--- Re-render width-dependent content (void filler) after a drag completes,
--- and remember the width for screens opened later this session.
-function ProjectReviewScreen:finish_list_resize()
-  self.setting:set('list_width', self.list_cols)
+-- Re-show the current entry at the diff cursor's hunk, re-rendering its
+-- width-dependent void filler
+function ProjectReviewScreen:reshow_entry()
   local entry = self.model:get_entry()
   if entry then self:show_entry(entry.id, self.diff_view:get_cursor_mark_position() or 1) end
+end
+
+-- VimResized: floating windows keep their size, so re-plot them all
+function ProjectReviewScreen:handle_resize()
+  self:replot()
+  self:reshow_entry()
+end
+
+-- Move the list/diff boundary while it's dragged. Content re-renders once
+-- on release (finish_list_resize).
+function ProjectReviewScreen:apply_list_width(cols)
+  cols = dimensions.clamp_list_cols(cols)
+  if cols ~= self.list_cols then self:replot(cols) end
+end
+
+-- After a drag, re-render the void filler, and remember the width for
+-- screens opened later this session
+function ProjectReviewScreen:finish_list_resize()
+  self.setting:set('list_width', self.list_cols)
+  self:reshow_entry()
 end
 
 -- Make the list/diff boundary mouse-draggable. Only active when the subclass
@@ -625,7 +621,7 @@ function ProjectReviewScreen:create(args)
     return false
   end
 
-  self:resolve_list_width()
+  self:plot_views()
 
   local views = self:views()
   for _, view in ipairs(views) do
@@ -648,6 +644,11 @@ function ProjectReviewScreen:create(args)
 
   self:setup_keymaps()
   self:setup_drag_resize()
+  self._resize_autocmd = vim.api.nvim_create_autocmd('VimResized', {
+    callback = function()
+      self:enqueue(function() self:handle_resize() end)
+    end,
+  })
 
   local id, from_buffer = self:initial_entry_id(buffer, source_lnum)
   self:select(id, 1)
@@ -741,6 +742,7 @@ function ProjectReviewScreen:destroy()
     self._drag_detach()
     self._drag_detach = nil
   end
+  if self._resize_autocmd then vim.api.nvim_del_autocmd(self._resize_autocmd) end
   self.scene:destroy()
 end
 
