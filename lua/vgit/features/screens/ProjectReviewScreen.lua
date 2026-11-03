@@ -621,9 +621,9 @@ local SOURCE_DIFFS_MAX = 10
 
 -- The entry to open the source file on, the cursor at `lnum`. By-commit
 -- lists a file once per commit: prefer the latest unseen entry whose hunks
--- hold the line (the latest is closest to the working copy), else the latest
--- unseen one, else the latest seen one.
-function ProjectReviewScreen:source_entry_id(filepath, lnum)
+-- hold the line (the latest is closest to the working copy), else
+-- `resume_id`, else the latest unseen one, else the latest seen one.
+function ProjectReviewScreen:source_entry_id(filepath, lnum, resume_id)
   local files = self.list_view:file_nodes()
   local unseen, seen
   local diffs = 0
@@ -640,17 +640,17 @@ function ProjectReviewScreen:source_entry_id(filepath, lnum)
       end
     end
   end
-  return unseen or seen
+  return resume_id or unseen or seen
 end
 
 -- Entry to open on, and whether it is the source buffer's file: that file
--- (see source_entry_id), else the saved position (preferring its section
--- and commit), else the first unseen entry
+-- (see source_entry_id, which resumes the saved position when it is an
+-- unseen entry of the file), else the saved position (preferring its
+-- section and commit), else the first unseen entry
 function ProjectReviewScreen:initial_entry_id(buffer, lnum)
   -- Entries are repo-relative, whatever the cwd
   local name = buffer:get_name()
-  local source_id = name ~= '' and self:source_entry_id(fs.make_relative(self.model:get_reponame(), name), lnum)
-  if source_id then return source_id, true end
+  local source_filepath = name ~= '' and fs.make_relative(self.model:get_reponame(), name)
 
   local position = self.model:get_review_state():get_position()
   local filepath = position.filepath
@@ -671,6 +671,13 @@ function ProjectReviewScreen:initial_entry_id(buffer, lnum)
   local function any()
     return true
   end
+
+  if source_filepath then
+    local resume_id = source_filepath == filepath and position.type == 'unseen' and find(in_commit) or nil
+    local source_id = self:source_entry_id(source_filepath, lnum, resume_id)
+    if source_id then return source_id, true end
+  end
+
   local saved_id = filepath and (find(in_commit) or find(in_section) or find(any))
   return saved_id or self:first_entry_id(), false
 end
