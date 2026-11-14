@@ -28,6 +28,10 @@ local persistence = require('vgit.features.screens.review_persistence')
   of the seen diff. Diffs are computed in-process from the contents loaded at
   fetch, so marking never shells out.
 
+  A browse (`opts.browse`) is a review of an explicit range that nothing
+  marks and that stores nothing, so every item stays unseen: diff(base,
+  current).
+
   A record also stores the base it was approved against, and is rebased onto
   the live base when that changes (see reconcile_record).
 
@@ -52,6 +56,7 @@ local session_objects = { by_file = {}, by_commit = {} }
 
 function ReviewModel:constructor(opts)
   return {
+    browse = opts.browse == true,
     state = { layout_type = opts.layout_type or 'unified' },
     review_state = nil,
   }
@@ -112,13 +117,11 @@ function ReviewModel.branch_by_subjects(repo_key, head_subjects)
   return best_key
 end
 
--- Resolve what to review (git_branch.review_target) and the repo key the
--- review persists under. For a detached jj HEAD no bookmark claims, the
--- branch is the stored review that covers HEAD's commits (see
--- branch_by_subjects). Returns target, repo_key, or nil, err.
-local function resolve_target(reponame, base_arg)
-  local repo_key = git_repo.get_name(reponame)
-  local target, err = git_branch.review_target(reponame, base_arg, function(base, head)
+-- Resolve what to review (git_branch.review_target). For a detached jj HEAD
+-- no bookmark claims, the branch is the stored review that covers HEAD's
+-- commits (see branch_by_subjects). Returns target, or nil, err.
+local function resolve_target(reponame, repo_key, base_arg)
+  return git_branch.review_target(reponame, base_arg, function(base, head)
     -- Keyed as the by-commit review keys them, repeats included
     local commits = git_branch.commits_in_range(reponame, base, head) or {}
     local messages = vim.tbl_map(function(commit) return commit.message end, commits)
@@ -128,8 +131,6 @@ local function resolve_target(reponame, base_arg)
     end
     return ReviewModel.branch_by_subjects(repo_key, subjects)
   end)
-  if not target then return nil, err end
-  return target, repo_key
 end
 
 -- Load both sides of every item in one `git cat-file --batch`, through the
@@ -166,10 +167,11 @@ function ReviewModel:load_contents(items)
   end
 end
 
--- Fetch the review: resolve its target, load its stored records, then list
--- its items and their contents. Must run in a coroutine. Returns the entries
--- (see get_entries), or nil, err.
-function ReviewModel:fetch(base_arg)
+-- Fetch the review: resolve its target from `arg` (a review's base, detected
+-- if nil, or a browse's range), load its stored records, then list its items
+-- and their contents. Must run in a coroutine. Returns the entries (see
+-- get_entries), or nil, err.
+function ReviewModel:fetch(arg)
   self.state = { layout_type = self.state.layout_type }
 
   loop.free_textlock()
@@ -177,24 +179,35 @@ function ReviewModel:fetch(base_arg)
   if repo_err then return nil, { 'Project has no .git folder' } end
   self.state.reponame = reponame
 
-  local target, repo_key = resolve_target(reponame, base_arg)
-  if not target then return nil, repo_key end
+  local repo_key = git_repo.get_name(reponame)
+  local target, target_err
+  if self.browse then
+    target, target_err = git_branch.range_target(reponame, arg)
+  else
+    target, target_err = resolve_target(reponame, repo_key, arg)
+  end
+  if not target then return nil, target_err end
   self.state.base_branch = target.base
-  self.state.branch_key = target.branch_key
+  -- A browse's state, which is only the last viewed spot, is its range's
+  self.state.branch_key = self.browse and target.range or target.branch_key
   self.state.unpushed_count = target.unpushed_count
 
-  git_branch.fetch_ref_if_stale(reponame, target.base)
+  if not self.browse then git_branch.fetch_ref_if_stale(reponame, target.base) end
 
   self.review_state = ReviewState({
     repo_key = repo_key,
-    branch_key = target.branch_key,
+    branch_key = self.state.branch_key,
     review_type = self.review_type,
+    persist = not self.browse,
   })
   self.review_state:load_from_disk()
 
   local items, err = self:fetch_items(target)
   if not items then return nil, err end
-  if #items == 0 then return nil, { string.format('Branch is the same as %s', target.base) } end
+  if #items == 0 then
+    if self.browse then return nil, { string.format('No changes in %s', target.range) } end
+    return nil, { string.format('Branch is the same as %s', target.base) }
+  end
 
   local _, load_err = self:load_contents(items)
   if load_err then return nil, load_err end
@@ -291,8 +304,10 @@ function ReviewModel:rebuild_entries()
     if flags.has_unseen then unseen[#unseen + 1] = new_entry(self, item, 'unseen') end
   end
 
+  -- A browse's one section is everything in its range
+  local unseen_title = self.browse and 'Changes' or 'Unseen'
   local sections = {}
-  for _, section in ipairs({ { 'seen', 'Seen', seen }, { 'unseen', 'Unseen', unseen } }) do
+  for _, section in ipairs({ { 'seen', 'Seen', seen }, { 'unseen', unseen_title, unseen } }) do
     local entry_type, title, entries = unpack(section)
     if #entries > 0 then
       local section = vim.tbl_extend('error', { type = entry_type, title = title }, self:group_entries(entries))
@@ -477,6 +492,10 @@ function ReviewModel:get_layout_type()
   return self.state.layout_type
 end
 
+function ReviewModel:is_browse()
+  return self.browse
+end
+
 function ReviewModel:get_review_state()
   return self.review_state
 end
@@ -488,9 +507,10 @@ end
 -- Header for the review list: the branch key the review persists under, and
 -- the base it's diffed against. A trunk review's branch key names the trunk,
 -- but its diff runs past the trunk ref to HEAD, so the header also counts the
--- unpushed commits.
+-- unpushed commits. A browse's header is its range.
 function ReviewModel:get_list_title()
   local state, count = self.state, self.state.unpushed_count
+  if self.browse then return state.branch_key end
   if count then
     local plural = count == 1 and '' or 's'
     return string.format('%s (+%d unpushed commit%s) vs %s', state.branch_key, count, plural, state.base_branch)

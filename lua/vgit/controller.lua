@@ -106,6 +106,12 @@ local project = {
   review_by_commit = loop.coroutine(function(...)
     screen_manager.create('project_review_by_commit_screen', ...)
   end),
+  browse_by_file = loop.coroutine(function(...)
+    screen_manager.create('project_browse_by_file_screen', ...)
+  end),
+  browse_by_commit = loop.coroutine(function(...)
+    screen_manager.create('project_browse_by_commit_screen', ...)
+  end),
 }
 
 local toggle_diff_preference = loop.coroutine(function()
@@ -217,6 +223,8 @@ function controller.commands()
     project_commits_preview = project.commits_preview,
     project_review_by_file = project.review_by_file,
     project_review_by_commit = project.review_by_commit,
+    project_browse_by_file = project.browse_by_file,
+    project_browse_by_commit = project.browse_by_commit,
   }
 end
 

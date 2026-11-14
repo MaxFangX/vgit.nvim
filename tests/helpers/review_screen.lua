@@ -115,12 +115,14 @@ function H.async(fn)
   assert(vim.wait(10000, function() return done end), 'coroutine did not finish')
 end
 
+-- Open the by-`kind` ('file' or 'commit') review against main, or the browse
+-- of the range opts.browse
 function H.open(kind, opts)
   opts = opts or {}
   scene_setting:set('diff_preference', opts.layout or 'unified')
-  local name = kind == 'file' and 'project_review_by_file_screen' or 'project_review_by_commit_screen'
+  local name = string.format('project_%s_by_%s_screen', opts.browse and 'browse' or 'review', kind)
   H.async(function()
-    screen_manager.create(name, 'main')
+    screen_manager.create(name, opts.browse or 'main')
   end)
   H.settle()
   return H.screen()

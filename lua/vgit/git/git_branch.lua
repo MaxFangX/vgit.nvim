@@ -419,6 +419,25 @@ function git_branch.review_target(reponame, base_arg, resolve_detached)
   }
 end
 
+-- Resolve a range to browse, `<base>..<head>` as git reads it (no head:
+-- HEAD), into the fields of a review target (see review_target) that don't
+-- concern a stored review, plus `range` with its head spelled out. Nothing
+-- is detected, so the range may be anywhere in the repo. Returns nil, err
+-- for a bad range.
+function git_branch.range_target(reponame, range)
+  range = range or ''
+  local base, head = range:match('^(.-)%.%.(.*)$')
+  base, head = base or range, head and head ~= '' and head or 'HEAD'
+  if base == '' then return nil, { 'Specify a range to browse, e.g. main~5..main' } end
+
+  local head_hash = rev_parse(reponame, head .. '^{commit}')
+  if not head_hash then return nil, { string.format('Not a commit: %s', head) } end
+  local fork, fork_err = merge_base(reponame, base, head_hash)
+  if not fork then return nil, fork_err end
+
+  return { base = base, range = base .. '..' .. head, head_hash = head_hash, merge_base = fork }
+end
+
 local FETCH_INTERVAL_SECS = 3600
 
 -- Per `<reponame>|<ref>`: { last_success = os.time(), in_progress = bool }

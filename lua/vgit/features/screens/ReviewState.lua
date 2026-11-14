@@ -31,7 +31,8 @@ local SAVE_DELAY_MS = 1000
 -- State by review, shared by every screen instance in this session
 local state_store = {}
 
--- Without a repo_key, the state lives in memory only
+-- Without a repo_key, or with `persist = false`, the state lives in memory
+-- only
 function ReviewState:constructor(opts)
   return {
     repo_key = opts.repo_key,
@@ -39,7 +40,7 @@ function ReviewState:constructor(opts)
     review_type = opts.review_type,
     -- Whether to read and write the state file; cleared when it must not be
     -- overwritten
-    persist = opts.repo_key ~= nil,
+    persist = opts.repo_key ~= nil and opts.persist ~= false,
   }
 end
 

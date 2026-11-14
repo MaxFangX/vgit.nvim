@@ -19,7 +19,8 @@ local visual_selection = require('vgit.features.screens.visual_selection')
   (ProjectReviewByFileScreen and ProjectReviewByCommitScreen). Marking edits
   the approved snapshot (see ReviewModel), so a section's hunks shift as
   hunks are marked. s/u also mark visual selections line by line, in split
-  layout from the current pane only.
+  layout from the current pane only. A browse (see ReviewModel) has no mark
+  keys.
 
   Every motion picks a target entry id, then select(id) reveals its list row
   (expanding its commit and folders) and shows it in the diff. Navigation
@@ -72,16 +73,19 @@ function ProjectReviewScreen:init_views()
   self.app_bar_view = KeyHelpBarView(self.scene, {
     keymaps = function()
       local keymaps = setting:get('keymaps')
-      return {
+      local navigation = {
+        { 'Next',              keymaps['next'] },
+        { 'Previous',          keymaps['previous'] },
+        { 'Jump section',      keymaps['jump_section_next'] },
+      }
+      if model:is_browse() then return navigation end
+      return vim.list_extend({
         { 'Mark hunk/lines',   keymaps['mark_hunk'] },
         { 'Mark file',         keymaps['mark_file'] },
         { 'Unmark hunk/lines', keymaps['unmark_hunk'] },
         { 'Unmark file',       keymaps['unmark_file'] },
         { 'Reset',             keymaps['reset'] },
-        { 'Next',              keymaps['next'] },
-        { 'Previous',          keymaps['previous'] },
-        { 'Jump section',      keymaps['jump_section_next'] },
-      }
+      }, navigation)
     end,
   })
 
@@ -464,7 +468,7 @@ function ProjectReviewScreen:setup_keymaps()
     },
   })
 
-  self:setup_mark_keymaps(keymaps, job)
+  if not self.model:is_browse() then self:setup_mark_keymaps(keymaps, job) end
 end
 
 -- The mark keys: s/u/S/U and reset, then the visual-mode s/u
@@ -694,14 +698,16 @@ function ProjectReviewScreen:initial_entry_id(buffer, lnum)
   return saved_id or self:first_entry_id(), false
 end
 
+-- Open the review of HEAD against args[1] (nil: the detected base), or the
+-- browse of the range args[1]
 function ProjectReviewScreen:create(args)
-  local base_branch = (args or {})[1]
+  local base_or_range = (args or {})[1]
   local buffer = Buffer(0)
   -- Capture the source position before mounting any views
   local source_lnum, source_col, source_winline = vim.fn.line('.'), vim.fn.col('.'), vim.fn.winline()
   self.source_win_id = vim.api.nvim_get_current_win()
 
-  local data, err = self.model:fetch(base_branch)
+  local data, err = self.model:fetch(base_or_range)
   loop.free_textlock()
 
   if err then

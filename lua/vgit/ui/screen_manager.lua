@@ -68,15 +68,18 @@ function screen_manager.screens.line_blame_screen()
   return line_blame_screen:create(), line_blame_screen
 end
 
-function screen_manager.screens.project_review_by_file_screen(...)
-  local project_review_by_file_screen = ProjectReviewByFileScreen({ layout_type = scene_setting:get('diff_preference') })
-  return project_review_by_file_screen:create({ ... }), project_review_by_file_screen
+-- A review screen of class `Screen`, or with `browse`, its browse of a range
+local function review_screen(Screen, browse)
+  return function(...)
+    local screen = Screen({ layout_type = scene_setting:get('diff_preference'), browse = browse })
+    return screen:create({ ... }), screen
+  end
 end
 
-function screen_manager.screens.project_review_by_commit_screen(...)
-  local project_review_by_commit_screen = ProjectReviewByCommitScreen({ layout_type = scene_setting:get('diff_preference') })
-  return project_review_by_commit_screen:create({ ... }), project_review_by_commit_screen
-end
+screen_manager.screens.project_review_by_file_screen = review_screen(ProjectReviewByFileScreen)
+screen_manager.screens.project_review_by_commit_screen = review_screen(ProjectReviewByCommitScreen)
+screen_manager.screens.project_browse_by_file_screen = review_screen(ProjectReviewByFileScreen, true)
+screen_manager.screens.project_browse_by_commit_screen = review_screen(ProjectReviewByCommitScreen, true)
 
 function screen_manager.is_screen_registered(screen_name)
   return type(screen_manager.screens[screen_name]) == 'function'

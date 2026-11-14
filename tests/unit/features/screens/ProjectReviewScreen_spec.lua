@@ -186,6 +186,96 @@ describe('ProjectReviewScreen keypress queue', function()
   end)
 end)
 
+describe('ProjectReviewScreen browse', function()
+  H.use_repo()
+
+  local function git(...)
+    return H.run(vim.list_extend({ 'git', '-C', H.repo }, { ... }), H.repo)
+  end
+
+  -- The list's title, its section titles, and its files' entries in order
+  local function listing()
+    local screen = H.screen()
+    local sections = vim.tbl_map(function(section) return section.title end, screen.model:get_entries())
+    local entries = vim.tbl_map(function(node) return H.describe(screen.model:lookup(node.id)) end, screen.list_view:file_nodes())
+    return { screen.list_view.state.title, sections, entries }
+  end
+
+  it('lists the commits of a range away from HEAD, in one section', function()
+    git('checkout', '-q', 'main')
+    H.open('commit', { browse = 'feature~3..feature~1' })
+    eq({
+      'feature~3..feature~1',
+      { 'Changes' },
+      { 'unseen gone.txt @feat: rename and delete', 'unseen new.txt @feat: rename and delete', 'unseen img.bin @feat: binary' },
+    }, listing())
+    eq({}, H.errors)
+  end)
+
+  it('lists the files of a range, which ends at HEAD unless it says', function()
+    H.open('file', { browse = 'feature~1' })
+    eq({ 'feature~1..HEAD', { 'Changes' }, { 'unseen a/x.lua', 'unseen docs/README.md', 'unseen src/b/y.lua' } }, listing())
+    eq({}, H.errors)
+  end)
+
+  for _, kind in ipairs({ 'file', 'commit' }) do
+    it('steps through its range as an unmarked review does (by ' .. kind .. ')', function()
+      H.open(kind)
+      local review = { listing()[3], H.walk('j', 8) }
+      H.close()
+      H.open(kind, { browse = 'main..feature' })
+      eq(review, { listing()[3], H.walk('j', 8) })
+      eq({}, H.errors)
+    end)
+  end
+
+  it('maps no mark keys', function()
+    local function mapped(mode)
+      local keys = {}
+      for _, map in ipairs(vim.api.nvim_buf_get_keymap(0, mode)) do
+        if vim.tbl_contains({ 'j', 's', 'u', 'S', 'U', 'R' }, map.lhs) then keys[#keys + 1] = map.lhs end
+      end
+      table.sort(keys)
+      return keys
+    end
+
+    H.open('commit')
+    eq({ { 'R', 'S', 'U', 'j', 's', 'u' }, { 's', 'u' } }, { mapped('n'), mapped('x') })
+    H.close()
+
+    H.open('commit', { browse = 'main..feature' })
+    eq({ { 'j' }, {} }, { mapped('n'), mapped('x') })
+    H.focus('list')
+    eq({ 'j' }, mapped('n'))
+    eq({}, H.errors)
+  end)
+
+  it('stores nothing, and reopens on the entry it was closed on', function()
+    H.open('commit', { browse = 'main..feature' })
+    H.keys('jjj')
+    local entry = H.entry()
+    assert.are_not.same('unseen a/x.lua @feat: add core', entry)
+    H.close()
+    eq({ '', '' }, { vim.fn.glob(vim.env.XDG_STATE_HOME .. '/**'), vim.fn.glob(vim.env.XDG_DATA_HOME .. '/**') })
+
+    H.open('commit', { browse = 'main..feature' })
+    eq(entry, H.entry())
+    eq({}, H.errors)
+  end)
+
+  it('refuses a range it cannot browse', function()
+    local function refused(range)
+      H.errors = {}
+      eq(nil, H.open('commit', { browse = range }))
+      return H.errors
+    end
+    eq({ { 'Specify a range to browse, e.g. main~5..main' } }, refused(''))
+    eq({ { 'Not a commit: nope' } }, refused('main..nope'))
+    eq({ { 'No changes in feature..feature' } }, refused('feature..feature'))
+    eq(1, #refused('nope..feature'))
+  end)
+end)
+
 describe('ProjectReviewScreen layout', function()
   H.use_repo()
 
