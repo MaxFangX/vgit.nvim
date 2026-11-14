@@ -430,6 +430,45 @@ function ProjectReviewScreen:setup_keymaps()
       self:enqueue(fn, ...)
     end
   end
+  local toggle_focus = job(function() self:toggle_focus() end)
+
+  self.list_view:set_keymap({
+    { mode = 'n', mapping = keymaps.toggle_focus, handler = toggle_focus },
+    { mode = 'n', mapping = keymaps.next, handler = job(function() self:step_file('next', true) end) },
+    { mode = 'n', mapping = keymaps.previous, handler = job(function() self:step_file('prev', true) end) },
+    { mode = 'n', mapping = keymaps.jump_section_next, handler = job(function() self:jump_section('next') end) },
+    { mode = 'n', mapping = keymaps.jump_section_prev, handler = job(function() self:jump_section('prev') end) },
+    -- Replaces BaseListView's Enter, so the fold toggle runs in order too
+    {
+      mode = 'n',
+      mapping = { key = '<enter>', desc = 'Enter item' },
+      handler = job(function()
+        local item = self.list_view:get_current_list_item()
+        if not item then return end
+        self.list_view:toggle_current_list_item()
+        if item.id then self:open_file() end
+      end),
+    },
+  })
+
+  self.diff_view:set_keymap({
+    { mode = 'n', mapping = keymaps.toggle_focus, handler = toggle_focus },
+    { mode = 'n', mapping = keymaps.next, handler = job(function() self:step_hunk('next') end) },
+    { mode = 'n', mapping = keymaps.previous, handler = job(function() self:step_hunk('prev') end) },
+    { mode = 'n', mapping = keymaps.jump_section_next, handler = job(function() self:jump_to_file_edge('next') end) },
+    { mode = 'n', mapping = keymaps.jump_section_prev, handler = job(function() self:jump_to_file_edge('prev') end) },
+    {
+      mode = 'n',
+      mapping = { key = '<enter>', desc = 'Open buffer' },
+      handler = job(function() self:open_file() end),
+    },
+  })
+
+  self:setup_mark_keymaps(keymaps, job)
+end
+
+-- The mark keys: s/u/S/U and reset, then the visual-mode s/u
+function ProjectReviewScreen:setup_mark_keymaps(keymaps, job)
   -- A mark key's job. Neovim reads all typeahead before running timer
   -- callbacks, so the mark keys read before a mark's settle timer fires
   -- were typed while it ran. They wait for it as its batch, then run if
@@ -464,7 +503,6 @@ function ProjectReviewScreen:setup_keymaps()
     end
   end
 
-  local toggle_focus = job(function() self:toggle_focus() end)
   local mark_hunk = mark_job(function() self:mark_hunk(true) end)
   local unmark_hunk = mark_job(function() self:mark_hunk(false) end)
   local mark_file = mark_job(function() self:mark(true) end)
@@ -472,7 +510,6 @@ function ProjectReviewScreen:setup_keymaps()
   local reset = job(function() self:reset_marks() end)
 
   self.list_view:set_keymap({
-    { mode = 'n', mapping = keymaps.toggle_focus, handler = toggle_focus },
     -- `mark_hunk` has no target in the list, but a no-op keeps it from falling
     -- through to a global mapping
     {
@@ -483,21 +520,6 @@ function ProjectReviewScreen:setup_keymaps()
     { mode = 'n', mapping = keymaps.mark_file, handler = mark_file },
     { mode = 'n', mapping = keymaps.unmark_file, handler = unmark_file },
     { mode = 'n', mapping = keymaps.reset, handler = reset },
-    { mode = 'n', mapping = keymaps.next, handler = job(function() self:step_file('next', true) end) },
-    { mode = 'n', mapping = keymaps.previous, handler = job(function() self:step_file('prev', true) end) },
-    { mode = 'n', mapping = keymaps.jump_section_next, handler = job(function() self:jump_section('next') end) },
-    { mode = 'n', mapping = keymaps.jump_section_prev, handler = job(function() self:jump_section('prev') end) },
-    -- Replaces BaseListView's Enter, so the fold toggle runs in order too
-    {
-      mode = 'n',
-      mapping = { key = '<enter>', desc = 'Enter item' },
-      handler = job(function()
-        local item = self.list_view:get_current_list_item()
-        if not item then return end
-        self.list_view:toggle_current_list_item()
-        if item.id then self:open_file() end
-      end),
-    },
   })
 
   self.diff_view:set_keymap({
@@ -506,16 +528,6 @@ function ProjectReviewScreen:setup_keymaps()
     { mode = 'n', mapping = keymaps.mark_file, handler = mark_file },
     { mode = 'n', mapping = keymaps.unmark_file, handler = unmark_file },
     { mode = 'n', mapping = keymaps.reset, handler = reset },
-    { mode = 'n', mapping = keymaps.toggle_focus, handler = toggle_focus },
-    { mode = 'n', mapping = keymaps.next, handler = job(function() self:step_hunk('next') end) },
-    { mode = 'n', mapping = keymaps.previous, handler = job(function() self:step_hunk('prev') end) },
-    { mode = 'n', mapping = keymaps.jump_section_next, handler = job(function() self:jump_to_file_edge('next') end) },
-    { mode = 'n', mapping = keymaps.jump_section_prev, handler = job(function() self:jump_to_file_edge('prev') end) },
-    {
-      mode = 'n',
-      mapping = { key = '<enter>', desc = 'Open buffer' },
-      handler = job(function() self:open_file() end),
-    },
   })
 
   self:setup_visual_keymaps(keymaps, job)
