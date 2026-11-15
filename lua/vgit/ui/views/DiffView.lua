@@ -3,6 +3,7 @@ local utils = require('vgit.core.utils')
 local Object = require('vgit.core.Object')
 local console = require('vgit.core.console')
 local dimensions = require('vgit.ui.dimensions')
+local scene_setting = require('vgit.settings.scene')
 local signs_setting = require('vgit.settings.signs')
 local symbols_setting = require('vgit.settings.symbols')
 local DiffComponent = require('vgit.ui.components.DiffComponent')
@@ -109,6 +110,19 @@ function DiffView:set_keymap(configs)
   end)
 end
 
+-- The stretches of `text` that 'linebreak' keeps on one screen row, each a
+-- word and the 'breakat' characters that end it, as { offset, stretch } pairs
+local function unbreakable_stretches(text)
+  local breakat = vim.o.breakat:gsub('%W', '%%%0')
+  if breakat == '' then return { { 0, text } } end
+
+  local stretches = {}
+  for from, stretch in text:gmatch(string.format('()([^%s]*[%s]*)', breakat, breakat)) do
+    if stretch ~= '' then stretches[#stretches + 1] = { from - 1, stretch } end
+  end
+  return stretches
+end
+
 function DiffView:render_word_diff(component_type, line_changes, lnum)
   local lnum_change = line_changes.lnum_change
   if not lnum_change then return end
@@ -116,34 +130,41 @@ function DiffView:render_word_diff(component_type, line_changes, lnum)
   local word_diff = lnum_change.word_diff
   if not word_diff then return end
 
-  local offset = 0
-  local texts = {}
-  local change_type = lnum_change.type
-  local component = self.scene:get(component_type)
-  local num_word_diff = #word_diff
-
-  for j = 1, num_word_diff do
-    local segment = word_diff[j]
+  -- The line as this pane shows it, in { fragment, hl } chunks, hl marking
+  -- the words the other side lacks
+  local chunks = {}
+  local hl = lnum_change.type == 'remove' and 'GitWordDelete' or 'GitWordAdd'
+  for _, segment in ipairs(word_diff) do
     local operation, fragment = unpack(segment)
-
     if operation == -1 then
-      local hl = change_type == 'remove' and 'GitWordDelete' or 'GitWordAdd'
-      texts[#texts + 1] = { fragment, hl }
+      chunks[#chunks + 1] = { fragment, hl }
     elseif operation == 0 then
-      texts[#texts + 1] = {
-        fragment,
-        nil,
-      }
+      chunks[#chunks + 1] = { fragment }
     end
-
-    if operation == 0 or operation == -1 then offset = offset + #fragment end
   end
 
-  component:place_extmark_text({
-    texts = texts,
-    col = 0,
-    row = lnum - 1,
-  })
+  local row = lnum - 1
+  local component = self.scene:get(component_type)
+  if not scene_setting:get('diff_wrap') then
+    return component:place_extmark_text({ texts = chunks, col = 0, row = row })
+  end
+
+  -- Overlaid text doesn't wrap with its line, so overlay the changed words
+  -- one by one, each where the wrapped line shows it
+  local col = 0
+  for _, chunk in ipairs(chunks) do
+    local fragment, fragment_hl = unpack(chunk)
+    for _, stretch in ipairs(fragment_hl and unbreakable_stretches(fragment) or {}) do
+      local from = col + stretch[1]
+      component:place_extmark_highlight({
+        hl = fragment_hl,
+        row = row,
+        col_range = { from = from, to = from + #stretch[2] },
+        overlay = stretch[2],
+      })
+    end
+    col = col + #fragment
+  end
 end
 
 function DiffView:render_line_diff(component_type, line_changes, lnum)
@@ -204,6 +225,50 @@ function DiffView:render_diff(top, bot)
       self:render_word_diff(component_type, line_changes, lnum)
     end
   end
+end
+
+-- A wrapped line can take more screen rows in one split pane than in the
+-- other. Pad the shorter side, so the lines stay level.
+function DiffView:render_padding()
+  local components = self:get_components()
+  for _, component in ipairs(components) do
+    component:clear_extmark_paddings()
+  end
+  if #components < 2 or not scene_setting:get('diff_wrap') then return end
+
+  local function pad(component, lines_changes, lnum, count)
+    local lnum_change = (lines_changes[lnum] or {}).lnum_change
+    -- A void row is filler already, so it gets more of the same
+    if lnum_change and lnum_change.type == 'void' then
+      return component:pad_row(lnum - 1, count, symbols_setting:get('void'), 'GitLineNr')
+    end
+    component:pad_row(lnum - 1, count, ' ')
+  end
+
+  local previous, current = unpack(components)
+  for lnum = 1, current:get_line_count() do
+    local extra = current:get_row_height(lnum - 1) - previous:get_row_height(lnum - 1)
+    if extra > 0 then
+      pad(previous, self.state.previous_lines_changes, lnum, extra)
+    elseif extra < 0 then
+      pad(current, self.state.current_lines_changes, lnum, -extra)
+    end
+  end
+end
+
+-- Wrap long lines or cut them off, in this and later diffs
+function DiffView:toggle_wrap()
+  local wrap = not scene_setting:get('diff_wrap')
+  scene_setting:set('diff_wrap', wrap)
+
+  -- Word diffs are drawn differently when wrapped (see render_word_diff)
+  for _, component in ipairs(self:get_components()) do
+    component:set_wrap(wrap)
+    component:clear_extmark_texts()
+    component:clear_extmark_highlights()
+  end
+  self:render_diff()
+  self:render_padding()
 end
 
 function DiffView:render_unified_conflicts(conflicts)
@@ -805,9 +870,9 @@ function DiffView:move_to_hunk(mark_index, pos)
 end
 
 function DiffView:mount()
-  if self.props.layout_type() == 'split' then self.scene:get('previous'):mount() end
-
-  self.scene:get('current'):mount()
+  for _, component in ipairs(self:get_components()) do
+    component:mount():set_wrap(scene_setting:get('diff_wrap'))
+  end
   self.state = DiffView:get_initial_state()
 end
 
@@ -833,6 +898,7 @@ function DiffView:render()
     self:render_lines()
     self:render_line_numbers()
     self:render_diff()
+    self:render_padding()
   end)
 
   if not ok then console.debug.error(msg) end

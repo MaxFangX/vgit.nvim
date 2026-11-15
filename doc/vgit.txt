@@ -304,8 +304,10 @@ Detailed configuration example: >
             },
             scene = {
               diff_preference = 'unified', -- unified or split
+              diff_wrap = false, -- Wrap a diff's long lines, or cut them off
               keymaps = {
-                quit = 'q'
+                quit = 'q',
+                toggle_wrap = 'gw', -- Toggle diff_wrap in any diff preview
               }
             },
             diff_preview = {

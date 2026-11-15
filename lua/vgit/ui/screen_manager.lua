@@ -133,10 +133,11 @@ function screen_manager.create(screen_name, ...)
         :on('QuitPre', function()
           if screen_manager.has_active_screen() then return screen_manager.destroy_active_screen() end
         end)
+    local keymaps = scene_setting:get('keymaps')
     scene:set_keymap({
       {
         mode = 'n',
-        key = scene_setting:get('keymaps').quit,
+        key = keymaps.quit,
         handler = loop.coroutine(function()
           if screen.on_quit and screen:on_quit() then
             -- on_quit destroyed the screen itself, so clear it, or
@@ -148,6 +149,16 @@ function screen_manager.create(screen_name, ...)
         end)
       }
     })
+    if screen.diff_view then
+      scene:set_keymap({
+        {
+          mode = 'n',
+          key = keymaps.toggle_wrap,
+          desc = 'Toggle wrap',
+          handler = function() screen.diff_view:toggle_wrap() end,
+        },
+      })
+    end
   end
 
   return screen_manager

@@ -282,6 +282,7 @@ describe('ProjectReviewScreen layout', function()
   local columns, lines = vim.o.columns, vim.o.lines
   after_each(function()
     vim.o.columns, vim.o.lines = columns, lines
+    require('vgit.settings.scene'):set('diff_wrap', false)
   end)
 
   -- Every window's { row, col, width, height } by component, or 'hidden'
@@ -318,6 +319,29 @@ describe('ProjectReviewScreen layout', function()
       end)
     end
   end
+
+  it('toggles wrap from either pane, for screens opened later too', function()
+    local function wraps()
+      local scene = H.screen().scene
+      return { vim.wo[scene:get('previous').window.win_id].wrap, vim.wo[scene:get('current').window.win_id].wrap }
+    end
+
+    H.open('commit', { layout = 'split' })
+    H.focus('list')
+    local position = { H.entry(), H.hunk() }
+    eq({ false, false }, wraps())
+    H.keys('gw')
+    eq({ true, true }, wraps())
+    eq(position, { H.entry(), H.hunk() })
+
+    H.close()
+    H.open('file', { layout = 'split' })
+    eq({ true, true }, wraps())
+    H.focus('diff')
+    H.keys('gw')
+    eq({ false, false }, wraps())
+    eq({}, H.errors)
+  end)
 
   it('moves the message box and diff with a dragged list boundary', function()
     vim.o.columns, vim.o.lines = 200, 50

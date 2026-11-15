@@ -54,6 +54,42 @@ function DiffComponent:position_cursor(placement)
   return self
 end
 
+-- Wrap long lines, at word boundaries, or cut them off at the window's edge
+function DiffComponent:set_wrap(wrap)
+  self.window:assign_options({ wrap = wrap, linebreak = wrap })
+  return self
+end
+
+-- The screen rows that 0-based `row` takes up in the window
+function DiffComponent:get_row_height(row)
+  return vim.api.nvim_win_text_height(self.window.win_id, { start_row = row, end_row = row }).all
+end
+
+-- The cells of a screen row that hold text. A wrapped line's later rows lose
+-- as many to 'showbreak' as its first does to the line number.
+function DiffComponent:get_text_width()
+  local win_id = self.window.win_id
+  return self.window:get_width() - vim.fn.getwininfo(win_id)[1].textoff - #vim.wo[win_id].showbreak
+end
+
+-- Make wrapped 0-based `row` `count` screen rows taller, by ending its line
+-- with that many rows of `fill` characters. Filler lines would do, but
+-- 'scrollbind' counts them as lines, so the split panes would drift apart.
+function DiffComponent:pad_row(row, count, fill, hl)
+  local line = self.buffer:get_lines(row, row + 1)[1]
+  -- The fill completes the line's last screen row, which an empty line lacks
+  if line == '' then count = count + 1 end
+
+  self:place_extmark_padding({
+    row = row,
+    col = #line,
+    pos = 'inline',
+    text = string.rep(fill, count * self:get_text_width()),
+    hl = hl,
+  })
+  return self
+end
+
 function DiffComponent:mount(opts)
   opts = opts or {}
 
@@ -118,6 +154,9 @@ end
 function DiffComponent:render_line_numbers(lines)
   local offset = 1
   local max_digits = string.len(tostring(#lines)) + offset
+
+  -- A wrapped line continues under its text, not under its number
+  self.window:set_option('showbreak', string.rep(' ', max_digits))
 
   for i = 1, #lines do
     local hl = lines[i][2]

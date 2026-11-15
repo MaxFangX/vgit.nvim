@@ -149,6 +149,10 @@ function Component:clear_extmark_highlights()
   return self.buffer:clear_extmark_highlights()
 end
 
+function Component:clear_extmark_paddings()
+  return self.buffer:clear_extmark_paddings()
+end
+
 function Component:clear_extmarks()
   return self.buffer:clear_extmarks()
 end
@@ -167,6 +171,10 @@ end
 
 function Component:place_extmark_highlight(opts)
   return self.buffer:place_extmark_highlight(opts)
+end
+
+function Component:place_extmark_padding(opts)
+  return self.buffer:place_extmark_padding(opts)
 end
 
 function Component:set_keymap(opts, callback)

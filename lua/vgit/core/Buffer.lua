@@ -18,6 +18,7 @@ function Buffer:constructor(bufnr)
     lnum_extmark = Extmark(bufnr, 'lnum'),
     sign_extmark = Extmark(bufnr, 'sign'),
     highlight_extmark = Extmark(bufnr, 'highlight'),
+    padding_extmark = Extmark(bufnr, 'padding'),
   }
 end
 
@@ -97,6 +98,11 @@ function Buffer:place_extmark_highlight(opts)
   return self.highlight_extmark:highlight(opts)
 end
 
+-- Text in a namespace of its own, so it can share a row with other text
+function Buffer:place_extmark_padding(opts)
+  return self.padding_extmark:text(opts)
+end
+
 function Buffer:clear_extmark_texts()
   return self.text_extmark:clear()
 end
@@ -114,11 +120,16 @@ function Buffer:clear_extmark_highlights()
   return self
 end
 
+function Buffer:clear_extmark_paddings()
+  return self.padding_extmark:clear()
+end
+
 function Buffer:clear_extmarks()
   self:clear_extmark_texts()
   self:clear_extmark_lnums()
   self:clear_extmark_signs()
   self:clear_extmark_highlights()
+  self:clear_extmark_paddings()
 
   return self
 end
@@ -133,6 +144,7 @@ function Buffer:create(listed, scratch)
   self.lnum_extmark = Extmark(bufnr, 'lnum')
   self.sign_extmark = Extmark(bufnr, 'sign')
   self.highlight_extmark = Extmark(bufnr, 'highlight')
+  self.padding_extmark = Extmark(bufnr, 'padding')
 
   return self
 end

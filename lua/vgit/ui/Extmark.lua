@@ -65,6 +65,15 @@ function Extmark:highlight(opts)
     return true, result
   end
 
+  -- A sign's line highlight outranks a highlight, but not overlaid text
+  if opts.overlay then
+    return pcall(vim.api.nvim_buf_set_extmark, self.bufnr, self.ns_id, row, col_range.from, {
+      virt_text = { { opts.overlay, hl } },
+      virt_text_pos = 'overlay',
+      hl_mode = 'combine',
+    })
+  end
+
   return pcall(vim.api.nvim_buf_set_extmark, self.bufnr, self.ns_id, row, col_range.from, {
     end_col = col_range.to,
     hl_group = hl,
